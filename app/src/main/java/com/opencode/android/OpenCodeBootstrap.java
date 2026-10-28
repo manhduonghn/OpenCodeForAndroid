@@ -1172,7 +1172,7 @@ public final class OpenCodeBootstrap {
                 while ((entry = tar.getNextEntry()) != null) {
                     String name = entry.getName();
                     if (name.startsWith("./")) name = name.substring(2);
-                    if (!"package/bin/opencode".equals(name)) continue;
+                    if (!name.endsWith("bin/opencode")) continue;
                     if (entry.isDirectory() || entry.isSymbolicLink() || entry.isLink())
                         throw new InstallException("The OpenCode package does not contain a regular binary.");
                     try (OutputStream out = new FileOutputStream(target)) {
@@ -1281,7 +1281,22 @@ public final class OpenCodeBootstrap {
                 Log.w(LOG_TAG, "Could not make the OpenCode binary executable", e);
             }
 
+            // Every build is ~130 MB, keep only the one that is linked.
+            pruneOldBuilds(target);
+
             return target;
+        }
+
+        /** Delete the binaries of earlier versions, they waste a lot of app storage. */
+        private void pruneOldBuilds(File keep) {
+            File[] files = new File(INSTALL_DIR).listFiles();
+            if (files == null) return;
+            for (File file : files) {
+                String name = file.getName();
+                if (!name.startsWith("opencode-v") && !name.startsWith(".opencode-v")) continue;
+                if (file.getAbsolutePath().equals(keep.getAbsolutePath())) continue;
+                deleteQuietly(file);
+            }
         }
 
         private CmdResult patchInterpreter(File file, String loader) {

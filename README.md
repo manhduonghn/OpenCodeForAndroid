@@ -1,51 +1,97 @@
 # OpenCode for Android
 
-**OpenCode for Android** is an Android application that runs the official
-[OpenCode](https://opencode.ai) coding agent natively on Android — no root, no
-proot, no chroot — and gives the agent the full Linux toolchain: shell, `apt`,
-compiler toolchain, files in `$HOME`, git, python, node, …
-
-It is the successor of the “OpenCode for Termux” technique, reworked so the app
-owns its **own package id** (`com.opencode.android`) and its **own Linux prefix**
-instead of borrowing the Termux ones (`com.termux`).
+**OpenCode for Android** runs the official [OpenCode](https://opencode.ai) coding agent
+natively on Android — no root, no proot, no chroot — inside its **own package id**
+(`com.opencode.android`) and its **own Linux prefix**, without the `com.termux` app.
 
 ## How it works
 
+The app combines the two techniques that make this possible:
+
+1. **Installing Termux packages without Termux** (the AndroidHarness technique).
+   The Termux repository indexes are downloaded, the `.deb` archives are verified
+   (SHA-256) and extracted **in Java** (`commons-compress` + `xz`). While
+   extracting, the absolute `/data/data/com.termux/files/usr` paths that are
+   baked into the packages are rewritten:
+
+   * `data/data/com.termux/files/usr/...` → `$PREFIX/...`
+   * absolute symlinks → relative symlinks inside the prefix
+   * `#!/data/data/com.termux/files/usr/bin/sh` shebangs → `$PREFIX/bin/sh`
+
+   No `apt`/`dpkg` is involved, they would write into the real Termux prefix.
+
+2. **Running OpenCode** (the opencode-termux technique). The official npm
+   platform package is downloaded, the binary is extracted and its ELF
+   interpreter is changed to the glibc loader of the toolchain:
+
+   ```
+   patchelf --set-interpreter $PREFIX/glibc/lib/ld-linux-*.so.* \
+            --set-rpath       $PREFIX/glibc/lib  bin/opencode
+   ```
+
+   The server is then started as the loader with
+   `--library-path $PREFIX/glibc/lib …/opencode serve --port 49374`, and the app
+   shows `http://127.0.0.1:49374/` in a WebView.
+
+### What gets installed
+
+Only the minimum the runtime needs (≈16 MB of packages):
+
+| package | why |
+| --- | --- |
+| `bash` (+ `readline`, `ncurses`, `libiconv`, `libandroid-support`) | shell for OpenCode and scripts |
+| `glibc` (+ `linux-api-headers-glibc`) | glibc loader and libraries for the OpenCode binary |
+| `patchelf` (+ `libc++`) | rewrites the interpreter/RUNPATH of the binary |
+| `ca-certificates` | HTTPS trust store (`SSL_CERT_FILE`) |
+
+`termux-tools` is deliberately skipped: it is a set of wrappers around the
+Termux app (`am`, `pm`, …) and would pull the Termux app and a dozen extra
+packages.
+
+The packages are built for the Termux prefix, so their `RUNPATH` is rewritten
+once at install time (`patchelf --set-rpath $PREFIX/lib`), which makes `bash`
+and the OpenCode binary start even from a terminal without `LD_LIBRARY_PATH`.
+
+`targetSdk` is **28** on purpose: Android 10+ denies `execve()` of files inside
+the app data directory for apps that target API 29 or newer. Termux itself does
+the same.
+
+### Installation progress
+
+The first start downloads ≈20 MB of toolchain and ≈60 MB of OpenCode, so the
+app shows a progress screen instead of a blank WebView. The WebView only loads
+`http://127.0.0.1:49374/` once the server really accepts connections, which
+avoids `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.
+
+### Terminal usage
+
+```sh
+# any Android shell, no Termux needed
+$PREFIX/bin/opencode --version
+$PREFIX/bin/opencode            # TUI
+$PREFIX/bin/opencode upgrade    # asks the app to re-download the runtime
 ```
-apt-get install glibc-repo glibc-runner patchelf tar   # libraries
-  → download the official npm tarball @opencode/cli-linux-<arch>
-  → tar -xzf package/bin/opencode
-  → patchelf --set-interpreter <prefix>/glibc/lib/ld-linux-*.so.*   # interpreter ONLY
-  → verify with --version → atomic rename → <prefix>/bin/opencode launcher
-```
 
-Everything runs from **one Java class** (`OpenCodeBootstrap`) inside the app, so
-the installation keeps its progress, survives the app being killed mid-download
-and repairs itself afterwards. No root, no proot, no chroot.
+with `PREFIX=/data/data/com.opencode.android/files/usr` and
+`HOME=/data/data/com.opencode.android/files/home`.
 
-The installer keeps apt:
+## Diagnostics
 
-1. `apt-get update` (with mirrored fallbacks via temporary `sources.list`)
-2. `apt-get install glibc-repo` → `apt-get install glibc-runner patchelf tar`
-3. resolve the latest OpenCode version (official API → npm registry fallback)
-4. download the npm tarball, verify SHA-512, extract
-5. patch `PT_INTERP` with the glibc loader, verify with `--version`
-6. atomic install + symlink + markers (`.native-ready`, `.patched`)
-7. launcher scripts + self-repair + progress state
+Every crash and every server process that exits with an error is written to
 
-## Newer glibc
+* `Android/data/com.opencode.android/files/OpenCodeForAndroid/`
+* `Download/opencode-*.log` (MediaStore on Android 10+, plain file below)
 
-The app can install a **newer glibc** through apt (`pkg`/`apt-get install
-glibc …`) when the published OpenCode build requires a newer glibc than the one
-bundled in the current `glibc-runner` package.
+## Building
 
-## Building from source
-
-```
-git clone <this-repo>
+```sh
+git clone https://github.com/manhduonghn/OpenCodeForAndroid
 cd OpenCodeForAndroid
 ./gradlew :app:assembleDebug
 ```
+
+The nightly workflow builds a debug APK on every push, the release workflow
+builds a signed APK for every `v*` tag.
 
 ## License
 
