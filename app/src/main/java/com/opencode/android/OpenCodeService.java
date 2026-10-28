@@ -10,7 +10,6 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.Process;
 import android.service.ServiceInfo;
 import android.util.Log;
 
@@ -37,7 +36,7 @@ public final class OpenCodeService extends Service {
 
     private static volatile OpenCodeService sInstance;
 
-    private Process process;
+    private java.lang.Process process;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int port = 49374;
 

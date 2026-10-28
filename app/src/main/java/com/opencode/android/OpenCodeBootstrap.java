@@ -1200,7 +1200,14 @@ public final class OpenCodeBootstrap {
                 if (!linkDir.isDirectory() && !linkDir.mkdirs())
                     throw new IOException("Could not create the directory " + LINK_DIR);
                 deleteQuietly(new File(LINK_PATH));
-                Os.symlink(target.getAbsolutePath(), LINK_PATH);
+
+                List<String> lnArgs = new ArrayList<>();
+                lnArgs.add(PREFIX + "/bin/sh");
+                lnArgs.add("-c");
+                lnArgs.add("ln -sf " + target.getAbsolutePath() + " " + LINK_PATH);
+                CmdResult ln = run(lnArgs, APT_INSTALL_TIMEOUT_MS, true, null);
+                if (ln.exitCode != 0)
+                    throw new IOException("Could not create the symlink: " + tail(ln.output, 200));
             } catch (Exception e) {
                 throw new InstallException("Could not create the opencode symlink: " + e.getMessage());
             }
