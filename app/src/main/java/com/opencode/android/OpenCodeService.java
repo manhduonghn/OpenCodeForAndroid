@@ -11,7 +11,7 @@ import android.os.IBinder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.app.ServiceInfo;
+import android.content.pm.ServiceInfo;
 import android.util.Log;
 
 import java.io.BufferedReader;
