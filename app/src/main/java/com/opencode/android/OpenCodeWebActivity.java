@@ -8,6 +8,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.View;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -43,6 +44,7 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     private boolean pageLoaded;
     private boolean destroyed;
     private boolean waitingForInstall;
+    private long lastServiceStart;
 
     private final Runnable poll = new Runnable() {
         @Override
@@ -85,19 +87,7 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         OpenCodeBootstrap.addInstallListener(this);
 
         // Make sure the OpenCode server is running natively before the WebView talks to it.
-        try {
-            Intent serviceIntent = new Intent(this, OpenCodeService.class);
-            serviceIntent.putExtra("port", PORT);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
-            } else {
-                startService(serviceIntent);
-            }
-        } catch (Exception e) {
-            // Starting the foreground service can be refused by the system (eg. while the app is
-            // in the background on newer Android versions). The OpenCode server can still be
-            // started later through the oc-install launcher.
-        }
+        startServerService();
 
         handler.post(poll);
 
@@ -161,11 +151,39 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         OpenCodeInstallState state = OpenCodeBootstrap.getInstallState();
         applyState(state);
         if (state.failed) return;
-        if (!OpenCodeBootstrap.isInstallRunning() && !OpenCodeBootstrap.isRuntimeComplete()) {
+
+        if (OpenCodeBootstrap.isRuntimeComplete()) {
+            // Installed, but the server is not answering. Ask the service to start it again (it
+            // may have been killed while the app was in the background).
+            long now = SystemClock.uptimeMillis();
+            if (now - lastServiceStart > 3000) {
+                lastServiceStart = now;
+                startServerService();
+            }
+            return;
+        }
+
+        if (!OpenCodeBootstrap.isInstallRunning()) {
             // No installer is running and the runtime is not complete (eg. the process was killed
             // right after the install started). Start it again instead of waiting forever.
             waitingForInstall = true;
             OpenCodeBootstrap.setupIfNeeded(this, null);
+        }
+    }
+
+    /** Start the foreground service that hosts the server, ignoring background restrictions. */
+    private void startServerService() {
+        try {
+            Intent intent = new Intent(this, OpenCodeService.class);
+            intent.putExtra("port", PORT);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception e) {
+            // The system may refuse to start a foreground service from the background, the poll
+            // below retries.
         }
     }
 
