@@ -35,9 +35,11 @@ The app combines the two techniques that make this possible:
 
 3. **Pairing the WebView.** `GET /` alone only serves the web app shell, which
    asks for a server address and password. The app therefore mints a one-time
-   code with `POST /api/pair` (Basic auth) and loads
-   `/auth/connect/<code>`: the server stores a `opencode_session_<port>` cookie
-   valid for 30 days and redirects to the app, which is then logged in.
+   code with `POST /api/pair` (Basic auth), redeems it at
+   `GET /auth/connect/<code>` (`Accept: application/json`) for a session token
+   and loads `/?auth_token=<base64("opencode:<token>")>` — the same link format
+   `opencode pair` prints. The token is also written as the
+   `opencode_session_<port>` cookie, so reloads stay authenticated.
 
 ### What gets installed
 

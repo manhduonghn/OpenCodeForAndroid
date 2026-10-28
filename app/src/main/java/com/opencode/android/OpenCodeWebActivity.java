@@ -41,15 +41,16 @@ import java.util.concurrent.Executors;
  * shows a network error again.</p>
  *
  * <p>Opening {@code /} alone is not enough: the OpenCode web app is a client that asks for a
- * server address and password. The app minted a short-lived pairing code with {@code POST
- * /api/pair} and loads {@code /auth/connect/<code>} instead, the server answers with a session
- * cookie and redirects to the web app, which then works without any login screen.</p>
+ * server address and password. The app mints a short-lived code with {@code POST /api/pair},
+ * redeems it for a session token and loads {@code /?auth_token=<base64(user:token)>}, exactly
+ * the link format {@code opencode pair} prints. The token is also stored as the session cookie,
+ * so reloads stay authenticated.</p>
  */
 public final class OpenCodeWebActivity extends Activity implements OpenCodeBootstrap.InstallListener {
 
     private static final String TAG = "OpenCodeWebActivity";
     private static final int PORT = 49374;
-    /** Cookie session of the server, refreshed with a new pairing code on every cold start. */
+    /** Endpoint that redeems a pairing code for a session token. */
     private static final String PAIR_PATH = "/auth/connect/";
 
     private WebView webView;
@@ -87,19 +88,19 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
             probeInFlight = true;
             probeExecutor.execute(() -> {
                 final boolean reachable = serverReachable();
-                final String pairCode = reachable ? requestPairCode() : null;
+                final String sessionToken = reachable ? requestSessionToken() : null;
                 handler.post(() -> {
                     probeInFlight = false;
                     if (destroyed) return;
                     if (reachable) {
-                        if (pairCode == null && pairAttempts < 6) {
+                        if (sessionToken == null && pairAttempts < 6) {
                             // The server accepted the connection but not the pairing request yet,
                             // retry briefly before falling back to the bare web app.
                             pairAttempts++;
                             handler.postDelayed(poll, 500);
                             return;
                         }
-                        loadUi(pairCode);
+                        loadUi(sessionToken);
                         return;
                     }
                     updateProgress();
@@ -269,28 +270,87 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     }
 
     /** The server accepts connections, replace the progress screen with the paired web UI. */
-    private void loadUi(String pairCode) {
+    private void loadUi(String sessionToken) {
         if (pageLoaded) return;
         pageLoaded = true;
         waitingForInstall = false;
         statusPanel.setVisibility(View.GONE);
         webView.setVisibility(View.VISIBLE);
+
         String target = "http://127.0.0.1:" + PORT + "/";
-        if (pairCode != null && !pairCode.isEmpty()) {
-            // The pairing link sets the session cookie and redirects to the web app.
-            target = "http://127.0.0.1:" + PORT + PAIR_PATH + pairCode;
+        // Prefer the session token of the pairing code. The real password is an acceptable
+        // fallback, it is the same credential 'opencode pair' puts into its links.
+        boolean paired = sessionToken != null && !sessionToken.isEmpty();
+        String secret = paired ? sessionToken : serverPassword;
+        if (secret != null && !secret.isEmpty()) {
+            // 'opencode pair' prints links of the form /?auth_token=<base64(user:password)>,
+            // the web app reads it, strips it from the address bar and authenticates its API
+            // calls with it.
+            String credentials = Base64.encodeToString(
+                (OpenCodeBootstrap.SERVER_USER + ":" + secret)
+                    .getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+            target = target + "?auth_token=" + credentials;
+
+            // The session token is also the value of the session cookie, so a reload of the
+            // WebView keeps working after the app removed the token from the URL.
+            if (paired) {
+                try {
+                    CookieManager cookies = CookieManager.getInstance();
+                    cookies.setAcceptCookie(true);
+                    cookies.setCookie("http://127.0.0.1:" + PORT,
+                        "opencode_session_" + PORT + "=" + secret
+                            + "; Path=/; Max-Age=2592000");
+                    cookies.flush();
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not store the session cookie", e);
+                }
+            }
         }
-        Log.i(TAG, "Loading the OpenCode web UI: " + target);
+        Log.i(TAG, "Loading the paired OpenCode web UI: " + target);
         webView.loadUrl(target);
     }
 
     /**
-     * Mint a single-use pairing code with the Basic credentials of the app. The web app cannot
-     * use the Basic auth of the API, it needs the session cookie that {@code /auth/connect/<code>}
-     * hands out.
+     * Mint a single-use pairing code and redeem it for a session token. The web app cannot use
+     * the Basic auth of the API directly, it needs the token in its {@code auth_token} link.
      *
-     * @return the code, or null when the server does not answer as expected.
+     * @return the session token, or null when the server does not answer as expected.
      */
+    private String requestSessionToken() {
+        String code = requestPairCode();
+        if (code == null) return null;
+
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL("http://127.0.0.1:" + PORT + PAIR_PATH + code);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(2000);
+            connection.setReadTimeout(3000);
+            connection.setUseCaches(false);
+            // Without a browser Accept header the server answers with JSON instead of setting a
+            // cookie, which is what we need to build the link ourselves.
+            connection.setRequestProperty("Accept", "application/json");
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "The server refused the pairing code: " + connection.getResponseCode());
+                return null;
+            }
+            StringBuilder body = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) body.append(line);
+            }
+            String token = new JSONObject(body.toString()).optString("token", "");
+            return token.isEmpty() ? null : token;
+        } catch (Exception e) {
+            Log.w(TAG, "Could not redeem the pairing code", e);
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    /** @return a short-lived pairing code, or null when the server does not answer. */
     private String requestPairCode() {
         HttpURLConnection connection = null;
         try {
