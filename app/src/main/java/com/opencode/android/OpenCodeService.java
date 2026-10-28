@@ -225,17 +225,14 @@ public final class OpenCodeService extends Service {
 
     /** Spawn the server, the caller holds {@link #SERVER_LOCK}. */
     private void startProcess(String loader, File binary) {
-        ProcessBuilder builder = new ProcessBuilder(
-            loader,
-            "--library-path",
-            OpenCodeBootstrap.GLIBC_LIB_DIR,
-            binary.getAbsolutePath(),
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            String.valueOf(port)
-        );
+        // Android's java.lang.Process has no pid(), so /system/bin/sh records its own pid and
+        // then exec()s the loader: the pid stays valid for the server and survives app restarts
+        // through the pid file. exec keeps a single process, no extra shell is left behind.
+        String command = "echo $$ > '" + PID_FILE + "'; exec '" + loader + "' --library-path '"
+            + OpenCodeBootstrap.GLIBC_LIB_DIR + "' '" + binary.getAbsolutePath()
+            + "' serve --hostname 127.0.0.1 --port " + port;
+        clearPidFile();
+        ProcessBuilder builder = new ProcessBuilder("/system/bin/sh", "-c", command);
         builder.directory(new File(OpenCodeBootstrap.HOME));
         builder.redirectErrorStream(true);
         builder.environment().clear();
@@ -276,11 +273,10 @@ public final class OpenCodeService extends Service {
             return;
         }
         final Process started = process;
-        final int startedPid = started.pid();
+        final int startedPid = waitForPidFile(2000);
         serverPid = startedPid;
         adopted = false;
         recoveredFromBusyPort = false;
-        writePidFile(startedPid);
         runningBinaryPath = binary.getAbsolutePath();
         Log.i(TAG, "The OpenCode server process was started: " + port + " (pid " + startedPid + ")");
 
@@ -506,6 +502,22 @@ public final class OpenCodeService extends Service {
         } catch (Exception e) {
             Log.w(TAG, "Could not write the server pid file", e);
         }
+    }
+
+    /** Wait until the shell of the freshly spawned server recorded its pid. */
+    private int waitForPidFile(long timeoutMs) {
+        long deadline = SystemClock.uptimeMillis() + timeoutMs;
+        while (SystemClock.uptimeMillis() < deadline) {
+            int pid = readPidFile();
+            if (pid > 0) return pid;
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return readPidFile();
     }
 
     private void clearPidFile() {
