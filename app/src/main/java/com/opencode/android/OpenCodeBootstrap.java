@@ -1923,7 +1923,7 @@ public final class OpenCodeBootstrap {
     }
 
     /** @return the npm architecture of the OpenCode build for this device, or null. */
-    private static String getOpenCodeArch() {
+    public static String getOpenCodeArch() {
         String[] abis = Build.SUPPORTED_ABIS;
         if (abis == null || abis.length == 0) return null;
 
@@ -1934,7 +1934,7 @@ public final class OpenCodeBootstrap {
     }
 
     /** @return the glibc loader of the toolchain, or null if the glibc runtime is not installed. */
-    private static String findGlibcLoader() {
+    public static String findGlibcLoader() {
         File dir = new File(GLIBC_LIB_DIR);
         File[] files = dir.listFiles();
         if (files == null) return null;
@@ -1948,7 +1948,7 @@ public final class OpenCodeBootstrap {
     }
 
     /** @return the file the opencode symlink points to. */
-    private static File resolveLink(File link) {
+    public static File resolveLink(File link) {
         try {
             String target = android.system.Os.readlink(link.getAbsolutePath());
             File file = new File(target);
@@ -1972,7 +1972,7 @@ public final class OpenCodeBootstrap {
         return real.length() + " " + (real.lastModified() / 1000L);
     }
 
-    private static boolean isExecutable(File file) {
+    public static boolean isExecutable(File file) {
         return file.exists() && file.canExecute();
     }
 

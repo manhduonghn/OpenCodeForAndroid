@@ -1,6 +1,8 @@
 package com.opencode.android;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -21,6 +23,16 @@ public final class OpenCodeWebActivity extends Activity {
         webView.setWebViewClient(new WebViewClient());
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setAllowFileAccess(true);
+
+        // Make sure the OpenCode server is running natively before the WebView talks to it.
+        Intent serviceIntent = new Intent(this, OpenCodeService.class);
+        serviceIntent.putExtra("port", 49374);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+
         webView.loadUrl("http://127.0.0.1:49374");
     }
 
