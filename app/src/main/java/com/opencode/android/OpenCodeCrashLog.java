@@ -1,17 +1,11 @@
 package com.opencode.android;
 
-import android.content.ContentResolver;
-import android.content.ContentValues;
 import android.content.Context;
-import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
-import android.provider.MediaStore;
 import android.util.Log;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.text.SimpleDateFormat;
@@ -19,10 +13,9 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Writes crash reports and runtime logs of the OpenCode runtime into the device storage, so that
- * they can be shared or pulled for analysis. A copy goes to the app-private external directory
- * (always writable) and another one to the public Download folder (MediaStore on Android 10+,
- * plain file on older versions).
+ * Writes crash reports and runtime logs of the OpenCode runtime into the app-private external
+ * directory, so they can be pulled with a file manager or a computer when something goes wrong.
+ * Nothing is written into the public Download folder any more.
  */
 public final class OpenCodeCrashLog {
 
@@ -53,7 +46,7 @@ public final class OpenCodeCrashLog {
         });
     }
 
-    /** Write the crash report of the crashing thread into the external storage. */
+    /** Write the crash report of the crashing thread into the app-private storage. */
     public static void write(Context context, Thread thread, Throwable throwable) {
         StringWriter sw = new StringWriter();
         PrintWriter pw = new PrintWriter(sw);
@@ -69,7 +62,7 @@ public final class OpenCodeCrashLog {
 
     /**
      * Write a free form diagnostic report (eg. the output of a server process that exited) into
-     * the same locations as a crash report.
+     * the app-private storage.
      */
     public static void writeReport(Context context, String kind, String content) {
         StringBuilder sb = new StringBuilder();
@@ -86,6 +79,7 @@ public final class OpenCodeCrashLog {
     }
 
     private static void persist(Context context, String name, String content) {
+        if (context == null) return;
         byte[] bytes;
         try {
             bytes = content.getBytes("UTF-8");
@@ -93,7 +87,6 @@ public final class OpenCodeCrashLog {
             return;
         }
 
-        // 1. App-private external directory, it never needs a permission.
         try {
             File baseDir = context.getExternalFilesDir(null);
             if (baseDir != null) {
@@ -109,45 +102,7 @@ public final class OpenCodeCrashLog {
                 }
             }
         } catch (Exception e) {
-            Log.w(TAG, "Could not write the app-private report", e);
-        }
-
-        // 2. Public Download folder, so the user can send the file without a computer.
-        writeToDownload(context, name, bytes);
-    }
-
-    private static void writeToDownload(Context context, String name, byte[] bytes) {
-        try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-                values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                ContentResolver resolver = context.getContentResolver();
-                Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (uri == null) return;
-                OutputStream out = resolver.openOutputStream(uri);
-                if (out == null) return;
-                try {
-                    out.write(bytes);
-                    out.flush();
-                } finally {
-                    out.close();
-                }
-                return;
-            }
-
-            File downloadDir = new File(Environment.getExternalStorageDirectory(), "Download");
-            if (!downloadDir.isDirectory()) return;
-            FileOutputStream out = new FileOutputStream(new File(downloadDir, name));
-            try {
-                out.write(bytes);
-                out.flush();
-            } finally {
-                out.close();
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Could not write the report into the Download folder", e);
+            Log.w(TAG, "Could not write the diagnostic report", e);
         }
     }
 }

@@ -32,7 +32,12 @@ The app combines the two techniques that make this possible:
 
    The 240 MB binary is not rewritten with `patchelf` (that is slow and can run
    out of memory on a phone); the glibc loader is passed explicitly instead.
-   The app shows `http://127.0.0.1:49374/` in a WebView.
+
+3. **Pairing the WebView.** `GET /` alone only serves the web app shell, which
+   asks for a server address and password. The app therefore mints a one-time
+   code with `POST /api/pair` (Basic auth) and loads
+   `/auth/connect/<code>`: the server stores a `opencode_session_<port>` cookie
+   valid for 30 days and redirects to the app, which is then logged in.
 
 ### What gets installed
 
@@ -60,18 +65,19 @@ the same.
 ### Server authentication
 
 The OpenCode 2.x server requires HTTP Basic auth for its API. A random password
-is generated once and stored in the shared preferences of the app,
-passed to the server as `OPENCODE_SERVER_PASSWORD` and answered by the WebView
-through `WebViewClient.onReceivedHttpAuthRequest`. The launcher exports the same
-password from `$HOME/.opencode/server-password`, so the terminal and the app can
-talk to the same server.
+is generated once and stored in the shared preferences of the app, passed to the
+server as `OPENCODE_SERVER_PASSWORD` and used by the app to mint pairing codes.
+The web UI itself never sees the password: it gets a session cookie through the
+pairing link. The launcher exports the same password from
+`$HOME/.opencode/server-password`, so the terminal and the app can talk to the
+same server.
 
 ### Installation progress
 
 The first start downloads ≈14 MB of toolchain and ≈114 MB of OpenCode, so the
 app shows a progress screen instead of a blank WebView. The WebView only loads
-`http://127.0.0.1:49374/` once the server really accepts connections, which
-avoids `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.
+the web UI once the server really accepts connections, which avoids
+`net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.
 
 ### Terminal usage
 
@@ -96,14 +102,13 @@ service waits until the port is free before spawning.
 
 ## Diagnostics
 
-Every crash and every server process that exits with an error is written to
+Crash reports and server errors stay inside the app sandbox:
 
 * `Android/data/com.opencode.android/files/OpenCodeForAndroid/`
-* `Download/opencode-*.log` (MediaStore on Android 10+, plain file below)
 
-The same folder gets `opencode-install-start-*.log` at the beginning of every
-installation and `opencode-port-*.log` when the port is held by a process that
-is not an OpenCode server of this app.
+Nothing is written into the public `Download` folder, the app does not request
+storage permissions. `opencode-install-*.log`, `opencode-server-*.log` and
+`opencode-port-*.log` are the files to look at when something fails.
 
 ## Building
 

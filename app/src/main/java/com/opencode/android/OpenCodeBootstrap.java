@@ -562,9 +562,9 @@ public final class OpenCodeBootstrap {
             try {
                 writeDiagnostics();
                 if (!logOnly && context != null) {
-                    // Leave a trace in the Download folder at the beginning of every run, so a
-                    // report of "it does not get past X" can be checked even if the process is
-                    // killed before the failure handler runs.
+                    // Leave a trace in the app-private diagnostics folder at the beginning of
+                    // every run, so a report of "it does not get past X" can be checked even if
+                    // the process is killed before the failure handler runs.
                     OpenCodeCrashLog.writeReport(context, "install-start",
                         "forceUpdate=" + forceUpdate
                             + "\nproblems=" + runtimeProblems()

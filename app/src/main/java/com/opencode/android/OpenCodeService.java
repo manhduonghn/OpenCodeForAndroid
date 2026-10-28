@@ -15,14 +15,18 @@ import android.os.SystemClock;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.util.Log;
+import android.util.Base64;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Foreground service that hosts the OpenCode server natively on Android.
@@ -196,15 +200,23 @@ public final class OpenCodeService extends Service {
             // stop it when it is an older version, so 'serve' never fails with EADDRINUSE.
             int inherited = findServerPid(binary);
             if (inherited > 0 && isPortOpen(port)) {
-                Log.i(TAG, "Reusing the OpenCode server that is already listening (pid "
-                    + inherited + ").");
-                serverPid = inherited;
-                adopted = true;
-                recoveredFromBusyPort = false;
-                runningBinaryPath = binary.getAbsolutePath();
-                writePidFile(inherited);
-                updateNotification("Running on http://127.0.0.1:" + port);
-                return;
+                if (acceptsCurrentPassword()) {
+                    Log.i(TAG, "Reusing the OpenCode server that is already listening (pid "
+                        + inherited + ").");
+                    serverPid = inherited;
+                    adopted = true;
+                    recoveredFromBusyPort = false;
+                    runningBinaryPath = binary.getAbsolutePath();
+                    writePidFile(inherited);
+                    updateNotification("Running on http://127.0.0.1:" + port);
+                    return;
+                }
+                // A server of an earlier installation was started with another password, the
+                // WebView could never pair with it. Replace it with a fresh one.
+                Log.w(TAG, "The inherited server rejects the password of this app, restarting it.");
+                killIfOurServer(inherited);
+                waitForPortFree(4000);
+                clearPidFile();
             }
 
             adopted = false;
@@ -320,7 +332,8 @@ public final class OpenCodeService extends Service {
                 }
             }
             // A server that dies right away usually means a missing library or a broken patch, the
-            // output is unreadable for the user in logcat, so keep it in the Download folder.
+            // output is unreadable for the user in logcat, so keep it in the app-private
+            // diagnostics folder.
             if (exitCode != 0 && !intentional) {
                 StringBuilder sb = new StringBuilder();
                 sb.append("OpenCode server exited with ").append(exitCode).append('\n');
@@ -336,7 +349,7 @@ public final class OpenCodeService extends Service {
                 }
                 OpenCodeCrashLog.writeReport(OpenCodeService.this, "opencode-server", sb.toString());
                 updateNotification("The OpenCode server stopped (exit " + exitCode
-                    + "), the log is in Download/opencode-server-*.log");
+                    + "), the log is in Android/data/com.opencode.android/files/OpenCodeForAndroid");
             }
             // Another instance can win the race for the port. The winner is usually our own
             // server from a previous app process, so adopt it instead of staying dead.
@@ -413,8 +426,43 @@ public final class OpenCodeService extends Service {
         }
     }
 
-    private void waitForPortFree(long timeoutMs) {
-        long deadline = SystemClock.uptimeMillis() + timeoutMs;
+    /**
+     * Check with the Basic credentials of this app that the server that already holds the port
+     * belongs to us. Retries once, a freshly started server may need a moment before it answers.
+     */
+    private boolean acceptsCurrentPassword() {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            HttpURLConnection connection = null;
+            try {
+                URL url = new URL("http://127.0.0.1:" + port + "/api/info");
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setConnectTimeout(1500);
+                connection.setReadTimeout(2500);
+                connection.setUseCaches(false);
+                String credentials = OpenCodeBootstrap.SERVER_USER + ":"
+                    + OpenCodeBootstrap.getServerPassword(this);
+                connection.setRequestProperty("Authorization", "Basic " + Base64.encodeToString(
+                    credentials.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+                int code = connection.getResponseCode();
+                if (code == HttpURLConnection.HTTP_OK) return true;
+                if (code == HttpURLConnection.HTTP_UNAUTHORIZED
+                    || code == HttpURLConnection.HTTP_FORBIDDEN) return false;
+            } catch (Exception e) {
+                Log.w(TAG, "Could not probe the OpenCode server on port " + port, e);
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private void waitForPortFree(long timeoutMs) {        long deadline = SystemClock.uptimeMillis() + timeoutMs;
         while (isPortOpen(port) && SystemClock.uptimeMillis() < deadline) {
             try {
                 Thread.sleep(100);

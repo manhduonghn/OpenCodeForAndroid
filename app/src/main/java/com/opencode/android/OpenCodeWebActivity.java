@@ -1,15 +1,16 @@
 package com.opencode.android;
 
-import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Base64;
+import android.util.Log;
 import android.view.View;
+import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -18,8 +19,15 @@ import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -31,11 +39,18 @@ import java.util.concurrent.Executors;
  * phone. The activity shows the progress of {@link OpenCodeBootstrap} instead of an empty screen
  * and only loads the web UI once the server really accepts connections, so the WebView never
  * shows a network error again.</p>
+ *
+ * <p>Opening {@code /} alone is not enough: the OpenCode web app is a client that asks for a
+ * server address and password. The app minted a short-lived pairing code with {@code POST
+ * /api/pair} and loads {@code /auth/connect/<code>} instead, the server answers with a session
+ * cookie and redirects to the web app, which then works without any login screen.</p>
  */
 public final class OpenCodeWebActivity extends Activity implements OpenCodeBootstrap.InstallListener {
 
+    private static final String TAG = "OpenCodeWebActivity";
     private static final int PORT = 49374;
-    private static final int REQUEST_STORAGE = 4201;
+    /** Cookie session of the server, refreshed with a new pairing code on every cold start. */
+    private static final String PAIR_PATH = "/auth/connect/";
 
     private WebView webView;
     private View statusPanel;
@@ -60,6 +75,8 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     private boolean destroyed;
     private boolean waitingForInstall;
     private long lastServiceStart;
+    /** How often the pairing code was requested for the current server start. */
+    private int pairAttempts;
     /** HTTP Basic password of the local OpenCode server, see {@link OpenCodeBootstrap#getServerPassword}. */
     private String serverPassword = "";
 
@@ -70,11 +87,19 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
             probeInFlight = true;
             probeExecutor.execute(() -> {
                 final boolean reachable = serverReachable();
+                final String pairCode = reachable ? requestPairCode() : null;
                 handler.post(() -> {
                     probeInFlight = false;
                     if (destroyed) return;
                     if (reachable) {
-                        loadUi();
+                        if (pairCode == null && pairAttempts < 6) {
+                            // The server accepted the connection but not the pairing request yet,
+                            // retry briefly before falling back to the bare web app.
+                            pairAttempts++;
+                            handler.postDelayed(poll, 500);
+                            return;
+                        }
+                        loadUi(pairCode);
                         return;
                     }
                     updateProgress();
@@ -110,6 +135,8 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setAllowFileAccess(true);
+        // The pairing redirect stores the session cookie of the server here.
+        CookieManager.getInstance().setAcceptCookie(true);
 
         // Pre-populate the credentials of the realm the server announces
         // (WWW-Authenticate: Basic realm="Secure Area"), so the WebView answers the very first
@@ -123,7 +150,6 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         }
 
         statusRetry.setOnClickListener(v -> retryInstall());
-        requestStoragePermissionIfNeeded();
 
         // Restore the progress of an installation that was interrupted by a process death.
         OpenCodeBootstrap.restoreState();
@@ -237,18 +263,66 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         statusProgress.setIndeterminate(true);
         waitingForInstall = true;
         OpenCodeBootstrap.setupIfNeeded(this, null);
+        pairAttempts = 0;
         handler.removeCallbacks(poll);
         handler.post(poll);
     }
 
-    /** The server accepts connections, replace the progress screen with the web UI. */
-    private void loadUi() {
+    /** The server accepts connections, replace the progress screen with the paired web UI. */
+    private void loadUi(String pairCode) {
         if (pageLoaded) return;
         pageLoaded = true;
         waitingForInstall = false;
         statusPanel.setVisibility(View.GONE);
         webView.setVisibility(View.VISIBLE);
-        webView.loadUrl("http://127.0.0.1:" + PORT + "/");
+        String target = "http://127.0.0.1:" + PORT + "/";
+        if (pairCode != null && !pairCode.isEmpty()) {
+            // The pairing link sets the session cookie and redirects to the web app.
+            target = "http://127.0.0.1:" + PORT + PAIR_PATH + pairCode;
+        }
+        Log.i(TAG, "Loading the OpenCode web UI: " + target);
+        webView.loadUrl(target);
+    }
+
+    /**
+     * Mint a single-use pairing code with the Basic credentials of the app. The web app cannot
+     * use the Basic auth of the API, it needs the session cookie that {@code /auth/connect/<code>}
+     * hands out.
+     *
+     * @return the code, or null when the server does not answer as expected.
+     */
+    private String requestPairCode() {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL("http://127.0.0.1:" + PORT + "/api/pair");
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(0);
+            connection.setConnectTimeout(2000);
+            connection.setReadTimeout(3000);
+            connection.setUseCaches(false);
+            String credentials = OpenCodeBootstrap.SERVER_USER + ":" + serverPassword;
+            connection.setRequestProperty("Authorization", "Basic "
+                + Base64.encodeToString(credentials.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "The server refused the pairing request: " + connection.getResponseCode());
+                return null;
+            }
+            StringBuilder body = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) body.append(line);
+            }
+            String code = new JSONObject(body.toString()).optString("code", "");
+            return code.isEmpty() ? null : code;
+        } catch (Exception e) {
+            Log.w(TAG, "Could not create a pairing code", e);
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
     }
 
     private boolean serverReachable() {
@@ -257,22 +331,6 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
             return true;
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    private void requestStoragePermissionIfNeeded() {
-        // Only the legacy Download folder mirror of the crash reports needs this permission, the
-        // app itself writes everything into its private directory.
-        if (Build.VERSION.SDK_INT > 28) return;
-        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            == PackageManager.PERMISSION_GRANTED) return;
-        try {
-            requestPermissions(new String[]{
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.READ_EXTERNAL_STORAGE
-            }, REQUEST_STORAGE);
-        } catch (Exception ignored) {
-            // The app works without the permission, only the Download copy is skipped.
         }
     }
 
