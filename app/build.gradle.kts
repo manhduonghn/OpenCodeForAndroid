@@ -42,6 +42,11 @@ android {
         }
         getByName("debug") {
             isMinifyEnabled = false
+            // Both build types are signed with the same key when one is provided, otherwise
+            // Android refuses to install an update over the app that is already on the device.
+            if (project.hasProperty("RELEASE_STORE_FILE")) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
