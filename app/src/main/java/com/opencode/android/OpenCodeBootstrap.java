@@ -561,6 +561,16 @@ public final class OpenCodeBootstrap {
             Throwable failure = null;
             try {
                 writeDiagnostics();
+                if (!logOnly && context != null) {
+                    // Leave a trace in the Download folder at the beginning of every run, so a
+                    // report of "it does not get past X" can be checked even if the process is
+                    // killed before the failure handler runs.
+                    OpenCodeCrashLog.writeReport(context, "install-start",
+                        "forceUpdate=" + forceUpdate
+                            + "\nproblems=" + runtimeProblems()
+                            + "\nabis=" + String.join(",", Build.SUPPORTED_ABIS)
+                            + "\nprefix=" + PREFIX);
+                }
                 if (forceUpdate) {
                     setStage(OpenCodeInstallState.STAGE_PREPARE, "Updating OpenCode...");
                     doInstall();
