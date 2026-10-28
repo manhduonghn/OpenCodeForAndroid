@@ -1,5 +1,5 @@
 plugins {
-    id "com.android.application" version "9.3.1"
+    id("com.android.application") version "9.3.1"
 }
 
 android {
@@ -15,20 +15,20 @@ android {
     }
 
     signingConfigs {
-        release {
+        create("release") {
             if (project.hasProperty("RELEASE_STORE_FILE")) {
-                storeFile = file(project.property("RELEASE_STORE_FILE"))
-                storePassword = project.property("RELEASE_STORE_PASSWORD")
-                keyAlias = project.property("RELEASE_KEY_ALIAS")
-                keyPassword = project.property("RELEASE_KEY_PASSWORD")
+                storeFile = file(project.property("RELEASE_STORE_FILE") as String)
+                storePassword = project.property("RELEASE_STORE_PASSWORD") as String
+                keyAlias = project.property("RELEASE_KEY_ALIAS") as String
+                keyPassword = project.property("RELEASE_KEY_PASSWORD") as String
             }
         }
     }
 
     buildTypes {
-        release {
+        getByName("release") {
             if (project.hasProperty("RELEASE_STORE_FILE")) {
-                signingConfig = signingConfigs.release
+                signingConfig = signingConfigs.getByName("release")
             }
             isMinifyEnabled = false
             proguardFiles(
@@ -36,7 +36,7 @@ android {
                 "proguard-rules.pro",
             )
         }
-        debug {
+        getByName("debug") {
             isMinifyEnabled = false
         }
     }
@@ -56,7 +56,7 @@ android {
 }
 
 dependencies {
-    implementation(libs.core.ktx)
-    implementation(libs.activity.compose)
-    implementation(libs.lifecycle.viewmodel.compose)
+    implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.activity:activity-compose:1.12.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
 }
