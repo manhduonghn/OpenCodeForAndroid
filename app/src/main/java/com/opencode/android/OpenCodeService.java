@@ -16,6 +16,7 @@ import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStreamReader;
 
 /**
@@ -144,7 +145,13 @@ public final class OpenCodeService extends Service {
         }
         builder.environment().put("OPENCODE_PORT", String.valueOf(port));
 
-        process = builder.start();
+        try {
+            process = builder.start();
+        } catch (IOException e) {
+            Log.e(TAG, "Could not start the OpenCode server process", e);
+            stopSelf();
+            return;
+        }
         Log.i(TAG, "The OpenCode server process was started: " + port);
 
         Thread reader = new Thread(() -> {
