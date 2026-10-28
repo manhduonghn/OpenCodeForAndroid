@@ -558,6 +558,7 @@ public final class OpenCodeBootstrap {
         private void run() {
             boolean success = false;
             String errorMessage = null;
+            Throwable failure = null;
             try {
                 writeDiagnostics();
                 if (forceUpdate) {
@@ -572,9 +573,11 @@ public final class OpenCodeBootstrap {
                 }
                 success = true;
             } catch (InstallException e) {
+                failure = e;
                 errorMessage = e.getMessage();
             } catch (Exception e) {
                 Log.e(LOG_TAG, "The OpenCode installation failed", e);
+                failure = e;
                 errorMessage = "The OpenCode installation failed: " + e;
             }
 
@@ -582,7 +585,7 @@ public final class OpenCodeBootstrap {
                 setStageDone();
                 notifyFinished("OpenCode is ready", "Version " + getInstalledVersion() + " is installed.", false);
             } else {
-                handleFailure(errorMessage == null ? "Unknown error" : errorMessage);
+                handleFailure(errorMessage == null ? "Unknown error" : errorMessage, failure);
             }
 
             releaseWaiters();
@@ -1780,22 +1783,37 @@ public final class OpenCodeBootstrap {
                 showProgressNotification(message);
         }
 
-        private void handleFailure(String message) {
-            Log.e(LOG_TAG, "The OpenCode installation failed: " + message);
+        private void handleFailure(String message, Throwable failure) {
+            Log.e(LOG_TAG, "The OpenCode installation failed: " + message, failure);
 
             StringBuilder report = new StringBuilder();
             report.append("OpenCode installation failed\n\n");
             report.append(message).append("\n\n");
+            if (failure != null) {
+                report.append("Stack trace:\n");
+                report.append(Log.getStackTraceString(failure)).append("\n");
+            }
             report.append("Last steps:\n");
             for (String step : steps)
                 report.append("  - ").append(step).append('\n');
+            report.append("\nOpen problems:\n");
+            for (String problem : runtimeProblems())
+                report.append("  - ").append(problem).append('\n');
             report.append("\n");
             report.append("Log tail (").append(SETUP_LOG_PATH).append("):\n");
             report.append(tail(readTextFileQuietly(new File(SETUP_LOG_PATH)), FAILURE_LOG_LINES));
             report.append("\nDiagnostics (").append(DIAGNOSTICS_PATH).append("):\n");
             report.append(readTextFileQuietly(new File(DIAGNOSTICS_PATH)));
 
-            writeTextFileQuietly(new File(ERROR_DETAIL_PATH), report.toString());
+            String text = report.toString();
+            writeTextFileQuietly(new File(ERROR_DETAIL_PATH), text);
+            // The app-private file is invisible for the user, mirror the report into the Download
+            // folder so a failed first installation can be diagnosed without a computer.
+            try {
+                OpenCodeCrashLog.writeReport(context, "install", text);
+            } catch (Exception e) {
+                Log.w(LOG_TAG, "Could not export the failure report", e);
+            }
 
             notifyFinished("OpenCode: installation failed", tail(message, MAX_DETAIL_CHARS), true);
 

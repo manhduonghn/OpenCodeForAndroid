@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -271,15 +272,29 @@ public final class OpenCodePackages {
         LinkedHashMap<String, Pkg> out = new LinkedHashMap<>();
         ArrayDeque<String> queue = new ArrayDeque<>(wanted);
         Set<String> seen = new HashSet<>(installed);
+        Set<String> missing = new LinkedHashSet<>();
         while (!queue.isEmpty()) {
             String name = queue.poll();
             if (SKIPPED_DEPENDENCIES.contains(name)) continue;
             if (!seen.add(name)) continue;
             Pkg pkg = index.get(name);
-            if (pkg == null) continue;
+            if (pkg == null) {
+                missing.add(name);
+                continue;
+            }
             out.put(name, pkg);
             queue.addAll(pkg.depends);
         }
+
+        // A missing dependency is not fatal (some are optional), but a requested package has to
+        // exist, otherwise the runtime is incomplete without a useful error message.
+        for (String name : wanted) {
+            if (missing.contains(name))
+                throw new IllegalStateException("The repository does not provide the package '"
+                    + name + "' for this architecture.");
+        }
+        if (!missing.isEmpty())
+            Log.w(TAG, "The package list has no entry for: " + missing);
         return new ArrayList<>(out.values());
     }
 
