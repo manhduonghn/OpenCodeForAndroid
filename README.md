@@ -85,12 +85,25 @@ $PREFIX/bin/opencode upgrade    # asks the app to re-download the runtime
 with `PREFIX=/data/data/com.opencode.android/files/usr` and
 `HOME=/data/data/com.opencode.android/files/home`.
 
+### Server lifecycle
+
+The server is a child of the app process, and Android does not always kill it
+when the app process dies. On start the service therefore looks the server up
+(pid file `$HOME/.opencode/server.pid` plus a `/proc` scan) and reuses it when
+it runs the current binary, instead of starting a second `serve` that would
+fail with `EADDRINUSE`. A server of an older binary is stopped first, and the
+service waits until the port is free before spawning.
+
 ## Diagnostics
 
 Every crash and every server process that exits with an error is written to
 
 * `Android/data/com.opencode.android/files/OpenCodeForAndroid/`
 * `Download/opencode-*.log` (MediaStore on Android 10+, plain file below)
+
+The same folder gets `opencode-install-start-*.log` at the beginning of every
+installation and `opencode-port-*.log` when the port is held by a process that
+is not an OpenCode server of this app.
 
 ## Building
 

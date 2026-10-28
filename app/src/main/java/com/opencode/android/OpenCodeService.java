@@ -11,14 +11,18 @@ import android.os.IBinder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 
 /**
  * Foreground service that hosts the OpenCode server natively on Android.
@@ -48,6 +52,16 @@ public final class OpenCodeService extends Service {
     private volatile boolean stopping;
     /** Path of the binary the running server was started from. */
     private volatile String runningBinaryPath;
+    /** Serialises start/stop calls, the service can be asked to start from several places. */
+    private static final Object SERVER_LOCK = new Object();
+    /** Pid of the running server, also when this process inherited it from an older app run. */
+    private volatile int serverPid = -1;
+    /** True when the server was already running when this service was created. */
+    private volatile boolean adopted;
+    /** Remembers that we already tried to recover from a busy port, avoids endless retries. */
+    private volatile boolean recoveredFromBusyPort;
+    /** Pid of the server process, it survives app restarts so a stale server can be reused. */
+    private static final String PID_FILE = OpenCodeBootstrap.HOME + "/.opencode/server.pid";
 
     /** The parameters of the last start request, they are passed through the intent. */
     public static final class Params {
@@ -131,25 +145,66 @@ public final class OpenCodeService extends Service {
 
     /** Start the OpenCode server, it is a no-op when a server is already running. */
     public void startServer() {
-        if (process != null) {
-            Log.i(TAG, "The OpenCode server is already running.");
-            return;
+        synchronized (SERVER_LOCK) {
+            if (adopted && isPortOpen(port)) {
+                Log.i(TAG, "The adopted OpenCode server is still running.");
+                updateNotification("Running on http://127.0.0.1:" + port);
+                return;
+            }
+            if (process != null) {
+                if (process.isAlive()) {
+                    Log.i(TAG, "The OpenCode server is already running.");
+                    return;
+                }
+                // The reader thread has not noticed the exit yet, do not reuse the dead handle.
+                process = null;
+            }
+
+            String loader = OpenCodeBootstrap.findGlibcLoader();
+            File binary = resolveBinary();
+            if (loader == null || binary == null) {
+                Log.w(TAG, "The OpenCode server cannot be started: glibc runtime or binary is missing.");
+                OpenCodeCrashLog.writeReport(this, "opencode-start",
+                    "loader=" + loader + "\nbinary=" + binary
+                        + "\nproblems=" + OpenCodeBootstrap.runtimeProblems());
+                stopSelf();
+                return;
+            }
+
+            // A server started by an earlier app process can still own the port: Android does not
+            // kill the children of a dead app process. Reuse it when it runs the current binary,
+            // stop it when it is an older version, so 'serve' never fails with EADDRINUSE.
+            int inherited = findServerPid(binary);
+            if (inherited > 0 && isPortOpen(port)) {
+                Log.i(TAG, "Reusing the OpenCode server that is already listening (pid "
+                    + inherited + ").");
+                serverPid = inherited;
+                adopted = true;
+                recoveredFromBusyPort = false;
+                runningBinaryPath = binary.getAbsolutePath();
+                writePidFile(inherited);
+                updateNotification("Running on http://127.0.0.1:" + port);
+                return;
+            }
+
+            adopted = false;
+            stopping = false;
+
+            if (isPortOpen(port)) {
+                Log.w(TAG, "The port " + port + " is used by a process that is not ours.");
+                OpenCodeCrashLog.writeReport(this, "opencode-port",
+                    "Port " + port + " is already in use and no OpenCode server process was"
+                        + " found for it.\npid file: " + readPidFile()
+                        + "\nbinary: " + binary.getAbsolutePath()
+                        + "\nprocesses:\n" + describeOpenCodeProcesses());
+            }
+
+            startProcess(loader, binary);
         }
+    }
 
-        String loader = OpenCodeBootstrap.findGlibcLoader();
-        File binary = resolveBinary();
-        if (loader == null || binary == null) {
-            Log.w(TAG, "The OpenCode server cannot be started: glibc runtime or binary is missing.");
-            OpenCodeCrashLog.writeReport(this, "opencode-start",
-                "loader=" + loader + "\nbinary=" + binary
-                    + "\nproblems=" + OpenCodeBootstrap.runtimeProblems());
-            stopSelf();
-            return;
-        }
-
-        stopExisting();
-        stopping = false;
-
+    /** Spawn the server, the caller holds {@link #SERVER_LOCK}. */
+    private void startProcess(String loader, File binary) {
         ProcessBuilder builder = new ProcessBuilder(
             loader,
             "--library-path",
@@ -201,8 +256,13 @@ public final class OpenCodeService extends Service {
             return;
         }
         final Process started = process;
+        final int startedPid = started.pid();
+        serverPid = startedPid;
+        adopted = false;
+        recoveredFromBusyPort = false;
+        writePidFile(startedPid);
         runningBinaryPath = binary.getAbsolutePath();
-        Log.i(TAG, "The OpenCode server process was started: " + port);
+        Log.i(TAG, "The OpenCode server process was started: " + port + " (pid " + startedPid + ")");
 
         Thread reader = new Thread(() -> {
             java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>();
@@ -226,9 +286,23 @@ public final class OpenCodeService extends Service {
                 Thread.currentThread().interrupt();
             }
             boolean current = process == started;
-            if (current) process = null;
+            if (current) {
+                process = null;
+                serverPid = -1;
+                adopted = false;
+                clearPidFile(startedPid);
+            }
             Log.w(TAG, "The OpenCode server exited with " + exitCode);
             boolean intentional = stopping || !current;
+            boolean portBusy = false;
+            synchronized (tail) {
+                for (String line : tail) {
+                    if (line.contains("Is port") && line.contains("in use")) {
+                        portBusy = true;
+                        break;
+                    }
+                }
+            }
             // A server that dies right away usually means a missing library or a broken patch, the
             // output is unreadable for the user in logcat, so keep it in the Download folder.
             if (exitCode != 0 && !intentional) {
@@ -248,6 +322,16 @@ public final class OpenCodeService extends Service {
                 updateNotification("The OpenCode server stopped (exit " + exitCode
                     + "), the log is in Download/opencode-server-*.log");
             }
+            // Another instance can win the race for the port. The winner is usually our own
+            // server from a previous app process, so adopt it instead of staying dead.
+            if (!intentional && portBusy && !recoveredFromBusyPort) {
+                recoveredFromBusyPort = true;
+                Log.i(TAG, "The port was busy, retrying with the server that holds it.");
+                handler.postDelayed(() -> {
+                    // The service may have been destroyed in the meantime.
+                    if (sInstance == this) startServer();
+                }, 1500);
+            }
         }, "opencode-service-reader");
         reader.setDaemon(true);
         reader.start();
@@ -257,19 +341,192 @@ public final class OpenCodeService extends Service {
 
     /** Kill the OpenCode server process, the next start command starts it again. */
     public void stopServer() {
-        if (process == null) return;
-        stopping = true;
-        terminate(process);
-        process = null;
-        stopSelf();
+        synchronized (SERVER_LOCK) {
+            if (process == null && !adopted) {
+                stopSelf();
+                return;
+            }
+            stopping = true;
+            if (process != null) {
+                terminate(process);
+                process = null;
+            } else if (serverPid > 0) {
+                killIfOurServer(serverPid);
+            }
+            serverPid = -1;
+            adopted = false;
+            clearPidFile();
+            waitForPortFree(3000);
+            stopSelf();
+        }
     }
 
+    /** Stop the server without stopping the service, the caller holds {@link #SERVER_LOCK}. */
     private void stopExisting() {
-        if (process == null) return;
+        if (process == null && !adopted) return;
         stopping = true;
-        terminate(process);
-        process = null;
+        if (process != null) {
+            terminate(process);
+            process = null;
+        }
+        if (adopted && serverPid > 0) killIfOurServer(serverPid);
+        serverPid = -1;
+        adopted = false;
+        clearPidFile();
+        waitForPortFree(4000);
         stopping = false;
+    }
+
+    /* ---------------------------------------------------------------------------------------
+     * Stale process handling
+     *
+     * The OpenCode server is a child of the app process. Android does not always kill it when
+     * the app process dies, so a later launch can find the port occupied by its own server from
+     * an earlier run. Adoption is preferred over starting a second server: the orphan keeps the
+     * WebView working and no state (sessions) is lost.
+     * --------------------------------------------------------------------------------------- */
+
+    private static boolean isPortOpen(int port) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void waitForPortFree(long timeoutMs) {
+        long deadline = SystemClock.uptimeMillis() + timeoutMs;
+        while (isPortOpen(port) && SystemClock.uptimeMillis() < deadline) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /**
+     * @return the pid of a server that runs the given binary and can be reused, or -1. A server
+     *         of an older binary is stopped, because it would serve an outdated runtime.
+     */
+    private int findServerPid(File binary) {
+        int pid = readPidFile();
+        if (isOurServer(pid, binary)) return pid;
+        if (pid > 0 && isOurCmdline(readCmdline(pid))) {
+            Log.i(TAG, "Stopping the stale OpenCode server " + pid + " (another binary).");
+            killPid(pid);
+            waitForPortFree(4000);
+            clearPidFile();
+        }
+
+        // Older app versions did not write the pid file, fall back to a /proc scan.
+        File[] entries = new File("/proc").listFiles();
+        if (entries == null) return -1;
+        for (File entry : entries) {
+            if (!entry.getName().matches("[0-9]+")) continue;
+            int candidate = Integer.parseInt(entry.getName());
+            if (candidate == android.os.Process.myPid()) continue;
+            String cmdline = readCmdline(candidate);
+            if (!isOurCmdline(cmdline)) continue;
+            if (isOurServer(candidate, binary)) return candidate;
+            Log.i(TAG, "Stopping the stale OpenCode server " + candidate + " (another binary).");
+            killPid(candidate);
+            waitForPortFree(4000);
+            clearPidFile();
+        }
+        return -1;
+    }
+
+    /** @return true when the command line belongs to the server we start. */
+    private static boolean isOurCmdline(String cmdline) {
+        return cmdline != null
+            && cmdline.contains("/.opencode/installed/opencode-v")
+            && cmdline.contains(OpenCodeBootstrap.GLIBC_LIB_DIR);
+    }
+
+    private static boolean isOurServer(int pid, File binary) {
+        String cmdline = readCmdline(pid);
+        return isOurCmdline(cmdline) && cmdline.contains(binary.getAbsolutePath());
+    }
+
+    /** @return the space separated command line of a process, null when it is not readable. */
+    private static String readCmdline(int pid) {
+        if (pid <= 0) return null;
+        try (FileInputStream in = new FileInputStream("/proc/" + pid + "/cmdline")) {
+            byte[] buffer = new byte[8192];
+            int read = in.read(buffer);
+            if (read <= 0) return null;
+            return new String(buffer, 0, read, java.nio.charset.StandardCharsets.UTF_8)
+                .replace('\0', ' ').trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static int readPidFile() {
+        try (BufferedReader reader = new BufferedReader(
+            new InputStreamReader(new FileInputStream(PID_FILE)))) {
+            String line = reader.readLine();
+            return line == null ? -1 : Integer.parseInt(line.trim());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private void writePidFile(int pid) {
+        File file = new File(PID_FILE);
+        File parent = file.getParentFile();
+        if (parent != null && !parent.isDirectory()) parent.mkdirs();
+        try (java.io.FileWriter writer = new java.io.FileWriter(file, false)) {
+            writer.write(Integer.toString(pid));
+        } catch (Exception e) {
+            Log.w(TAG, "Could not write the server pid file", e);
+        }
+    }
+
+    private void clearPidFile() {
+        try {
+            new File(PID_FILE).delete();
+        } catch (Exception ignored) {
+            // Not important, the pid is validated against /proc before it is used.
+        }
+    }
+
+    /** Remove a pid file that still points at the given, already exited process. */
+    private void clearPidFile(int pid) {
+        if (readPidFile() == pid) clearPidFile();
+    }
+
+    private static void killPid(int pid) {
+        if (pid <= 0) return;
+        try {
+            android.os.Process.sendSignal(pid, 9);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not kill the process " + pid, e);
+        }
+    }
+
+    /** Kill a pid only when it still belongs to an OpenCode server of this app. */
+    private static void killIfOurServer(int pid) {
+        if (!isOurCmdline(readCmdline(pid))) return;
+        killPid(pid);
+    }
+
+    /** Diagnostic list of the OpenCode server processes of this app, used in port conflicts. */
+    private static String describeOpenCodeProcesses() {
+        StringBuilder out = new StringBuilder();
+        File[] entries = new File("/proc").listFiles();
+        if (entries == null) return "  (no access to /proc)";
+        for (File entry : entries) {
+            if (!entry.getName().matches("[0-9]+")) continue;
+            String cmdline = readCmdline(Integer.parseInt(entry.getName()));
+            if (isOurCmdline(cmdline)) {
+                out.append("  ").append(entry.getName()).append(": ").append(cmdline).append('\n');
+            }
+        }
+        return out.length() == 0 ? "  (none)" : out.toString();
     }
 
     /** Stop a child process without blocking the caller for longer than a few seconds. */
@@ -288,7 +545,7 @@ public final class OpenCodeService extends Service {
      * freshly downloaded update is picked up without killing the app.
      */
     private void restartIfNewBinary() {
-        if (process == null) return;
+        if (process == null && !adopted) return;
         File binary = resolveBinary();
         if (binary == null) return;
         if (binary.getAbsolutePath().equals(runningBinaryPath)) return;
