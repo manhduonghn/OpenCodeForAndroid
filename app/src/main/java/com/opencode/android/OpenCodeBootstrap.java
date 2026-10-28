@@ -1529,6 +1529,8 @@ public final class OpenCodeBootstrap {
                 new File(HOME, ".opencode"),
                 new File(HOME, ".cache"),
                 new File(HOME, ".config"),
+                new File(HOME, ".local/share"),
+                new File(HOME, ".local/state"),
             };
             for (File dir : dirs) {
                 if (!dir.isDirectory() && !dir.mkdirs())

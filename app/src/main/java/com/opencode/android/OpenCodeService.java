@@ -137,6 +137,9 @@ public final class OpenCodeService extends Service {
         File binary = resolveBinary();
         if (loader == null || binary == null) {
             Log.w(TAG, "The OpenCode server cannot be started: glibc runtime or binary is missing.");
+            OpenCodeCrashLog.writeReport(this, "opencode-start",
+                "loader=" + loader + "\nbinary=" + binary
+                    + "\nproblems=" + OpenCodeBootstrap.runtimeProblems());
             stopSelf();
             return;
         }
