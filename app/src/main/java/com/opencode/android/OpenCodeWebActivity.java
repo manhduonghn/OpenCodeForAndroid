@@ -10,8 +10,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.View;
+import android.webkit.HttpAuthHandler;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebViewDatabase;
 import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -45,6 +47,8 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     private boolean destroyed;
     private boolean waitingForInstall;
     private long lastServiceStart;
+    /** HTTP Basic password of the local OpenCode server, see {@link OpenCodeBootstrap#getServerPassword}. */
+    private String serverPassword = "";
 
     private final Runnable poll = new Runnable() {
         @Override
@@ -74,10 +78,28 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         statusProgress = findViewById(R.id.status_progress);
         statusRetry = findViewById(R.id.status_retry);
 
-        webView.setWebViewClient(new WebViewClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler,
+                                                  String host, String realm) {
+                // The OpenCode 2.x server protects its API with HTTP Basic auth.
+                handler.proceed(OpenCodeBootstrap.SERVER_USER, serverPassword);
+            }
+        });
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setAllowFileAccess(true);
+
+        // Pre-populate the credentials of the realm the server announces
+        // (WWW-Authenticate: Basic realm="Secure Area"), so the WebView answers the very first
+        // challenge of the page and of its fetch/XHR calls without a system dialog.
+        serverPassword = OpenCodeBootstrap.getServerPassword(this);
+        try {
+            WebViewDatabase.getInstance(this).setHttpAuthUsernamePassword(
+                "127.0.0.1", "Secure Area", OpenCodeBootstrap.SERVER_USER, serverPassword);
+        } catch (Exception e) {
+            // The callback above is the primary mechanism, this is only a head start.
+        }
 
         statusRetry.setOnClickListener(v -> retryInstall());
         requestStoragePermissionIfNeeded();

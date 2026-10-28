@@ -124,6 +124,10 @@ public final class OpenCodeBootstrap {
     public static final String OPENCODE_BIN_PATH = PREFIX + "/bin/opencode";
     /** Launcher script, {@code oc-install}. */
     public static final String OC_INSTALL_PATH = PREFIX + "/bin/oc-install";
+    /** HTTP Basic user name the {@code opencode serve} of the 2.x line expects. */
+    public static final String SERVER_USER = "opencode";
+    /** Password of the server, exported by the launchers and used by the WebView. */
+    public static final String SERVER_PASSWORD_PATH = OC_HOME + "/server-password";
     /** Installer script of older versions, removed on sight. */
     public static final String LEGACY_SETUP_SCRIPT_PATH = OC_HOME + "/setup.sh";
     /** Directory holding the second stage script of the Termux bootstrap. */
@@ -144,7 +148,7 @@ public final class OpenCodeBootstrap {
      * ========================================================================================== */
 
     /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private static final int LAUNCHER_VERSION = 4;
+    private static final int LAUNCHER_VERSION = 5;
 
     private static final String LAUNCHER_MARKER = "Managed by the OpenCode for Android app. opencode-launcher-version: " + LAUNCHER_VERSION;
 
@@ -229,6 +233,12 @@ public final class OpenCodeBootstrap {
     private static final List<Runnable> sInstallWaiters = new ArrayList<>();
     /** The state of the installation, it is mirrored on the disk. */
     private static OpenCodeInstallState sState = new OpenCodeInstallState();
+    /** Name of the shared preferences file of the app. */
+    private static final String PREFERENCES_NAME = "opencode";
+    /** Key of the server password in the preferences. */
+    private static final String PREF_SERVER_PASSWORD = "server_password";
+    /** Cached server password, see {@link #getServerPassword(Context)}. */
+    private static String sServerPassword = null;
     /** The handler of the UI thread, used to notify the listeners. */
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
 
@@ -390,6 +400,48 @@ public final class OpenCodeBootstrap {
     public static OpenCodeInstallState getInstallState() {
         synchronized (sLock) {
             return copyOf(sState);
+        }
+    }
+
+    /**
+     * The password of the local OpenCode server.
+     *
+     * <p>The 2.x server requires HTTP Basic authentication and otherwise prints a random password
+     * on every start. The app generates one on the first use and keeps it, so the WebView and the
+     * terminal launcher always know it.</p>
+     */
+    public static String getServerPassword(Context context) {
+        synchronized (sLock) {
+            if (sServerPassword != null) return sServerPassword;
+
+            String password = null;
+            if (context != null) {
+                try {
+                    password = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                        .getString(PREF_SERVER_PASSWORD, null);
+                } catch (Exception e) {
+                    Log.w(LOG_TAG, "Could not read the server password", e);
+                }
+            }
+
+            if (password == null || password.length() < 16) {
+                byte[] random = new byte[24];
+                new java.security.SecureRandom().nextBytes(random);
+                StringBuilder sb = new StringBuilder(random.length * 2);
+                for (byte b : random) sb.append(String.format(Locale.US, "%02x", b));
+                password = sb.toString();
+                if (context != null) {
+                    try {
+                        context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                            .edit().putString(PREF_SERVER_PASSWORD, password).apply();
+                    } catch (Exception e) {
+                        Log.w(LOG_TAG, "Could not store the server password", e);
+                    }
+                }
+            }
+
+            sServerPassword = password;
+            return password;
         }
     }
 
@@ -1431,6 +1483,12 @@ public final class OpenCodeBootstrap {
             sb.append("unset LD_LIBRARY_PATH\n");
             sb.append("[ -n \"${TMPDIR:-}\" ] || { TMPDIR=\"$P/tmp\"; export TMPDIR; }\n");
             sb.append("[ -f \"$P/etc/tls/cert.pem\" ] && { SSL_CERT_FILE=\"$P/etc/tls/cert.pem\"; export SSL_CERT_FILE; }\n");
+            sb.append("# The terminal uses the same server password as the app, so a server that is\n");
+            sb.append("# started here and the one of the app cannot disagree about the credentials.\n");
+            sb.append("if [ -z \"${OPENCODE_SERVER_PASSWORD:-}\" ] && [ -f \"$H/.opencode/server-password\" ]; then\n");
+            sb.append("  IFS= read -r OPENCODE_SERVER_PASSWORD < \"$H/.opencode/server-password\" 2>/dev/null\n");
+            sb.append("  [ -n \"$OPENCODE_SERVER_PASSWORD\" ] && export OPENCODE_SERVER_PASSWORD\n");
+            sb.append("fi\n");
             sb.append("\n");
             sb.append("exec \"$LOADER\" --library-path \"$GLIBCLIB\" \"$BIN\" \"$@\"\n");
             return sb.toString();
@@ -1540,6 +1598,16 @@ public final class OpenCodeBootstrap {
                 Os.chmod(new File(PREFIX, "tmp").getAbsolutePath(), 0700);
             } catch (Exception ignored) {
                 // Not fatal, the directory is already private to the app.
+            }
+
+            // The launchers export this password, so the terminal and the app always use the same
+            // credentials for the OpenCode server.
+            try {
+                File passwordFile = new File(SERVER_PASSWORD_PATH);
+                writeTextFile(passwordFile, getServerPassword(context) + "\n");
+                Os.chmod(passwordFile.getAbsolutePath(), 0600);
+            } catch (Exception e) {
+                Log.w(LOG_TAG, "Could not write the server password file", e);
             }
         }
 

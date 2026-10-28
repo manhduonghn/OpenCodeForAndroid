@@ -46,6 +46,8 @@ public final class OpenCodeService extends Service {
     private volatile boolean bootstrapReady = false;
     /** True while the server is being stopped on purpose, its exit is not an error then. */
     private volatile boolean stopping;
+    /** Path of the binary the running server was started from. */
+    private volatile String runningBinaryPath;
 
     /** The parameters of the last start request, they are passed through the intent. */
     public static final class Params {
@@ -72,6 +74,7 @@ public final class OpenCodeService extends Service {
                 updateNotification("The installation did not finish, open the app for details.");
                 return;
             }
+            restartIfNewBinary();
             startServer();
         });
     }
@@ -153,6 +156,8 @@ public final class OpenCodeService extends Service {
             OpenCodeBootstrap.GLIBC_LIB_DIR,
             binary.getAbsolutePath(),
             "serve",
+            "--hostname",
+            "127.0.0.1",
             "--port",
             String.valueOf(port)
         );
@@ -168,6 +173,10 @@ public final class OpenCodeService extends Service {
         builder.environment().put("COLORTERM", "truecolor");
         builder.environment().put("DEBIAN_FRONTEND", "noninteractive");
         builder.environment().put("OPENCODE_DISABLE_AUTOUPDATE", "1");
+        // The 2.x server protects its API (/api, /api/session, …) with HTTP Basic auth. A fixed
+        // password from the app preferences is used instead of the random one the server would
+        // print, so the WebView can answer the authentication challenge itself.
+        builder.environment().put("OPENCODE_SERVER_PASSWORD", OpenCodeBootstrap.getServerPassword(this));
         // The CA bundle of the ca-certificates package, Bun/Node would otherwise have no trust
         // store on Android and every HTTPS request of OpenCode would fail.
         builder.environment().put("SSL_CERT_FILE",
@@ -192,6 +201,7 @@ public final class OpenCodeService extends Service {
             return;
         }
         final Process started = process;
+        runningBinaryPath = binary.getAbsolutePath();
         Log.i(TAG, "The OpenCode server process was started: " + port);
 
         Thread reader = new Thread(() -> {
@@ -269,6 +279,19 @@ public final class OpenCodeService extends Service {
         }
         process = null;
         stopping = false;
+    }
+
+    /**
+     * Stop the running server when the installed binary is not the one it was started from, so a
+     * freshly downloaded update is picked up without killing the app.
+     */
+    private void restartIfNewBinary() {
+        if (process == null) return;
+        File binary = resolveBinary();
+        if (binary == null) return;
+        if (binary.getAbsolutePath().equals(runningBinaryPath)) return;
+        Log.i(TAG, "The OpenCode binary changed, restarting the server.");
+        stopExisting();
     }
 
     private File resolveBinary() {
