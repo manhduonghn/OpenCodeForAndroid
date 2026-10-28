@@ -54,6 +54,16 @@ public final class OpenCodePackages {
         "wm", "start", "stop"
     ));
 
+    /**
+     * Dependencies that the app does not need. 'termux-tools' is a collection of wrappers around
+     * the Android commands of the Termux app (am, pm, …) and pulls the Termux app itself
+     * (termux-am, termux-am-socket, termux-core) plus a dozen command line packages. The bash
+     * binary works without it.
+     */
+    private static final Set<String> SKIPPED_DEPENDENCIES = new HashSet<>(Arrays.asList(
+        "termux-tools", "termux-am", "termux-am-socket", "termux-core", "termux-exec"
+    ));
+
     private static final String[] MAIN_MIRRORS = {
         "https://packages-cf.termux.dev/apt/termux-main",
         "https://packages.termux.dev/apt/termux-main",
@@ -118,6 +128,16 @@ public final class OpenCodePackages {
             ensureShellLink(prefix);
             return;
         }
+
+        // A prefix without a marker and without a shell is left over from an earlier version of
+        // the app (the apt based bootstrap). Its files are not relocatable and would only break
+        // the new runtime, start from a clean directory.
+        if (installed.isEmpty() && !new File(prefix, "bin/bash").isFile() && prefix.exists()) {
+            progress.onStatus("Removing the files of the previous installation...");
+            deleteTree(prefix);
+        }
+        if (!prefix.isDirectory() && !prefix.mkdirs())
+            throw new IOException("Could not create " + prefix);
 
         progress.onStatus("Fetching the package lists...");
         Map<String, Pkg> index = new LinkedHashMap<>();
@@ -252,6 +272,7 @@ public final class OpenCodePackages {
         Set<String> seen = new HashSet<>(installed);
         while (!queue.isEmpty()) {
             String name = queue.poll();
+            if (SKIPPED_DEPENDENCIES.contains(name)) continue;
             if (!seen.add(name)) continue;
             Pkg pkg = index.get(name);
             if (pkg == null) continue;
@@ -362,13 +383,13 @@ public final class OpenCodePackages {
         try (ArArchiveInputStream ar = new ArArchiveInputStream(
             new BufferedInputStream(new FileInputStream(deb)))) {
             while (true) {
-                org.apache.commons.compress.archivers.ar.ArArchiveEntry entry = ar.getNextArEntry();
+                org.apache.commons.compress.archivers.ar.ArArchiveEntry entry = ar.getNextEntry();
                 if (entry == null) throw new IOException("No data archive in " + deb.getName());
                 if (!entry.getName().startsWith("data.tar")) continue;
                 InputStream compressed = decompressor(entry.getName(), ar);
                 try (TarArchiveInputStream tar = new TarArchiveInputStream(compressed)) {
                     while (true) {
-                        TarArchiveEntry tarEntry = tar.getNextTarEntry();
+                        TarArchiveEntry tarEntry = tar.getNextEntry();
                         if (tarEntry == null) break;
                         extractEntry(tar, tarEntry, prefix);
                     }
@@ -569,6 +590,28 @@ public final class OpenCodePackages {
         } catch (IOException e) {
             Log.w(TAG, "Could not write " + marker, e);
         }
+    }
+
+    /** Delete a directory tree without following symlinks (they may point outside the prefix). */
+    private static void deleteTree(File file) throws IOException {
+        java.nio.file.Path root = file.toPath();
+        java.nio.file.Files.walkFileTree(root,
+            new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(
+                    java.nio.file.Path path, java.nio.file.attribute.BasicFileAttributes attrs)
+                    throws IOException {
+                    java.nio.file.Files.deleteIfExists(path);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(
+                    java.nio.file.Path dir, IOException failure) throws IOException {
+                    java.nio.file.Files.deleteIfExists(dir);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
     }
 
     /** Some packages ship a /bin/sh link, make sure the prefix always has one. */

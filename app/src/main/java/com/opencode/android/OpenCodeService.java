@@ -42,6 +42,8 @@ public final class OpenCodeService extends Service {
     private java.lang.Process process;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int port = 49374;
+    /** True once the bootstrap reports that the toolchain and the binary are installed. */
+    private volatile boolean bootstrapReady = false;
 
     /** The parameters of the last start request, they are passed through the intent. */
     public static final class Params {
@@ -59,7 +61,17 @@ public final class OpenCodeService extends Service {
         // Make sure the Linux toolchain and OpenCode itself are installed first, then start the
         // server. The callback runs on the UI thread, the installation itself runs in the
         // background thread of the bootstrap.
-        OpenCodeBootstrap.setupIfNeeded(this, this::startServer);
+        bootstrapReady = false;
+        OpenCodeBootstrap.setupIfNeeded(this, () -> {
+            bootstrapReady = OpenCodeBootstrap.isRuntimeComplete();
+            if (!bootstrapReady) {
+                Log.e(TAG, "The OpenCode runtime is still incomplete: "
+                    + OpenCodeBootstrap.runtimeProblems());
+                updateNotification("The installation did not finish, open the app for details.");
+                return;
+            }
+            startServer();
+        });
     }
 
     @Override
@@ -74,7 +86,12 @@ public final class OpenCodeService extends Service {
 
         port = intent.getIntExtra("port", params.port);
         params.port = port;
-        startServer();
+        // Never start before the bootstrap finished, otherwise the missing glibc loader or the
+        // missing binary would stop the service while the installation is still running. The
+        // callback of setupIfNeeded starts the server as soon as the runtime is complete.
+        if (bootstrapReady) {
+            startServer();
+        }
         return START_STICKY;
     }
 
@@ -126,6 +143,8 @@ public final class OpenCodeService extends Service {
 
         ProcessBuilder builder = new ProcessBuilder(
             loader,
+            "--library-path",
+            OpenCodeBootstrap.GLIBC_LIB_DIR,
             binary.getAbsolutePath(),
             "serve",
             "--port",
@@ -136,13 +155,23 @@ public final class OpenCodeService extends Service {
         builder.environment().clear();
         builder.environment().put("HOME", OpenCodeBootstrap.HOME);
         builder.environment().put("PREFIX", OpenCodeBootstrap.PREFIX);
-        builder.environment().put("PATH", OpenCodeBootstrap.PREFIX + "/bin");
+        builder.environment().put("PATH", OpenCodeBootstrap.PREFIX + "/bin:/system/bin");
         builder.environment().put("TMPDIR", OpenCodeBootstrap.PREFIX + "/tmp");
         builder.environment().put("TERM", "xterm-256color");
         builder.environment().put("LANG", "en_US.UTF-8");
         builder.environment().put("COLORTERM", "truecolor");
         builder.environment().put("DEBIAN_FRONTEND", "noninteractive");
         builder.environment().put("OPENCODE_DISABLE_AUTOUPDATE", "1");
+        // The CA bundle of the ca-certificates package, Bun/Node would otherwise have no trust
+        // store on Android and every HTTPS request of OpenCode would fail.
+        builder.environment().put("SSL_CERT_FILE",
+            OpenCodeBootstrap.PREFIX + "/etc/tls/cert.pem");
+        builder.environment().put("NODE_EXTRA_CA_CERTS",
+            OpenCodeBootstrap.PREFIX + "/etc/tls/cert.pem");
+        // The tools OpenCode spawns (bash, rg, …) are Termux binaries whose RUNPATH points at the
+        // com.termux prefix. The glibc directory is deliberately not part of this variable: it
+        // contains a 'libc.so' linker script that the bionic linker cannot load as an ELF file.
+        builder.environment().put("LD_LIBRARY_PATH", OpenCodeBootstrap.PREFIX + "/lib");
         String ghToken = System.getenv("GH_TOKEN");
         if (ghToken != null && !ghToken.isEmpty()) {
             builder.environment().put("GH_TOKEN", ghToken);
@@ -156,17 +185,48 @@ public final class OpenCodeService extends Service {
             stopSelf();
             return;
         }
+        final Process started = process;
         Log.i(TAG, "The OpenCode server process was started: " + port);
 
         Thread reader = new Thread(() -> {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>();
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(started.getInputStream()))) {
                 String line;
                 while ((line = in.readLine()) != null) {
                     Log.i(TAG, "opencode: " + line);
-                    handler.post(() -> updateNotification("Running on http://127.0.0.1:" + port));
+                    synchronized (tail) {
+                        tail.addLast(line);
+                        while (tail.size() > 300) tail.removeFirst();
+                    }
                 }
             } catch (Exception e) {
                 Log.w(TAG, "The OpenCode server reader stopped", e);
+            }
+
+            int exitCode = -1;
+            try {
+                exitCode = started.waitFor();
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            if (process == started) process = null;
+            Log.w(TAG, "The OpenCode server exited with " + exitCode);
+            // A server that dies right away usually means a missing library or a broken patch, the
+            // output is unreadable for the user in logcat, so keep it in the Download folder.
+            if (exitCode != 0) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("OpenCode server exited with ").append(exitCode).append('\n');
+                sb.append("port: ").append(port).append('\n');
+                sb.append("loader: ").append(loader).append('\n');
+                sb.append("binary: ").append(binary.getAbsolutePath()).append('\n');
+                sb.append("command: ").append(loader).append(" --library-path ")
+                    .append(OpenCodeBootstrap.GLIBC_LIB_DIR).append(' ')
+                    .append(binary.getAbsolutePath()).append(" serve --port ").append(port).append('\n');
+                sb.append("---- output ----\n");
+                synchronized (tail) {
+                    for (String line : tail) sb.append(line).append('\n');
+                }
+                OpenCodeCrashLog.writeReport(OpenCodeService.this, "opencode-server", sb.toString());
             }
         }, "opencode-service-reader");
         reader.setDaemon(true);

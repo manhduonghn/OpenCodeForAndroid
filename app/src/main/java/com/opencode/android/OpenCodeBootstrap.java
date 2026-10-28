@@ -15,10 +15,14 @@ import android.text.TextUtils;
 import android.util.Base64;
 import android.util.Log;
 
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -140,7 +144,7 @@ public final class OpenCodeBootstrap {
      * ========================================================================================== */
 
     /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private static final int LAUNCHER_VERSION = 3;
+    private static final int LAUNCHER_VERSION = 4;
 
     private static final String LAUNCHER_MARKER = "Managed by the OpenCode for Android app. opencode-launcher-version: " + LAUNCHER_VERSION;
 
@@ -188,12 +192,17 @@ public final class OpenCodeBootstrap {
      * OpenCode) and patchelf (it rewrites the interpreter of the OpenCode binary).
      */
     private static final List<String> CORE_PACKAGES = Arrays.asList(
-        "bash", "busybox", "ca-certificates", "termux-exec", "tar", "patchelf", "glibc");
+        "bash", "ca-certificates", "patchelf", "glibc");
 
     /** Endpoint telling which OpenCode version is the latest one. */
     private static final String VERSION_API_URL = "https://opencode.ai/update/api/latest/cli/npm";
     /** npm registry used as fallback for the version lookup and for the download. */
     private static final String NPM_REGISTRY_URL = "https://registry.npmjs.org";
+
+    /** The npm packages that carry the platform build, the 2.x line renamed the scope. */
+    private static final String[] PLATFORM_PACKAGE_PREFIXES = {
+        "@opencode/cli-linux-", "@opencode-ai/cli-linux-"
+    };
 
     private static final Pattern VERSION_PATTERN = Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern VERSION_OUTPUT_PATTERN = Pattern.compile("(?s).*\\d+\\.\\d+.*");
@@ -410,6 +419,12 @@ public final class OpenCodeBootstrap {
     public static List<String> runtimeProblems() {
         List<String> problems = new ArrayList<>();
 
+        if (!isPrefixReady())
+            problems.add("the Linux toolchain (" + PREFIX + "/bin/bash)");
+
+        if (!new File(PREFIX + "/bin/sh").exists())
+            problems.add("the shell link (" + PREFIX + "/bin/sh)");
+
         if (!new File(READY_MARKER_PATH).isFile())
             problems.add("the installed version marker (" + READY_MARKER_PATH + ")");
 
@@ -428,9 +443,6 @@ public final class OpenCodeBootstrap {
         if (!isExecutable(new File(PREFIX + "/bin/patchelf")))
             problems.add("the patchelf tool (" + PREFIX + "/bin/patchelf" + ")");
 
-        if (!isExecutable(new File(PREFIX + "/bin/tar")))
-            problems.add("the tar tool (" + PREFIX + "/bin/tar" + ")");
-
         return problems;
     }
 
@@ -446,8 +458,8 @@ public final class OpenCodeBootstrap {
 
     /** @return true if the app-private Linux toolchain prefix is usable. */
     public static boolean isPrefixReady() {
-        // The prefix is created by OpenCodePackages, a shell is the first thing that has to exist.
-        return new File(PREFIX + "/bin/bash").isFile();
+        File bash = new File(PREFIX + "/bin/bash");
+        return bash.isFile() && bash.canExecute();
     }
 
     /* ==========================================================================================
@@ -483,6 +495,9 @@ public final class OpenCodeBootstrap {
             env.put("TERMUX_PKG_NO_MIRROR_SELECT", "1");
             // The Termux binaries link their libraries with a hardcoded RUNPATH that points at the
             // com.termux prefix, so the library search path has to be redirected explicitly.
+            // The glibc directory is NOT added here: it contains a 'libc.so' linker script that
+            // the bionic linker would try to load as an ELF file. glibc binaries are pointed at
+            // their libraries with an RPATH instead.
             env.put("LD_LIBRARY_PATH", PREFIX + "/lib");
             env.remove("LD_PRELOAD");
         }
@@ -527,7 +542,7 @@ public final class OpenCodeBootstrap {
         /* ------------------------------------------------------------------ install pipeline */
 
         private void doInstall() {
-            ensureResolvConf();
+            ensureRuntimeDirectories();
 
             setStage(OpenCodeInstallState.STAGE_APT_INSTALL, "Installing the Linux toolchain...");
             try {
@@ -546,6 +561,11 @@ public final class OpenCodeBootstrap {
                 Log.e(LOG_TAG, "The Linux toolchain could not be installed", e);
                 throw new InstallException("Could not install the Linux toolchain: " + e.getMessage());
             }
+
+            // The prefix may have been wiped above, recreate the writable directories and the
+            // resolver configuration of the toolchain.
+            ensureRuntimeDirectories();
+            ensureResolvConf();
 
             // 'patchelf' is needed to patch the OpenCode binary, it links against libc++_shared.so,
             // an old libc++ makes it die with "cannot locate symbol __hash_memory". Verify it before
@@ -571,6 +591,12 @@ public final class OpenCodeBootstrap {
                 if (!patchelfWorks())
                     throw new InstallException("The 'patchelf' tool cannot run on this device: " + tail(lastOutput, 400));
             }
+
+            // The packages are built for the com.termux prefix and carry its absolute RUNPATH.
+            // Repoint the tools the app itself spawns, so they also work without LD_LIBRARY_PATH
+            // (eg. when the user runs them from a terminal).
+            patchRpath(new File(PREFIX + "/bin/bash"), PREFIX + "/lib");
+            patchRpath(new File(PREFIX + "/bin/patchelf"), PREFIX + "/lib");
 
             String loader = findGlibcLoader();
             if (loader == null)
@@ -837,17 +863,18 @@ public final class OpenCodeBootstrap {
         /* ------------------------------------------------------------------ version & download */
 
         private String fetchLatestVersion() {
+            // The npm platform package is authoritative: it is the archive that is downloaded, so
+            // its version always matches the tarball. The update API sometimes announces a version
+            // of a package that is not published for every platform yet.
+            String arch = getOpenCodeArch();
+            if (arch != null) {
+                NpmRelease release = resolveNpmRelease(arch);
+                if (release != null) return release.version;
+            }
+
             String version = httpGetString(VERSION_API_URL);
             String match = extractVersion(version);
             if (match != null) return match;
-
-            // The API did not answer, try the npm registry.
-            String arch = getOpenCodeArch();
-            if (arch != null) {
-                String meta = httpGetString(NPM_REGISTRY_URL + "/@opencode/cli-linux-" + arch + "/latest");
-                match = extractVersion(meta);
-                if (match != null) return match;
-            }
 
             throw new InstallException("Could not determine the OpenCode version (check the network).");
         }
@@ -859,30 +886,71 @@ public final class OpenCodeBootstrap {
             return null;
         }
 
-        private File downloadTarball(String arch, String version) {
-            String fileName = "cli-linux-" + arch + "-" + version + ".tgz";
-            String[] urls = {
-                NPM_REGISTRY_URL + "/@opencode/cli-linux-" + arch + "/-/" + fileName,
-                NPM_REGISTRY_URL + "/@opencode-ai/cli-linux-" + arch + "/-/" + fileName
-            };
+        /** One published platform build of OpenCode, as described by the npm registry. */
+        private static final class NpmRelease {
+            String version = "";
+            String tarball = "";
+            String integrity = "";
+        }
 
+        /**
+         * Ask the npm registry for the newest platform build. The package was renamed when the 2.x
+         * line was published, so both names are tried. The tarball URL is taken from the metadata
+         * instead of being assembled by hand, that way a rename or a different file layout cannot
+         * produce a 404.
+         */
+        private NpmRelease resolveNpmRelease(String arch) {
+            for (String prefix : PLATFORM_PACKAGE_PREFIXES) {
+                String name = prefix + arch;
+                try {
+                    String meta = httpGetString(NPM_REGISTRY_URL + "/" + name + "/latest");
+                    if (meta == null) continue;
+                    JSONObject json = new JSONObject(meta);
+                    JSONObject dist = json.optJSONObject("dist");
+                    if (dist == null) continue;
+                    NpmRelease release = new NpmRelease();
+                    release.version = json.optString("version", "");
+                    release.tarball = dist.optString("tarball", "");
+                    release.integrity = dist.optString("integrity", "");
+                    if (!release.version.isEmpty() && !release.tarball.isEmpty())
+                        return release;
+                } catch (Exception e) {
+                    Log.w(LOG_TAG, "Could not read the npm metadata of " + name + ": " + e.getMessage());
+                }
+            }
+            return null;
+        }
+
+        private File downloadTarball(String arch, String version) {
             File tmpDir = new File(TMP_DIR);
             if (!tmpDir.isDirectory() && !tmpDir.mkdirs())
                 throw new InstallException("Could not create the temporary directory " + TMP_DIR);
 
-            String expectedIntegrity = fetchIntegrity(arch);
+            NpmRelease release = resolveNpmRelease(arch);
+            if (release != null) {
+                File target = new File(tmpDir, "cli-linux-" + arch + "-" + release.version + ".tgz");
+                setStage(OpenCodeInstallState.STAGE_DOWNLOAD, "Downloading OpenCode " + release.version + "...");
+                try {
+                    downloadTarballTo(release.tarball, target, release.integrity);
+                    return target;
+                } catch (IOException e) {
+                    Log.w(LOG_TAG, "Download of " + release.tarball + " failed: " + e.getMessage());
+                }
+            }
 
+            // Last resort: build the URLs from the version of the update API.
+            String fileName = "cli-linux-" + arch + "-" + version + ".tgz";
             IOException lastError = null;
-            for (String url : urls) {
+            for (String prefix : PLATFORM_PACKAGE_PREFIXES) {
+                String url = NPM_REGISTRY_URL + "/" + prefix + arch + "/-/" + fileName;
                 File target = new File(tmpDir, fileName);
                 try {
                     setStage(OpenCodeInstallState.STAGE_DOWNLOAD, "Downloading OpenCode " + version + "...");
-                    downloadTarballTo(url, target, expectedIntegrity);
+                    downloadTarballTo(url, target, null);
                     return target;
                 } catch (IOException e) {
                     lastError = e;
                     Log.w(LOG_TAG, "Download of " + url + " failed: " + e.getMessage());
-                    status("The first source failed, trying the alternative npm package name...");
                 }
             }
 
@@ -914,19 +982,6 @@ public final class OpenCodeBootstrap {
                 if (!verifySha512(target, expectedIntegrity))
                     throw new IOException("The checksum of the downloaded file does not match the one of the npm registry.");
             }
-        }
-
-        /** @return the base64 encoded sha512 digest of the tarball as published by npm. */
-        private String fetchIntegrity(String arch) {
-            try {
-                String meta = httpGetString(NPM_REGISTRY_URL + "/@opencode/cli-linux-" + arch + "/latest");
-                if (meta == null) return null;
-                Matcher matcher = Pattern.compile("\"integrity\"\\s*:\\s*\"sha512-([^\"]+)\"").matcher(meta);
-                if (matcher.find()) return matcher.group(1);
-            } catch (Exception e) {
-                Log.w(LOG_TAG, "Could not fetch the checksum of the OpenCode package: " + e.getMessage());
-            }
-            return null;
         }
 
         private static boolean verifySha512(File file, String expectedBase64) {
@@ -1098,29 +1153,47 @@ public final class OpenCodeBootstrap {
 
         private File extractBinary(File tarball) {
             File tmpDir = new File(TMP_DIR);
-            File packageDir = new File(tmpDir, "package");
+            File target = new File(tmpDir, "package/bin/opencode");
 
             status("Extracting the OpenCode package...");
-            deleteQuietly(packageDir);
+            deleteQuietly(new File(tmpDir, "package"));
 
-            List<String> tarArgs = new ArrayList<>();
-            tarArgs.add(PREFIX + "/bin/tar");
-            tarArgs.add("-xzf");
-            tarArgs.add(tarball.getAbsolutePath());
-            tarArgs.add("-C");
-            tarArgs.add(tmpDir.getAbsolutePath());
-            tarArgs.add("package/bin/opencode");
-            CmdResult result = run(tarArgs, EXTRACT_TIMEOUT_MS, false, null);
-            if (result.exitCode != 0) {
-                deleteQuietly(packageDir);
-                throw new InstallException("Extracting the tarball failed (exit " + result.exitCode + "): " + tail(result.output, 400));
+            File parent = target.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs())
+                throw new InstallException("Could not create the directory " + parent);
+
+            // The package is a plain gzipped tar archive, so it is unpacked in Java. This avoids
+            // depending on the Termux 'tar' package and its own dependencies at this early stage.
+            boolean found = false;
+            try (InputStream raw = new BufferedInputStream(new FileInputStream(tarball));
+                 GzipCompressorInputStream gzip = new GzipCompressorInputStream(raw);
+                 TarArchiveInputStream tar = new TarArchiveInputStream(gzip)) {
+                TarArchiveEntry entry;
+                while ((entry = tar.getNextEntry()) != null) {
+                    String name = entry.getName();
+                    if (name.startsWith("./")) name = name.substring(2);
+                    if (!"package/bin/opencode".equals(name)) continue;
+                    if (entry.isDirectory() || entry.isSymbolicLink() || entry.isLink())
+                        throw new InstallException("The OpenCode package does not contain a regular binary.");
+                    try (OutputStream out = new FileOutputStream(target)) {
+                        byte[] buffer = new byte[64 * 1024];
+                        int read;
+                        while ((read = tar.read(buffer)) != -1) out.write(buffer, 0, read);
+                        out.flush();
+                    }
+                    found = true;
+                    break;
+                }
+            } catch (IOException e) {
+                deleteQuietly(target);
+                throw new InstallException("Extracting the tarball failed: " + e.getMessage());
             }
 
-            File binary = new File(packageDir, "bin/opencode");
-            if (!binary.isFile())
+            if (!found || !target.isFile() || target.length() == 0) {
+                deleteQuietly(target);
                 throw new InstallException("The downloaded package does not contain the expected binary.");
-
-            return binary;
+            }
+            return target;
         }
 
         /**
@@ -1216,8 +1289,26 @@ public final class OpenCodeBootstrap {
             patchArgs.add(PREFIX + "/bin/patchelf");
             patchArgs.add("--set-interpreter");
             patchArgs.add(loader);
+            // The binary links against the glibc libraries of the toolchain. An absolute RPATH
+            // makes it runnable without LD_LIBRARY_PATH, which matters when the user starts it
+            // from a terminal that does not know about the app environment.
+            patchArgs.add("--set-rpath");
+            patchArgs.add(GLIBC_LIB_DIR);
             patchArgs.add(file.getAbsolutePath());
             return run(patchArgs, PATCH_TIMEOUT_MS, false, null);
+        }
+
+        /** Point the RUNPATH of a Termux ELF at the libraries of the app-private prefix. */
+        private void patchRpath(File file, String rpath) {
+            if (!file.isFile()) return;
+            List<String> args = new ArrayList<>();
+            args.add(PREFIX + "/bin/patchelf");
+            args.add("--set-rpath");
+            args.add(rpath);
+            args.add(file.getAbsolutePath());
+            CmdResult result = run(args, PATCH_TIMEOUT_MS, false, null);
+            if (result.exitCode != 0)
+                Log.w(LOG_TAG, "Could not set the RUNPATH of " + file + ": " + tail(result.output, 200));
         }
 
         private boolean patchelfWorks() {
@@ -1237,14 +1328,7 @@ public final class OpenCodeBootstrap {
                 if (!linkDir.isDirectory() && !linkDir.mkdirs())
                     throw new IOException("Could not create the directory " + LINK_DIR);
                 deleteQuietly(new File(LINK_PATH));
-
-                List<String> lnArgs = new ArrayList<>();
-                lnArgs.add(PREFIX + "/bin/sh");
-                lnArgs.add("-c");
-                lnArgs.add("ln -sf " + target.getAbsolutePath() + " " + LINK_PATH);
-                CmdResult ln = run(lnArgs, APT_INSTALL_TIMEOUT_MS, true, null);
-                if (ln.exitCode != 0)
-                    throw new IOException("Could not create the symlink: " + tail(ln.output, 200));
+                Os.symlink(target.getAbsolutePath(), LINK_PATH);
             } catch (Exception e) {
                 throw new InstallException("Could not create the opencode symlink: " + e.getMessage());
             }
@@ -1303,74 +1387,42 @@ public final class OpenCodeBootstrap {
 
         private String buildOpenCodeLauncher() {
             StringBuilder sb = new StringBuilder();
-            sb.append("#!").append(PREFIX).append("/bin/sh\n");
+            // /system/bin/sh always exists, a Termux shell would need the prefix libraries.
+            sb.append("#!").append("/system/bin/sh\n");
             sb.append("# ").append(LAUNCHER_MARKER).append("\n");
             sb.append("P=\"${PREFIX:-").append(PREFIX).append("}\"\n");
             sb.append("H=\"${HOME:-").append(HOME).append("}\"\n");
-            sb.append("PATH=\"$P/bin:$PATH\"; export PATH\n");
+            sb.append("BIN=\"$H/.opencode/bin/opencode\"\n");
+            sb.append("GLIBCLIB=\"$P/glibc/lib\"\n");
             sb.append("\n");
             sb.append("case \"${1:-}\" in\n");
             sb.append("  upgrade|update) exec \"$P/bin/oc-install\" ;;\n");
             sb.append("esac\n");
             sb.append("\n");
-            sb.append("BIN=\"$H/.opencode/bin/opencode\"\n");
-            sb.append("GLIBCLIB=\"$P/glibc/lib\"\n");
-            sb.append("PATCHED=\"$H/.opencode/.patched\"\n");
-            sb.append("\n");
             sb.append("[ -x \"$BIN\" ] || { echo \"opencode: not installed yet. Open the app to install it.\" >&2; exit 127; }\n");
             sb.append("LOADER=\"\"; for c in \"$GLIBCLIB\"/ld-linux*.so.*; do [ -x \"$c\" ] && { LOADER=\"$c\"; break; }; done\n");
-            sb.append("[ -z \"$LOADER\" ] && { echo \"opencode: the glibc runtime is missing. Run 'oc-install' to install it.\" >&2; exit 127; }\n");
+            sb.append("[ -z \"$LOADER\" ] && { echo \"opencode: the glibc runtime is missing. Open the app and run the installation again.\" >&2; exit 127; }\n");
             sb.append("\n");
             sb.append("# The auto updater of OpenCode would replace the patched binary with an unpatched one.\n");
             sb.append("export OPENCODE_DISABLE_AUTOUPDATE=1\n");
             sb.append("# Never load the bionic preload of Termux into a glibc process.\n");
             sb.append("unset LD_PRELOAD\n");
             sb.append("unset LD_LIBRARY_PATH\n");
+            sb.append("[ -n \"${TMPDIR:-}\" ] || { TMPDIR=\"$P/tmp\"; export TMPDIR; }\n");
+            sb.append("[ -f \"$P/etc/tls/cert.pem\" ] && { SSL_CERT_FILE=\"$P/etc/tls/cert.pem\"; export SSL_CERT_FILE; }\n");
             sb.append("\n");
-            sb.append("# Keep the GitHub credentials of the gh CLI visible to the native runtime. Without\n");
-            sb.append("# this the token is only available to interactive shells and GitHub access is\n");
-            sb.append("# hit or miss depending on how the process was started.\n");
-            sb.append("if [ -z \"${GH_TOKEN:-}\" ] && [ -x \"$P/bin/gh\" ]; then\n");
-            sb.append("  GH_TOKEN=$(\"$P/bin/gh\" auth token --hostname github.com 2>/dev/null)\n");
-            sb.append("  [ -n \"$GH_TOKEN\" ] && export GH_TOKEN || unset GH_TOKEN\n");
-            sb.append("fi\n");
-            sb.append("if [ -z \"${GITHUB_TOKEN:-}\" ] && [ -n \"${GH_TOKEN:-}\" ]; then\n");
-            sb.append("  GITHUB_TOKEN=\"$GH_TOKEN\"; export GITHUB_TOKEN\n");
-            sb.append("fi\n");
-            sb.append("\n");
-            sb.append("MARK=$(cat \"$PATCHED\" 2>/dev/null)\n");
-            sb.append("NOW=$(stat -L -c '%s %Y' \"$BIN\" 2>/dev/null)\n");
-            sb.append("if [ -z \"$MARK\" ] || [ \"$MARK\" != \"$NOW\" ]; then\n");
-            sb.append("  # The binary changed after the last patch, patch a copy of it and only then replace it.\n");
-            sb.append("  REAL=$(readlink -f \"$BIN\" 2>/dev/null || echo \"$BIN\"); TMP=\"$REAL.repair.$$\"\n");
-            sb.append("  if [ -x \"$P/bin/patchelf\" ] && \"$P/bin/patchelf\" --version >/dev/null 2>&1 \\\n");
-            sb.append("     && cp \"$REAL\" \"$TMP\" 2>/dev/null \\\n");
-            sb.append("     && \"$P/bin/patchelf\" --set-interpreter \"$LOADER\" \"$TMP\" >/dev/null 2>&1 \\\n");
-            sb.append("     && chmod 755 \"$TMP\" 2>/dev/null \\\n");
-            sb.append("     && \"$TMP\" --version >/dev/null 2>&1 \\\n");
-            sb.append("     && mv \"$TMP\" \"$REAL\" 2>/dev/null; then\n");
-            sb.append("    echo \"$(stat -L -c '%s %Y' \"$BIN\")\" > \"$PATCHED\"\n");
-            sb.append("    exec \"$BIN\" \"$@\"\n");
-            sb.append("  fi\n");
-            sb.append("  rm -f \"$TMP\" 2>/dev/null\n");
-            sb.append("  echo \"opencode: this build is not patched yet; running it through the glibc loader ...\" >&2\n");
-            sb.append("  exec \"$LOADER\" --library-path \"$GLIBCLIB\" \"$BIN\" \"$@\"\n");
-            sb.append("fi\n");
-            sb.append("\n");
-            sb.append("exec \"$BIN\" \"$@\"\n");
+            sb.append("exec \"$LOADER\" --library-path \"$GLIBCLIB\" \"$BIN\" \"$@\"\n");
             return sb.toString();
         }
 
         private String buildOcInstallLauncher() {
             StringBuilder sb = new StringBuilder();
-            sb.append("#!").append(PREFIX).append("/bin/sh\n");
+            sb.append("#!").append("/system/bin/sh\n");
             sb.append("# ").append(LAUNCHER_MARKER).append("\n");
-            sb.append("P=\"${PREFIX:-").append(PREFIX).append("}\"; AM=\"$P/bin/am\"\n");
-            sb.append("[ -x \"$AM\" ] || { echo \"oc-install: the 'am' command is missing (termux-am package).\" >&2; exit 127; }\n");
             sb.append("echo \"oc-install: asking the OpenCode app to install/update the runtime (watch the notification)\"\n");
-            sb.append("exec \"$AM\" start -a android.intent.action.VIEW \\\n");
-            sb.append("  -n com.opencode.android/OpenCodeWebActivity \\\n");
-            sb.append("  --ez com.opencode.android.opencode.FORCE_UPDATE true >/dev/null 2>&1\n");
+            sb.append("exec /system/bin/am start -a android.intent.action.VIEW \\\n");
+            sb.append("  -n com.opencode.android/.OpenCodeWebActivity \\\n");
+            sb.append("  --ez com.opencode.android.opencode.FORCE_UPDATE true\n");
             return sb.toString();
         }
 
@@ -1445,6 +1497,27 @@ public final class OpenCodeBootstrap {
             CmdResult result = run(Arrays.asList(PREFIX + "/bin/bash", script.getAbsolutePath()), SECOND_STAGE_TIMEOUT_MS, true, null);
             if (result.exitCode != 0)
                 Log.w(LOG_TAG, "The second stage of the Termux bootstrap failed (exit " + result.exitCode + ")");
+        }
+
+        /** Create the writable directories the runtime expects, they are not part of the packages. */
+        private void ensureRuntimeDirectories() {
+            File[] dirs = {
+                new File(HOME),
+                new File(PREFIX, "tmp"),
+                new File(INSTALL_DIR),
+                new File(HOME, ".opencode"),
+                new File(HOME, ".cache"),
+                new File(HOME, ".config"),
+            };
+            for (File dir : dirs) {
+                if (!dir.isDirectory() && !dir.mkdirs())
+                    Log.w(LOG_TAG, "Could not create the directory " + dir);
+            }
+            try {
+                Os.chmod(new File(PREFIX, "tmp").getAbsolutePath(), 0700);
+            } catch (Exception ignored) {
+                // Not fatal, the directory is already private to the app.
+            }
         }
 
         private void ensureResolvConf() {
