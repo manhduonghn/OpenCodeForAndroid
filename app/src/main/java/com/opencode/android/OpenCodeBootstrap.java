@@ -182,6 +182,14 @@ public final class OpenCodeBootstrap {
     /** Packages that provide the glibc runtime and the ELF patch tooling for the OpenCode binary. */
     private static final List<String> GLIBC_PACKAGES = Arrays.asList("glibc-repo", "glibc-runner", "patchelf", "tar");
 
+    /**
+     * Termux packages that are extracted into the app-private prefix before OpenCode is downloaded:
+     * a shell, the core utilities, the certificate store, the glibc runtime (the loader that runs
+     * OpenCode) and patchelf (it rewrites the interpreter of the OpenCode binary).
+     */
+    private static final List<String> CORE_PACKAGES = Arrays.asList(
+        "bash", "busybox", "ca-certificates", "termux-exec", "tar", "patchelf", "glibc");
+
     /** Endpoint telling which OpenCode version is the latest one. */
     private static final String VERSION_API_URL = "https://opencode.ai/update/api/latest/cli/npm";
     /** npm registry used as fallback for the version lookup and for the download. */
@@ -232,12 +240,6 @@ public final class OpenCodeBootstrap {
      */
     public static void setupIfNeeded(final Context context, final Runnable onReady) {
         if (context == null) return;
-
-        if (!isPrefixReady()) {
-            Log.w(LOG_TAG, "The Linux toolchain prefix is not ready yet, skipping the OpenCode setup.");
-            runOnUiThread(context, onReady);
-            return;
-        }
 
         // Nothing has to be downloaded. Refresh the launchers and the patched binary in the
         // background without showing any progress UI, otherwise the installation dialog would
@@ -444,7 +446,8 @@ public final class OpenCodeBootstrap {
 
     /** @return true if the app-private Linux toolchain prefix is usable. */
     public static boolean isPrefixReady() {
-        return new File(PREFIX + "/bin/apt-get").exists();
+        // The prefix is created by OpenCodePackages, a shell is the first thing that has to exist.
+        return new File(PREFIX + "/bin/bash").isFile();
     }
 
     /* ==========================================================================================
@@ -478,8 +481,10 @@ public final class OpenCodeBootstrap {
             env.put("COLORTERM", "truecolor");
             env.put("DEBIAN_FRONTEND", "noninteractive");
             env.put("TERMUX_PKG_NO_MIRROR_SELECT", "1");
+            // The Termux binaries link their libraries with a hardcoded RUNPATH that points at the
+            // com.termux prefix, so the library search path has to be redirected explicitly.
+            env.put("LD_LIBRARY_PATH", PREFIX + "/lib");
             env.remove("LD_PRELOAD");
-            env.remove("LD_LIBRARY_PATH");
         }
 
         void start() {
@@ -522,32 +527,49 @@ public final class OpenCodeBootstrap {
         /* ------------------------------------------------------------------ install pipeline */
 
         private void doInstall() {
-            ensureSecondStage();
             ensureResolvConf();
 
-            setStage(OpenCodeInstallState.STAGE_APT_UPDATE, "Refreshing the package lists...");
-            if (!aptUpdate(false))
-                throw new InstallException("Could not refresh the package lists from any mirror. Check the Wi-Fi/mobile connection and try again.");
+            setStage(OpenCodeInstallState.STAGE_APT_INSTALL, "Installing the Linux toolchain...");
+            try {
+                OpenCodePackages.install(new File(PREFIX), CORE_PACKAGES, new OpenCodePackages.Progress() {
+                    @Override
+                    public void onStatus(String message) {
+                        status(message);
+                    }
 
-            setStage(OpenCodeInstallState.STAGE_APT_INSTALL, "Installing the glibc runtime packages...");
-            if (!aptInstall(GLIBC_PACKAGES))
-                throw new InstallException("Could not install the 'glibc-repo'/'glibc-runner' packages. Check the Wi-Fi/mobile connection and try again.");
-
-            setStage(OpenCodeInstallState.STAGE_APT_UPDATE, "Refreshing the package lists of the glibc repository...");
-            if (!aptUpdate(true))
-                throw new InstallException("Could not refresh the package lists of the glibc repository.");
+                    @Override
+                    public void onPercent(int percent, String detail) {
+                        setProgress(percent, detail);
+                    }
+                });
+            } catch (Exception e) {
+                Log.e(LOG_TAG, "The Linux toolchain could not be installed", e);
+                throw new InstallException("Could not install the Linux toolchain: " + e.getMessage());
+            }
 
             // 'patchelf' is needed to patch the OpenCode binary, it links against libc++_shared.so,
             // an old libc++ makes it die with "cannot locate symbol __hash_memory". Verify it before
             // downloading ~100 MB.
             if (!patchelfWorks()) {
                 setStage(OpenCodeInstallState.STAGE_APT_INSTALL, "Repairing the patchelf tool...");
-                aptInstall(Arrays.asList("patchelf", "libc++"));
-                if (!patchelfWorks()) {
-                    aptReinstall(Arrays.asList("patchelf", "libc++"));
-                    if (!patchelfWorks())
-                        throw new InstallException("The 'patchelf' tool cannot run on this device: " + tail(lastOutput, 400));
+                try {
+                    OpenCodePackages.install(new File(PREFIX), Arrays.asList("patchelf", "libc++"),
+                        new OpenCodePackages.Progress() {
+                            @Override
+                            public void onStatus(String message) {
+                                status(message);
+                            }
+
+                            @Override
+                            public void onPercent(int percent, String detail) {
+                                setProgress(percent, detail);
+                            }
+                        });
+                } catch (Exception e) {
+                    Log.w(LOG_TAG, "Could not reinstall patchelf", e);
                 }
+                if (!patchelfWorks())
+                    throw new InstallException("The 'patchelf' tool cannot run on this device: " + tail(lastOutput, 400));
             }
 
             String loader = findGlibcLoader();
@@ -1130,7 +1152,22 @@ public final class OpenCodeBootstrap {
             CmdResult patch = patchInterpreter(staged, loader);
             if (patch.exitCode != 0) {
                 status("The patch failed, reinstalling patchelf and retrying...");
-                aptReinstall(Arrays.asList("patchelf", "libc++"));
+                try {
+                    OpenCodePackages.install(new File(PREFIX), Arrays.asList("patchelf", "libc++"),
+                        new OpenCodePackages.Progress() {
+                            @Override
+                            public void onStatus(String message) {
+                                status(message);
+                            }
+
+                            @Override
+                            public void onPercent(int percent, String detail) {
+                                setProgress(percent, detail);
+                            }
+                        });
+                } catch (Exception e) {
+                    Log.w(LOG_TAG, "Could not reinstall patchelf", e);
+                }
                 patch = patchInterpreter(staged, loader);
             }
             if (patch.exitCode != 0) {

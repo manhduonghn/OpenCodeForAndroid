@@ -7,6 +7,9 @@ import android.os.Bundle;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.net.InetSocketAddress;
+import java.net.Socket;
+
 /**
  * Minimal WebView shell for the OpenCode server. The actual OpenCode server runs as a
  * foreground service on 127.0.0.1:49374 and this activity renders it.
@@ -42,7 +45,39 @@ public final class OpenCodeWebActivity extends Activity {
             // started later through the oc-install launcher.
         }
 
-        webView.loadUrl("http://127.0.0.1:49374");
+        waitForServerAndLoad();
+    }
+
+    /**
+     * The first start installs the Linux toolchain and OpenCode (tens of megabytes), so the server
+     * is not reachable right away. Wait until it accepts connections on the loopback port and only
+     * then let the WebView load the UI, otherwise the WebView shows a connection error.
+     */
+    private void waitForServerAndLoad() {
+        Thread thread = new Thread(() -> {
+            for (int attempt = 0; attempt < 1200; attempt++) {
+                if (isServerReachable()) break;
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+            runOnUiThread(() -> {
+                if (webView != null) webView.loadUrl("http://127.0.0.1:49374");
+            });
+        }, "opencode-web-wait");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private boolean isServerReachable() {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", 49374), 1000);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     @Override

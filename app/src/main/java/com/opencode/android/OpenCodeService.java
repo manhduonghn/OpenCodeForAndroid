@@ -56,7 +56,10 @@ public final class OpenCodeService extends Service {
         sInstance = this;
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification("Starting the OpenCode server..."));
-        startServer();
+        // Make sure the Linux toolchain and OpenCode itself are installed first, then start the
+        // server. The callback runs on the UI thread, the installation itself runs in the
+        // background thread of the bootstrap.
+        OpenCodeBootstrap.setupIfNeeded(this, this::startServer);
     }
 
     @Override
