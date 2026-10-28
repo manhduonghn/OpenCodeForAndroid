@@ -259,12 +259,7 @@ public final class OpenCodeService extends Service {
     public void stopServer() {
         if (process == null) return;
         stopping = true;
-        try {
-            process.destroy();
-            process.waitFor();
-        } catch (Exception e) {
-            Log.w(TAG, "Could not stop the OpenCode server", e);
-        }
+        terminate(process);
         process = null;
         stopSelf();
     }
@@ -272,13 +267,20 @@ public final class OpenCodeService extends Service {
     private void stopExisting() {
         if (process == null) return;
         stopping = true;
-        try {
-            process.destroy();
-            process.waitFor();
-        } catch (Exception ignored) {
-        }
+        terminate(process);
         process = null;
         stopping = false;
+    }
+
+    /** Stop a child process without blocking the caller for longer than a few seconds. */
+    private static void terminate(java.lang.Process target) {
+        try {
+            target.destroy();
+            if (!target.waitFor(3, java.util.concurrent.TimeUnit.SECONDS))
+                target.destroyForcibly();
+        } catch (Exception ignored) {
+            // The process is already gone.
+        }
     }
 
     /**
