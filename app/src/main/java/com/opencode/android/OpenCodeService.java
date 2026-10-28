@@ -11,6 +11,7 @@ import android.os.IBinder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.util.Log;
 
@@ -215,6 +216,11 @@ public final class OpenCodeService extends Service {
      * Notification
      * ========================================================================================== */
 
+    /** @return true when the FOREGROUND_SERVICE_SPECIAL_USE permission was granted. */
+    private boolean hasSpecialUsePermission() {
+        return checkSelfPermission("android.permission.FOREGROUND_SERVICE_SPECIAL_USE") == PackageManager.PERMISSION_GRANTED;
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
@@ -252,7 +258,7 @@ public final class OpenCodeService extends Service {
             .setOngoing(true)
             .build();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && hasSpecialUsePermission()) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } else {
             startForeground(NOTIFICATION_ID, notification);
@@ -277,7 +283,7 @@ public final class OpenCodeService extends Service {
             .setOngoing(true)
             .build();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && hasSpecialUsePermission()) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } else {
             startForeground(NOTIFICATION_ID, notification);

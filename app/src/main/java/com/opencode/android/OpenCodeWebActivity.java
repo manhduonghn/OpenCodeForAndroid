@@ -25,12 +25,18 @@ public final class OpenCodeWebActivity extends Activity {
         webView.getSettings().setAllowFileAccess(true);
 
         // Make sure the OpenCode server is running natively before the WebView talks to it.
-        Intent serviceIntent = new Intent(this, OpenCodeService.class);
-        serviceIntent.putExtra("port", 49374);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
+        try {
+            Intent serviceIntent = new Intent(this, OpenCodeService.class);
+            serviceIntent.putExtra("port", 49374);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception e) {
+            // Starting the foreground service can be refused by the system (eg. while the app is
+            // in the background on newer Android versions). The OpenCode server can still be
+            // started later through the oc-install launcher.
         }
 
         webView.loadUrl("http://127.0.0.1:49374");
