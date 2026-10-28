@@ -129,12 +129,13 @@ public final class OpenCodePackages {
             return;
         }
 
-        // A prefix without a marker and without a shell is left over from an earlier version of
-        // the app (the apt based bootstrap). Its files are not relocatable and would only break
-        // the new runtime, start from a clean directory.
-        if (installed.isEmpty() && !new File(prefix, "bin/bash").isFile() && prefix.exists()) {
+        // A prefix without a shell is broken, even when the marker says the packages were
+        // installed (an earlier run may have been interrupted while extracting). Left over files
+        // of the apt based bootstrap are not relocatable either, start from a clean directory.
+        if (!new File(prefix, "bin/bash").isFile() && prefix.exists()) {
             progress.onStatus("Removing the files of the previous installation...");
             deleteTree(prefix);
+            installed.clear();
         }
         if (!prefix.isDirectory() && !prefix.mkdirs())
             throw new IOException("Could not create " + prefix);
