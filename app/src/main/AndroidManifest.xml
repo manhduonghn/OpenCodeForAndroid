@@ -22,7 +22,8 @@
 
         <service
             android:name=".OpenCodeService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
 
     </application>
 
