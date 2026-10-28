@@ -1,0 +1,48 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace = "com.opencode.android"
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "com.opencode.android"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+        debug {
+            isMinifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    lint {
+        disable("PendingIntentMutating")
+    }
+}
+
+dependencies {
+    implementation(libs.core.ktx)
+    implementation(libs.activity.compose)
+    implementation(libs.lifecycle.viewmodel.compose)
+}
