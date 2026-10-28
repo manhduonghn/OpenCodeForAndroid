@@ -1244,8 +1244,12 @@ public final class OpenCodeBootstrap {
                 patch = patchInterpreter(staged, loader);
             }
             if (patch.exitCode != 0) {
-                deleteQuietly(staged);
-                throw new InstallException("Could not patch the OpenCode binary: " + tail(patch.output, 400));
+                // The binary is ~240 MB, patchelf needs a lot of memory for it. The app always
+                // starts the binary through the glibc loader, so a failed patch is not fatal: the
+                // loader is passed explicitly with --library-path.
+                Log.w(LOG_TAG, "Could not patch the OpenCode binary, using the loader explicitly: "
+                    + tail(patch.output, 300));
+                status("The binary could not be patched, it will be started through the glibc loader.");
             }
 
             try {
@@ -1255,7 +1259,9 @@ public final class OpenCodeBootstrap {
             }
 
             setStage(OpenCodeInstallState.STAGE_VERIFY, "Verifying the OpenCode binary...");
-            CmdResult verify = run(Arrays.asList(staged.getAbsolutePath(), "--version"), VERIFY_TIMEOUT_MS, false, null);
+            CmdResult verify = run(Arrays.asList(
+                loader, "--library-path", GLIBC_LIB_DIR, staged.getAbsolutePath(), "--version"
+            ), VERIFY_TIMEOUT_MS, false, null);
             if (!looksLikeAVersion(verify)) {
                 deleteQuietly(staged);
                 if (target.isFile()) {
