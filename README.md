@@ -21,44 +21,54 @@ The app combines the two techniques that make this possible:
    No `apt`/`dpkg` is involved, they would write into the real Termux prefix.
 
 2. **Running OpenCode** (the opencode-termux technique). The official npm
-   platform package is downloaded, the binary is extracted and its ELF
-   interpreter is changed to the glibc loader of the toolchain:
+   platform package is downloaded, the binary is extracted and started through
+   the glibc loader of the toolchain:
 
    ```
-   patchelf --set-interpreter $PREFIX/glibc/lib/ld-linux-*.so.* \
-            --set-rpath       $PREFIX/glibc/lib  bin/opencode
+   $PREFIX/glibc/lib/ld-linux-aarch64.so.1 \
+       --library-path $PREFIX/glibc/lib $HOME/.opencode/bin/opencode serve \
+       --hostname 127.0.0.1 --port 49374
    ```
 
-   The server is then started as the loader with
-   `--library-path $PREFIX/glibc/lib …/opencode serve --port 49374`, and the app
-   shows `http://127.0.0.1:49374/` in a WebView.
+   The 240 MB binary is not rewritten with `patchelf` (that is slow and can run
+   out of memory on a phone); the glibc loader is passed explicitly instead.
+   The app shows `http://127.0.0.1:49374/` in a WebView.
 
 ### What gets installed
 
-Only the minimum the runtime needs (≈16 MB of packages):
+Only the minimum the runtime needs (≈14 MB of packages):
 
 | package | why |
 | --- | --- |
 | `bash` (+ `readline`, `ncurses`, `libiconv`, `libandroid-support`) | shell for OpenCode and scripts |
 | `glibc` (+ `linux-api-headers-glibc`) | glibc loader and libraries for the OpenCode binary |
-| `patchelf` (+ `libc++`) | rewrites the interpreter/RUNPATH of the binary |
+| `patchelf` (+ `libc++`) | rewrites the RUNPATH of `bash`/`patchelf` themselves |
 | `ca-certificates` | HTTPS trust store (`SSL_CERT_FILE`) |
 
 `termux-tools` is deliberately skipped: it is a set of wrappers around the
 Termux app (`am`, `pm`, …) and would pull the Termux app and a dozen extra
 packages.
 
-The packages are built for the Termux prefix, so their `RUNPATH` is rewritten
-once at install time (`patchelf --set-rpath $PREFIX/lib`), which makes `bash`
-and the OpenCode binary start even from a terminal without `LD_LIBRARY_PATH`.
+The Termux binaries point at the `com.termux` prefix with their `RUNPATH`, so it
+is rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), which
+makes `bash` start even from a terminal without `LD_LIBRARY_PATH`.
 
 `targetSdk` is **28** on purpose: Android 10+ denies `execve()` of files inside
 the app data directory for apps that target API 29 or newer. Termux itself does
 the same.
 
+### Server authentication
+
+The OpenCode 2.x server requires HTTP Basic auth for its API. A random password
+is generated once and stored in the shared preferences of the app,
+passed to the server as `OPENCODE_SERVER_PASSWORD` and answered by the WebView
+through `WebViewClient.onReceivedHttpAuthRequest`. The launcher exports the same
+password from `$HOME/.opencode/server-password`, so the terminal and the app can
+talk to the same server.
+
 ### Installation progress
 
-The first start downloads ≈20 MB of toolchain and ≈60 MB of OpenCode, so the
+The first start downloads ≈14 MB of toolchain and ≈114 MB of OpenCode, so the
 app shows a progress screen instead of a blank WebView. The WebView only loads
 `http://127.0.0.1:49374/` once the server really accepts connections, which
 avoids `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.

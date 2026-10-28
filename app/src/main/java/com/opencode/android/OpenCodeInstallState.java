@@ -41,13 +41,13 @@ public final class OpenCodeInstallState {
     public static final String STAGE_PREPARE = "prepare";
     /** Refreshing the package lists of apt. */
     public static final String STAGE_APT_UPDATE = "apt_update";
-    /** Installing the helper packages (glibc-runner, patchelf, tar, …). */
+    /** Installing the Linux toolchain packages (bash, glibc, patchelf, …). */
     public static final String STAGE_APT_INSTALL = "apt_install";
     /** Downloading the OpenCode package. */
     public static final String STAGE_DOWNLOAD = "download";
     /** Extracting the OpenCode package. */
     public static final String STAGE_EXTRACT = "extract";
-    /** Patching the ELF binary. */
+    /** Preparing the ELF binary for the glibc loader. */
     public static final String STAGE_PATCH = "patch";
     /** Verifying the patched binary. */
     public static final String STAGE_VERIFY = "verify";

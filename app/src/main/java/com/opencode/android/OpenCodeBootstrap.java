@@ -48,14 +48,13 @@ import java.util.regex.Pattern;
  * Bootstraps the official OpenCode CLI natively inside Android and keeps it runnable.
  *
  * <p>The official OpenCode CLI is only published as a <b>glibc</b> ELF binary, while Android only
- * ships <b>bionic</b>. The binary therefore has to be patched before it can be executed:</p>
+ * ships <b>bionic</b>. The binary therefore runs through the glibc loader of the toolchain:</p>
  *
  * <pre>
- *   apt-get install glibc-repo glibc-runner patchelf tar
- *     -&gt; download the official npm tarball @opencode/cli-linux-&lt;arch&gt;
- *     -&gt; tar -xzf package/bin/opencode
- *     -&gt; patchelf --set-interpreter $PREFIX/glibc/lib/ld-linux-*.so.*
- *     -&gt; verify with --version -&gt; atomic rename -&gt; $PREFIX/bin/opencode launcher
+ *   download the official npm tarball @opencode/cli-linux-&lt;arch&gt;
+ *     -&gt; unpack package/bin/opencode in Java (no tar binary needed)
+ *     -&gt; verify through $PREFIX/glibc/lib/ld-linux-*.so.* --library-path
+ *     -&gt; atomic rename -&gt; $PREFIX/bin/opencode launcher (loader + --library-path)
  * </pre>
  *
  * <p>Everything is done from this single class so that the installation keeps its progress,
@@ -96,7 +95,7 @@ public final class OpenCodeBootstrap {
 
     /** State directory of the installer. */
     public static final String OC_HOME = HOME + "/.opencode";
-    /** Directory holding the patched binaries. */
+    /** Directory holding the installed OpenCode builds. */
     public static final String INSTALL_DIR = OC_HOME + "/installed";
     /** Directory holding the {@code opencode} symlink. */
     public static final String LINK_DIR = OC_HOME + "/bin";
@@ -104,8 +103,6 @@ public final class OpenCodeBootstrap {
     public static final String LINK_PATH = LINK_DIR + "/opencode";
     /** Contains the version that is currently installed. */
     public static final String READY_MARKER_PATH = OC_HOME + "/.native-ready";
-    /** Fingerprint ({@code <size> <mtime>}) of the binary that has been patched. */
-    public static final String PATCHED_MARKER_PATH = OC_HOME + "/.patched";
     /** Full log of every installer run. */
     public static final String SETUP_LOG_PATH = OC_HOME + "/setup.log";
     /** Human readable report of the last failure. */
@@ -187,13 +184,13 @@ public final class OpenCodeBootstrap {
         "https://packages.termux.dev/apt/termux-glibc"
     };
 
-    /** Packages that provide the glibc runtime and the ELF patch tooling for the OpenCode binary. */
+    /** Packages that provide the glibc runtime (only used by the legacy installer paths). */
     private static final List<String> GLIBC_PACKAGES = Arrays.asList("glibc-repo", "glibc-runner", "patchelf", "tar");
 
     /**
      * Termux packages that are extracted into the app-private prefix before OpenCode is downloaded:
      * a shell, the core utilities, the certificate store, the glibc runtime (the loader that runs
-     * OpenCode) and patchelf (it rewrites the interpreter of the OpenCode binary).
+     * OpenCode) and patchelf (it rewrites the RUNPATH of the Termux binaries).
      */
     private static final List<String> CORE_PACKAGES = Arrays.asList(
         "bash", "ca-certificates", "patchelf", "glibc");
@@ -260,7 +257,7 @@ public final class OpenCodeBootstrap {
     public static void setupIfNeeded(final Context context, final Runnable onReady) {
         if (context == null) return;
 
-        // Nothing has to be downloaded. Refresh the launchers and the patched binary in the
+        // Nothing has to be downloaded. Refresh the launchers in the
         // background without showing any progress UI, otherwise the installation dialog would
         // flash on every cold start even though OpenCode is already installed.
         if (!isInstallRunning() && runtimeProblems().isEmpty()) {
@@ -320,8 +317,8 @@ public final class OpenCodeBootstrap {
 
         final List<String> problems = runtimeProblems();
         if (problems.isEmpty()) {
-            // Everything is fine, but the binary may have been replaced by the OpenCode
-            // auto updater, so make sure it is still patched.
+            // Everything is fine, but the launchers may belong to an older build of the
+            // app, so refresh them in the background.
             clearFinishedState();
             maintainInBackground(context);
         } else {
@@ -340,7 +337,7 @@ public final class OpenCodeBootstrap {
         OpenCodeInstallState.clear();
     }
 
-    /** Refresh the launchers and repair the patched binary in the background. No progress is
+    /** Refresh the launchers in the background. No progress is
      * published and no dialog is shown, so this is safe to call on every start of the app. */
     private static void maintainInBackground(final Context context) {
         synchronized (sLock) {
@@ -674,7 +671,6 @@ public final class OpenCodeBootstrap {
                 } else {
                     linkTo(installed);
                     try {
-                        writeTextFile(new File(PATCHED_MARKER_PATH), binaryStamp(installed));
                         writeTextFile(new File(READY_MARKER_PATH), version);
                     } catch (IOException e) {
                         throw new InstallException("Could not write the installation markers: " + e.getMessage());
@@ -694,7 +690,6 @@ public final class OpenCodeBootstrap {
             deleteQuietly(new File(LEGACY_SETUP_SCRIPT_PATH));
             restoreLauncher(new File(OPENCODE_BIN_PATH), buildOpenCodeLauncher());
             restoreLauncher(new File(OC_INSTALL_PATH), buildOcInstallLauncher());
-            repairInterpreterIfNeeded(context);
         }
 
         /* ------------------------------------------------------------------ apt */
@@ -1273,36 +1268,11 @@ public final class OpenCodeBootstrap {
                 deleteQuietly(binary);
             }
 
-            setStage(OpenCodeInstallState.STAGE_PATCH, "Patching the OpenCode binary...");
-            CmdResult patch = patchInterpreter(staged, loader);
-            if (patch.exitCode != 0) {
-                status("The patch failed, reinstalling patchelf and retrying...");
-                try {
-                    OpenCodePackages.install(new File(PREFIX), Arrays.asList("patchelf", "libc++"),
-                        new OpenCodePackages.Progress() {
-                            @Override
-                            public void onStatus(String message) {
-                                status(message);
-                            }
-
-                            @Override
-                            public void onPercent(int percent, String detail) {
-                                setProgress(percent, detail);
-                            }
-                        });
-                } catch (Exception e) {
-                    Log.w(LOG_TAG, "Could not reinstall patchelf", e);
-                }
-                patch = patchInterpreter(staged, loader);
-            }
-            if (patch.exitCode != 0) {
-                // The binary is ~240 MB, patchelf needs a lot of memory for it. The app always
-                // starts the binary through the glibc loader, so a failed patch is not fatal: the
-                // loader is passed explicitly with --library-path.
-                Log.w(LOG_TAG, "Could not patch the OpenCode binary, using the loader explicitly: "
-                    + tail(patch.output, 300));
-                status("The binary could not be patched, it will be started through the glibc loader.");
-            }
+            setStage(OpenCodeInstallState.STAGE_PATCH, "Preparing the OpenCode binary...");
+            // The binary is ~240 MB and patchelf rewrites it in place, which is slow and may run
+            // out of memory on a phone. It is not needed either: the app and the launcher always
+            // start OpenCode through the glibc loader with an explicit --library-path.
+            status("The binary will be started through the glibc loader.");
 
             try {
                 Os.chmod(staged.getAbsolutePath(), 0755);
@@ -1355,20 +1325,6 @@ public final class OpenCodeBootstrap {
                 if (file.getAbsolutePath().equals(keep.getAbsolutePath())) continue;
                 deleteQuietly(file);
             }
-        }
-
-        private CmdResult patchInterpreter(File file, String loader) {
-            List<String> patchArgs = new ArrayList<>();
-            patchArgs.add(PREFIX + "/bin/patchelf");
-            patchArgs.add("--set-interpreter");
-            patchArgs.add(loader);
-            // The binary links against the glibc libraries of the toolchain. An absolute RPATH
-            // makes it runnable without LD_LIBRARY_PATH, which matters when the user starts it
-            // from a terminal that does not know about the app environment.
-            patchArgs.add("--set-rpath");
-            patchArgs.add(GLIBC_LIB_DIR);
-            patchArgs.add(file.getAbsolutePath());
-            return run(patchArgs, PATCH_TIMEOUT_MS, false, null);
         }
 
         /** Point the RUNPATH of a Termux ELF at the libraries of the app-private prefix. */
@@ -1476,7 +1432,7 @@ public final class OpenCodeBootstrap {
             sb.append("LOADER=\"\"; for c in \"$GLIBCLIB\"/ld-linux*.so.*; do [ -x \"$c\" ] && { LOADER=\"$c\"; break; }; done\n");
             sb.append("[ -z \"$LOADER\" ] && { echo \"opencode: the glibc runtime is missing. Open the app and run the installation again.\" >&2; exit 127; }\n");
             sb.append("\n");
-            sb.append("# The auto updater of OpenCode would replace the patched binary with an unpatched one.\n");
+            sb.append("# The auto updater of OpenCode would replace the binary that the launcher knows.\n");
             sb.append("export OPENCODE_DISABLE_AUTOUPDATE=1\n");
             sb.append("# Never load the bionic preload of Termux into a glibc process.\n");
             sb.append("unset LD_PRELOAD\n");
@@ -1507,76 +1463,7 @@ public final class OpenCodeBootstrap {
 
         /* ------------------------------------------------------------------ repair */
 
-        /**
-         * Patch the installed binary again if it is not pointing to the glibc loader anymore,
-         * eg. because the auto updater of OpenCode replaced it.
-         */
-        private void repairInterpreterIfNeeded(Context context) {
-            File link = new File(LINK_PATH);
-            if (!link.exists()) return;
-
-            File binary = resolveLink(link);
-            if (binary == null || !binary.isFile()) return;
-
-            String loader = findGlibcLoader();
-            if (loader == null) return;
-
-            if (binaryStamp(binary).equals(readTrimmed(new File(PATCHED_MARKER_PATH))))
-                return; // Already patched.
-
-            status("Repairing the OpenCode binary...");
-            Log.i(LOG_TAG, "The OpenCode binary is not patched, patching it again.");
-
-            File tmp = new File(binary.getAbsolutePath() + ".repair");
-            deleteQuietly(tmp);
-            if (!copyFile(binary, tmp)) {
-                deleteQuietly(tmp);
-                return;
-            }
-
-            CmdResult patch = patchInterpreter(tmp, loader);
-            if (patch.exitCode != 0) {
-                deleteQuietly(tmp);
-                Log.w(LOG_TAG, "Could not patch the OpenCode binary again: " + tail(patch.output, 200));
-                return;
-            }
-
-            try {
-                Os.chmod(tmp.getAbsolutePath(), 0755);
-            } catch (Exception e) {
-                Log.w(LOG_TAG, "Could not make the OpenCode binary executable", e);
-            }
-
-            CmdResult verify = run(Arrays.asList(tmp.getAbsolutePath(), "--version"), VERIFY_TIMEOUT_MS, false, null);
-            if (!looksLikeAVersion(verify)) {
-                deleteQuietly(tmp);
-                Log.w(LOG_TAG, "The repaired OpenCode binary does not run, keeping the old one.");
-                return;
-            }
-
-            deleteQuietly(binary);
-            if (!tmp.renameTo(binary)) {
-                if (!copyFile(tmp, binary))
-                    Log.w(LOG_TAG, "Could not replace the OpenCode binary.");
-                deleteQuietly(tmp);
-            }
-
-            writeTextFileQuietly(new File(PATCHED_MARKER_PATH), binaryStamp(binary));
-        }
-
         /* ------------------------------------------------------------------ environment */
-
-        private void ensureSecondStage() {
-            if (new File(SECOND_STAGE_LOCK_PATH).exists()) return;
-
-            File script = new File(SECOND_STAGE_SCRIPT_PATH);
-            if (!script.isFile()) return;
-
-            status("Finishing the Termux bootstrap...");
-            CmdResult result = run(Arrays.asList(PREFIX + "/bin/bash", script.getAbsolutePath()), SECOND_STAGE_TIMEOUT_MS, true, null);
-            if (result.exitCode != 0)
-                Log.w(LOG_TAG, "The second stage of the Termux bootstrap failed (exit " + result.exitCode + ")");
-        }
 
         /** Create the writable directories the runtime expects, they are not part of the packages. */
         private void ensureRuntimeDirectories() {
@@ -2168,18 +2055,7 @@ public final class OpenCodeBootstrap {
         }
     }
 
-    /** @return the fingerprint of a file, the same format as {@code stat -L -c '%s %Y'}. */
-    private static String binaryStamp(File file) {
-        File real = file;
-        try {
-            if (!file.getCanonicalPath().equals(file.getAbsolutePath()))
-                real = file.getCanonicalFile();
-        } catch (IOException ignored) {
-            // Use the file itself.
-        }
-        return real.length() + " " + (real.lastModified() / 1000L);
-    }
-
+    /** @return true when the file exists and can be executed by the app. */
     public static boolean isExecutable(File file) {
         return file.exists() && file.canExecute();
     }
