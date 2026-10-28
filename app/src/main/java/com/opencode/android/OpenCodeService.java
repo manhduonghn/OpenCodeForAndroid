@@ -54,6 +54,17 @@ public final class OpenCodeService extends Service {
     private volatile String runningBinaryPath;
     /** Serialises start/stop calls, the service can be asked to start from several places. */
     private static final Object SERVER_LOCK = new Object();
+    /**
+     * All socket work runs here: connecting to 127.0.0.1 on the main thread throws
+     * {@link android.os.NetworkOnMainThreadException}, which would make every port check lie.
+     * A single static worker is enough, there is only one service instance at a time.
+     */
+    private static final java.util.concurrent.ExecutorService WORKER =
+        java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "opencode-service");
+            thread.setDaemon(true);
+            return thread;
+        });
     /** Pid of the running server, also when this process inherited it from an older app run. */
     private volatile int serverPid = -1;
     /** True when the server was already running when this service was created. */
@@ -88,7 +99,6 @@ public final class OpenCodeService extends Service {
                 updateNotification("The installation did not finish, open the app for details.");
                 return;
             }
-            restartIfNewBinary();
             startServer();
         });
     }
@@ -145,7 +155,17 @@ public final class OpenCodeService extends Service {
 
     /** Start the OpenCode server, it is a no-op when a server is already running. */
     public void startServer() {
+        WORKER.execute(this::startServerBlocking);
+    }
+
+    /** The actual start procedure, it runs on {@link #WORKER} and never on the main thread. */
+    private void startServerBlocking() {
         synchronized (SERVER_LOCK) {
+            if (sInstance != this) {
+                Log.i(TAG, "Ignoring a start request of a destroyed service instance.");
+                return;
+            }
+            restartIfNewBinary();
             if (adopted && isPortOpen(port)) {
                 Log.i(TAG, "The adopted OpenCode server is still running.");
                 updateNotification("Running on http://127.0.0.1:" + port);
@@ -341,24 +361,26 @@ public final class OpenCodeService extends Service {
 
     /** Kill the OpenCode server process, the next start command starts it again. */
     public void stopServer() {
-        synchronized (SERVER_LOCK) {
-            if (process == null && !adopted) {
+        WORKER.execute(() -> {
+            synchronized (SERVER_LOCK) {
+                if (process == null && !adopted) {
+                    stopSelf();
+                    return;
+                }
+                stopping = true;
+                if (process != null) {
+                    terminate(process);
+                    process = null;
+                } else if (serverPid > 0) {
+                    killIfOurServer(serverPid);
+                }
+                serverPid = -1;
+                adopted = false;
+                clearPidFile();
+                waitForPortFree(3000);
                 stopSelf();
-                return;
             }
-            stopping = true;
-            if (process != null) {
-                terminate(process);
-                process = null;
-            } else if (serverPid > 0) {
-                killIfOurServer(serverPid);
-            }
-            serverPid = -1;
-            adopted = false;
-            clearPidFile();
-            waitForPortFree(3000);
-            stopSelf();
-        }
+        });
     }
 
     /** Stop the server without stopping the service, the caller holds {@link #SERVER_LOCK}. */
@@ -441,9 +463,9 @@ public final class OpenCodeService extends Service {
 
     /** @return true when the command line belongs to the server we start. */
     private static boolean isOurCmdline(String cmdline) {
-        return cmdline != null
-            && cmdline.contains("/.opencode/installed/opencode-v")
-            && cmdline.contains(OpenCodeBootstrap.GLIBC_LIB_DIR);
+        // The loader may keep its own command line or replace it with the binary and its
+        // arguments, the installed path is the part that is always present.
+        return cmdline != null && cmdline.contains("/.opencode/installed/opencode-v");
     }
 
     private static boolean isOurServer(int pid, File binary) {

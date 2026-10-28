@@ -20,6 +20,8 @@ import android.widget.TextView;
 
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Minimal WebView shell for the OpenCode server. The actual OpenCode server runs as a
@@ -43,6 +45,17 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     private Button statusRetry;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /**
+     * The reachability check opens a socket to 127.0.0.1. Doing that on the main thread throws
+     * {@link android.os.NetworkOnMainThreadException}, so the probe runs here and the result is
+     * posted back to the UI thread.
+     */
+    private final ExecutorService probeExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "opencode-web-probe");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private boolean probeInFlight;
     private boolean pageLoaded;
     private boolean destroyed;
     private boolean waitingForInstall;
@@ -53,14 +66,22 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     private final Runnable poll = new Runnable() {
         @Override
         public void run() {
-            if (destroyed) return;
-            if (isServerReachable()) {
-                loadUi();
-                return;
-            }
-            updateProgress();
-            if (OpenCodeBootstrap.getInstallState().failed) return;
-            handler.postDelayed(this, 700);
+            if (destroyed || probeInFlight || probeExecutor.isShutdown()) return;
+            probeInFlight = true;
+            probeExecutor.execute(() -> {
+                final boolean reachable = serverReachable();
+                handler.post(() -> {
+                    probeInFlight = false;
+                    if (destroyed) return;
+                    if (reachable) {
+                        loadUi();
+                        return;
+                    }
+                    updateProgress();
+                    if (OpenCodeBootstrap.getInstallState().failed) return;
+                    handler.postDelayed(poll, 700);
+                });
+            });
         }
     };
 
@@ -230,7 +251,7 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         webView.loadUrl("http://127.0.0.1:" + PORT + "/");
     }
 
-    private boolean isServerReachable() {
+    private boolean serverReachable() {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("127.0.0.1", PORT), 1000);
             return true;
@@ -258,6 +279,7 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     @Override
     protected void onDestroy() {
         destroyed = true;
+        probeExecutor.shutdownNow();
         handler.removeCallbacksAndMessages(null);
         OpenCodeBootstrap.removeInstallListener(this);
         super.onDestroy();
