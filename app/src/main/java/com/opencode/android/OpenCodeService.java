@@ -39,11 +39,13 @@ public final class OpenCodeService extends Service {
 
     private static volatile OpenCodeService sInstance;
 
-    private java.lang.Process process;
+    private volatile java.lang.Process process;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int port = 49374;
     /** True once the bootstrap reports that the toolchain and the binary are installed. */
     private volatile boolean bootstrapReady = false;
+    /** True while the server is being stopped on purpose, its exit is not an error then. */
+    private volatile boolean stopping;
 
     /** The parameters of the last start request, they are passed through the intent. */
     public static final class Params {
@@ -140,6 +142,7 @@ public final class OpenCodeService extends Service {
         }
 
         stopExisting();
+        stopping = false;
 
         ProcessBuilder builder = new ProcessBuilder(
             loader,
@@ -209,11 +212,13 @@ public final class OpenCodeService extends Service {
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
-            if (process == started) process = null;
+            boolean current = process == started;
+            if (current) process = null;
             Log.w(TAG, "The OpenCode server exited with " + exitCode);
+            boolean intentional = stopping || !current;
             // A server that dies right away usually means a missing library or a broken patch, the
             // output is unreadable for the user in logcat, so keep it in the Download folder.
-            if (exitCode != 0) {
+            if (exitCode != 0 && !intentional) {
                 StringBuilder sb = new StringBuilder();
                 sb.append("OpenCode server exited with ").append(exitCode).append('\n');
                 sb.append("port: ").append(port).append('\n');
@@ -227,6 +232,8 @@ public final class OpenCodeService extends Service {
                     for (String line : tail) sb.append(line).append('\n');
                 }
                 OpenCodeCrashLog.writeReport(OpenCodeService.this, "opencode-server", sb.toString());
+                updateNotification("The OpenCode server stopped (exit " + exitCode
+                    + "), the log is in Download/opencode-server-*.log");
             }
         }, "opencode-service-reader");
         reader.setDaemon(true);
@@ -238,6 +245,7 @@ public final class OpenCodeService extends Service {
     /** Kill the OpenCode server process, the next start command starts it again. */
     public void stopServer() {
         if (process == null) return;
+        stopping = true;
         try {
             process.destroy();
             process.waitFor();
@@ -250,12 +258,14 @@ public final class OpenCodeService extends Service {
 
     private void stopExisting() {
         if (process == null) return;
+        stopping = true;
         try {
             process.destroy();
             process.waitFor();
         } catch (Exception ignored) {
         }
         process = null;
+        stopping = false;
     }
 
     private File resolveBinary() {
