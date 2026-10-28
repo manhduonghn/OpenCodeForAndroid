@@ -1640,7 +1640,7 @@ public final class OpenCodeBootstrap {
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
 
-            NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID, NOTIFICATION_CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW, 0);
+            NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID, NOTIFICATION_CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
             manager.createNotificationChannel(channel);
 
             PendingIntent contentIntent = PendingIntent.getActivity(context, 0, new Intent(context, OpenCodeWebActivity.class),
@@ -1664,7 +1664,7 @@ public final class OpenCodeBootstrap {
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
 
-            NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID, NOTIFICATION_CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW, 0);
+            NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID, NOTIFICATION_CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
             manager.createNotificationChannel(channel);
 
             PendingIntent contentIntent = PendingIntent.getActivity(context, 0, new Intent(context, OpenCodeWebActivity.class),

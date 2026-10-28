@@ -7,10 +7,11 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.os.Binder;
+import android.os.IBinder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.service.ServiceInfo;
+import android.app.ServiceInfo;
 import android.util.Log;
 
 import java.io.BufferedReader;
@@ -212,8 +213,7 @@ public final class OpenCodeService extends Service {
             NotificationChannel channel = new NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "OpenCode server",
-                NotificationManager.IMPORTANCE_LOW,
-                0
+                NotificationManager.IMPORTANCE_LOW
             );
             channel.setDescription("The OpenCode server that runs natively on Android.");
             NotificationManager manager = getSystemService(NotificationManager.class);
@@ -225,8 +225,7 @@ public final class OpenCodeService extends Service {
         NotificationChannel channel = new NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
             "OpenCode server",
-            NotificationManager.IMPORTANCE_LOW,
-            0
+            NotificationManager.IMPORTANCE_LOW
         );
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(channel);
