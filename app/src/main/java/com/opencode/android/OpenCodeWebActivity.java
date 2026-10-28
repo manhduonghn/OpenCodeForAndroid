@@ -18,6 +18,9 @@ public final class OpenCodeWebActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Install the process wide crash handler that writes crash reports into the storage.
+        OpenCodeCrashLog.install(this);
+
         setContentView(R.layout.activity_main);
         webView = findViewById(R.id.webview);
         webView.setWebViewClient(new WebViewClient());
