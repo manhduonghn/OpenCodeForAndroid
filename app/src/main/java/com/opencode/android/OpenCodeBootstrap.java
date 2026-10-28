@@ -423,7 +423,7 @@ public final class OpenCodeBootstrap {
         if (findGlibcLoader() == null)
             problems.add("the glibc loader (" + GLIBC_LIB_DIR + "/ld-linux-*.so.*)");
 
-        if (!isExecutable(new File(PREFIX + "/bin/patchelf)))
+        if (!isExecutable(new File(PREFIX + "/bin/patchelf")))
             problems.add("the patchelf tool (" + PREFIX + "/bin/patchelf" + ")");
 
         if (!isExecutable(new File(PREFIX + "/bin/tar")))
@@ -1405,7 +1405,7 @@ public final class OpenCodeBootstrap {
             if (!script.isFile()) return;
 
             status("Finishing the Termux bootstrap...");
-            CmdResult result = run(Arrays.asList(PREFIX + "/bin/bash, script.getAbsolutePath()), SECOND_STAGE_TIMEOUT_MS, true, null);
+            CmdResult result = run(Arrays.asList(PREFIX + "/bin/bash", script.getAbsolutePath()), SECOND_STAGE_TIMEOUT_MS, true, null);
             if (result.exitCode != 0)
                 Log.w(LOG_TAG, "The second stage of the Termux bootstrap failed (exit " + result.exitCode + ")");
         }
