@@ -1,6 +1,6 @@
 package com.opencode.android
 
-import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -9,16 +9,21 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
+import android.webkit.JsResult
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebViewDatabase
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
@@ -40,10 +45,18 @@ import java.util.concurrent.Executors
  * session token and loads `/?auth_token=<base64(user:token)>`, exactly the link format
  * `opencode pair` prints. The token is also stored as the session cookie, so reloads stay
  * authenticated.
+ *
+ * The WebView itself lives in [OpenCodeWebViewModel]: a rotation (or any other configuration
+ * change) recreates this activity, but not the web app, so the page, the scroll position and the
+ * open session survive.
  */
-class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
+class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListener,
+    OpenCodeWebViewModel.Ui {
+
+    private val viewModel: OpenCodeWebViewModel by viewModels()
 
     private lateinit var webView: WebView
+    private lateinit var webContainer: FrameLayout
     private lateinit var statusPanel: View
     private lateinit var statusTitle: TextView
     private lateinit var statusDetail: TextView
@@ -62,7 +75,6 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
     }
 
     private var probeInFlight = false
-    private var pageLoaded = false
     private var destroyed = false
     private var waitingForInstall = false
     private var lastServiceStart = 0L
@@ -70,8 +82,22 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
     /** How often the pairing code was requested for the current server start. */
     private var pairAttempts = 0
 
+    /**
+     * True once the web UI is on screen. It is stored in the ViewModel, so a rotation does not
+     * start the pairing and the load of the page again.
+     */
+    private var pageLoaded: Boolean
+        get() = viewModel.pageLoaded
+        set(value) {
+            viewModel.pageLoaded = value
+        }
+
     /** HTTP Basic password of the local OpenCode server, see [OpenCodeBootstrap.getServerPassword]. */
-    private var serverPassword = ""
+    private var serverPassword: String
+        get() = viewModel.serverPassword
+        set(value) {
+            viewModel.serverPassword = value
+        }
 
     /** Number of failed loads of the web UI, the automatic retry stops after a few of them. */
     private var loadFailures = 0
@@ -108,12 +134,25 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        webView = findViewById(R.id.webview)
+        webContainer = findViewById(R.id.web_container)
         statusPanel = findViewById(R.id.status_panel)
         statusTitle = findViewById(R.id.status_title)
         statusDetail = findViewById(R.id.status_detail)
         statusProgress = findViewById(R.id.status_progress)
         statusRetry = findViewById(R.id.status_retry)
+
+        // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
+        // the same page: it only has to be moved from the view hierarchy of the previous activity
+        // into this one. Nothing is reloaded.
+        webView = viewModel.webView(this)
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        webContainer.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
 
         configureWebView()
 
@@ -136,34 +175,29 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
         OpenCodeBootstrap.restoreState()
         OpenCodeBootstrap.addInstallListener(this)
 
-        // A rotation does not recreate this activity (see android:configChanges in the manifest),
-        // so the WebView keeps its DOM, its scroll position and the open session. When the
-        // activity is recreated anyway (process death, or a configuration change that is not
-        // listed in the manifest), the saved WebView state is restored instead of downloading
-        // the UI again: only the progress screen is skipped, nothing is fetched from the server.
-        val restoredPage = savedInstanceState != null
-            && savedInstanceState.getBoolean(KEY_PAGE_LOADED, false)
-            && webView.restoreState(savedInstanceState) != null
-        if (restoredPage) {
-            pageLoaded = true
+        // A rotation only re-attaches the WebView that the ViewModel kept, the UI stays where it
+        // was and the poll (which pairs again and reloads the page) is not started at all.
+        val pageAlive = viewModel.pageLoaded
+        if (pageAlive) {
             statusPanel.visibility = View.GONE
             webView.visibility = View.VISIBLE
+        } else {
+            statusPanel.visibility = View.VISIBLE
+            webView.visibility = View.GONE
         }
 
         // Make sure the OpenCode server is running before the WebView talks to it.
         startServerService()
-        if (!restoredPage) handler.post(poll)
-
-        // 'oc-install' (and the 'opencode upgrade' command) opens this activity with this extra to
-        // force a fresh download of the runtime. A restored page must never trigger it again.
-        if (!restoredPage && wantsForcedUpdate(intent)) beginForcedUpdate()
+        if (!pageAlive) {
+            handler.post(poll)
+            if (wantsForcedUpdate(intent)) beginForcedUpdate()
+        }
     }
 
     /**
-     * The activity is 'singleTask', so tapping the icon or the notification while it is still
-     * alive brings the existing instance forward instead of creating a new one: the WebView is
-     * not reloaded. The only intent that still has to be handled here is the forced update of
-     * 'oc-install', which arrives while the activity is already running.
+     * The forced update of 'oc-install' (and of `opencode upgrade`) arrives as an extra of the
+     * intent that starts this activity. When the activity is already on screen the system may
+     * deliver it here instead, so both paths are handled.
      */
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
@@ -189,6 +223,40 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
         OpenCodeBootstrap.requestUpdate(this)
         handler.removeCallbacks(poll)
         handler.post(poll)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // JavaScript dialogs of the web app are shown by the activity of the moment.
+        viewModel.ui = this
+    }
+
+    override fun onStop() {
+        viewModel.ui = null
+        super.onStop()
+    }
+
+    override fun onJsAlert(view: WebView, message: String?, result: JsResult) {
+        showJsDialog(message, result, confirm = false)
+    }
+
+    override fun onJsConfirm(view: WebView, message: String?, result: JsResult) {
+        showJsDialog(message, result, confirm = true)
+    }
+
+    private fun showJsDialog(message: String?, result: JsResult, confirm: Boolean) {
+        if (isFinishing || isDestroyed) {
+            result.cancel()
+            return
+        }
+        val builder = AlertDialog.Builder(this)
+            .setMessage(message)
+            .setOnCancelListener { result.cancel() }
+            .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+        if (confirm) {
+            builder.setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
+        }
+        builder.show()
     }
 
     private fun configureWebView() {
@@ -522,22 +590,18 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
         }
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        if (pageLoaded) {
-            // The history and the DOM of the WebView, so a recreation does not reload the UI.
-            webView.saveState(outState)
-        }
-        outState.putBoolean(KEY_PAGE_LOADED, pageLoaded)
-        super.onSaveInstanceState(outState)
-    }
-
     override fun onDestroy() {
         destroyed = true
         probeExecutor.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         OpenCodeBootstrap.removeInstallListener(this)
+        viewModel.ui = null
+        // The WebView is owned by the ViewModel: here it is only detached from the hierarchy of
+        // this activity, and only when it is really attached to it (a configuration change can
+        // hand it to the next instance first). When the activity is finished for good, the
+        // ViewModel destroys it (onCleared).
+        if (webView.parent === webContainer) webContainer.removeView(webView)
         super.onDestroy()
-        webView.destroy()
     }
 
     companion object {
@@ -550,8 +614,5 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
 
         /** Endpoint that redeems a pairing code for a session token. */
         private const val PAIR_PATH = "/auth/connect/"
-
-        /** Saved state: the web UI was already loaded, its WebView state is in the bundle too. */
-        private const val KEY_PAGE_LOADED = "page_loaded"
     }
 }

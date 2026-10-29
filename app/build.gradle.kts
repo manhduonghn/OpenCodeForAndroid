@@ -14,8 +14,8 @@ android {
         // execve() of app data files for apps that target API 29 or higher (the same reason the
         // Termux app itself still targets API 28), so stay on 28.
         targetSdk = 28
-        versionCode = 10
-        versionName = "1.0.9"
+        versionCode = 11
+        versionName = "1.0.10"
     }
 
     signingConfigs {
@@ -76,6 +76,8 @@ android {
 }
 
 dependencies {
+    implementation("androidx.activity:activity-ktx:1.12.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
 }

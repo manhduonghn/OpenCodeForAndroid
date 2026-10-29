@@ -4,12 +4,12 @@
     android:layout_height="match_parent"
     android:background="#FF101014">
 
-    <WebView
-        android:id="@+id/webview"
+    <!-- The WebView is not inflatable: it lives in the ViewModel and is attached to this
+         container, so a rotation re-attaches the same view instead of building a new one. -->
+    <FrameLayout
+        android:id="@+id/web_container"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#FF101014"
-        android:visibility="gone" />
+        android:layout_height="match_parent" />
 
     <LinearLayout
         android:id="@+id/status_panel"

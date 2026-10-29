@@ -4,9 +4,10 @@
 natively on Android — no root, no proot, no chroot — inside its **own package id**
 (`com.opencode.android`) and its **own Linux prefix**, without the `com.termux` app.
 
-The app is written **entirely in Kotlin** (no Java sources, no AndroidX: plain
-framework widgets and `HttpURLConnection`), and it keeps no crash log or
-diagnostics files of its own — see [Logging](#logging).
+The app is written **entirely in Kotlin** (no Java sources; the only AndroidX
+dependency is `activity`/`lifecycle-viewmodel` for the `ComponentActivity` and
+the `ViewModel` that owns the WebView — everything else uses the framework), and
+it keeps no crash log or diagnostics files of its own — see [Logging](#logging).
 
 ## How it works
 
@@ -156,12 +157,15 @@ app shows a progress screen instead of a blank WebView. The WebView only loads
 the web UI once the server really accepts connections, which avoids
 `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.
 
-The activity is `singleTask` and handles the orientation/`screenSize`/`uiMode`/
-`density` configuration changes itself, so rotating the phone, switching apps or
-tapping the icon again brings the same WebView back: the UI, the scroll position
-and the open session are kept and nothing is fetched again. When the activity is
-recreated anyway (process death), the saved WebView state is restored instead of
-starting a new pairing round.
+The activity is a `ComponentActivity` and the WebView lives in a `ViewModel`
+(`OpenCodeWebViewModel`). Rotating the phone, switching apps or changing the dark
+mode / font size recreates the activity, but not the WebView: the new instance
+re-attaches the very same view, so the UI, the scroll position, the open session
+and a half written message are kept and nothing is fetched again. The WebView is
+created with the application context, so the ViewModel cannot keep a destroyed
+activity alive; its `alert()`/`confirm()` dialogs are forwarded to the activity
+that is on screen. The view is destroyed only when the activity is finished for
+good (`ViewModel.onCleared`).
 
 ### Terminal usage
 
