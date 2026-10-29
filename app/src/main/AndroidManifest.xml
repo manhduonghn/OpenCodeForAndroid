@@ -18,6 +18,13 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Persisted JobScheduler watchdog and the optional auto-start after a reboot. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The terminal asks the app for a package installation with a broadcast. The permission is
+         declared below with protectionLevel="signature", so only this app can send it. -->
+    <uses-permission android:name="com.opencode.android.permission.PACKAGE_REQUEST" />
+
+    <permission
+        android:name="com.opencode.android.permission.PACKAGE_REQUEST"
+        android:protectionLevel="signature" />
 
     <application
         android:label="@string/app_name"
@@ -60,6 +67,14 @@
             android:name=".OpenCodeWatchdogJobService"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Receives the package request of the terminal, see OpenCodePkgReceiver. A broadcast is
+             used because 'am start-service' cannot start a service of another app on Android 11+
+             ('Can't start from invalid source'). -->
+        <receiver
+            android:name=".OpenCodePkgReceiver"
+            android:exported="true"
+            android:permission="com.opencode.android.permission.PACKAGE_REQUEST" />
 
         <!-- Restores the watchdog after a reboot and starts the server when the user enabled it. -->
         <receiver

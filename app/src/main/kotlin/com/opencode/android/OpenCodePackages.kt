@@ -1076,7 +1076,65 @@ object OpenCodePackages {
                 Log.w(TAG, "Could not create $env", e)
             }
         }
+
+        configureJdk(prefix)
     }
+
+    /**
+     * The `openjdk-*` packages install their tools into `lib/jvm/java-<version>-openjdk/bin` and
+     * rely on `update-alternatives` in a Debian maintainer script to link them into `bin/`. This
+     * prefix has no dpkg, so the maintainer scripts never run: create the links here, otherwise
+     * `java` and `javac` are not on PATH even though the JDK is installed. The environment
+     * snippet in [OpenCodeBootstrap] points `JAVA_HOME` and the loader path at the newest JDK.
+     */
+    private fun configureJdk(prefix: File) {
+        val jdk = newestJdk(prefix) ?: return
+        val tools = File(jdk, "bin").listFiles() ?: return
+        val bin = File(prefix, "bin")
+        if (!bin.isDirectory) return
+        val jdkDir = jdk.relativeTo(prefix).invariantSeparatorsPath
+
+        for (tool in tools) {
+            if (!tool.isFile || !tool.canExecute()) continue
+            val link = File(bin, tool.name)
+            if (link.exists()) continue
+            // A Debian alternatives link left by another package may dangle; replace it.
+            if (lexists(link)) deletePath(link)
+            try {
+                Os.symlink("../$jdkDir/bin/${tool.name}", link.absolutePath)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not create the JDK link $link", e)
+            }
+        }
+
+        // Java looks for its trust store in $JAVA_HOME/lib/security/cacerts. Termux keeps the
+        // store in ca-certificates-java and links it with update-alternatives, which never runs in
+        // this prefix: point Java at the file of the package instead (HTTPS from Java/Gradle then
+        // works out of the box). A store that the JDK itself ships is left alone.
+        val store = File(prefix, "etc/ssl/certs/java/cacerts")
+        val security = File(jdk, "lib/security")
+        val javaStore = File(security, "cacerts")
+        if (store.isFile && security.isDirectory && !javaStore.exists()) {
+            if (lexists(javaStore)) deletePath(javaStore)
+            try {
+                Os.symlink(store.absolutePath, javaStore.absolutePath)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not link the Java trust store $javaStore", e)
+            }
+        }
+    }
+
+    /** Newest `lib/jvm/java-<version>-openjdk` directory, or null when no JDK is installed. */
+    private fun newestJdk(prefix: File): File? =
+        File(prefix, "lib/jvm").listFiles()
+            ?.filter { it.isDirectory && isJdkName(it.name) }
+            ?.maxByOrNull { jdkVersion(it.name) }
+
+    private fun isJdkName(name: String): Boolean =
+        name.startsWith("java-") && name.endsWith("-openjdk")
+
+    private fun jdkVersion(name: String): Int =
+        name.removePrefix("java-").substringBefore('-').toIntOrNull() ?: 0
 
     private fun lexists(file: File): Boolean = try {
         Os.lstat(file.absolutePath)

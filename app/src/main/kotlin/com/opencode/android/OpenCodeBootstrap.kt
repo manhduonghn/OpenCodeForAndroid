@@ -175,7 +175,7 @@ object OpenCodeBootstrap {
     /* ------------------------------------------------------------------ constants */
 
     /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private const val LAUNCHER_VERSION = 8
+    private const val LAUNCHER_VERSION = 9
     private const val LAUNCHER_MARKER =
         "Managed by the OpenCode for Android app. opencode-launcher-version: $LAUNCHER_VERSION"
 
@@ -632,6 +632,19 @@ object OpenCodeBootstrap {
         append("  *\":\$PREFIX/lib:\"*) ;;\n")
         append("  *) LD_LIBRARY_PATH=\"\$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
         append("esac\n")
+        // The JDK links its own libraries relative to JAVA_HOME, but its RUNPATH still points at
+        // /data/data/com.termux. Point the loader at the relocated JDK as well.
+        jdkHome()?.let { jdk ->
+            append("JAVA_HOME=\"\${JAVA_HOME:-").append(jdk.absolutePath).append("}\"; export JAVA_HOME\n")
+            append("case \":\${LD_LIBRARY_PATH:-}:\" in\n")
+            append("  *\":\$JAVA_HOME/lib:\"*) ;;\n")
+            append("  *) LD_LIBRARY_PATH=\"\$JAVA_HOME/lib:\$JAVA_HOME/lib/server:\$LD_LIBRARY_PATH\"; export LD_LIBRARY_PATH ;;\n")
+            append("esac\n")
+            append("case \":\${PATH:-}:\" in\n")
+            append("  *\":\$JAVA_HOME/bin:\"*) ;;\n")
+            append("  *) PATH=\"\$JAVA_HOME/bin:\$PATH\"; export PATH ;;\n")
+            append("esac\n")
+        }
         append("# npm and pip keep their caches in the app HOME, the prefix may be read only for them.\n")
         append("npm_config_cache=\"\${npm_config_cache:-\${HOME:-\$PREFIX}/.npm}\"; export npm_config_cache\n")
         append("PIP_CACHE_DIR=\"\${PIP_CACHE_DIR:-\${HOME:-\$PREFIX}/.cache/pip}\"; export PIP_CACHE_DIR\n")
@@ -660,6 +673,24 @@ object OpenCodeBootstrap {
         append("fi\n")
         append(":\n")
     }
+
+    /** Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed. */
+    fun javaHome(): String? = jdkHome()?.absolutePath
+
+    /**
+     * Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed.
+     * Kept in sync with the symlink logic of [OpenCodePackages].
+     */
+    private fun jdkHome(): File? =
+        File(PREFIX, "lib/jvm").listFiles()
+            ?.filter {
+                it.isDirectory &&
+                    it.name.startsWith("java-") &&
+                    it.name.endsWith("-openjdk")
+            }
+            ?.maxByOrNull {
+                it.name.removePrefix("java-").substringBefore('-').toIntOrNull() ?: 0
+            }
 
     /** Write the managed login profile, unless the user replaced it with one of their own. */
     private fun ensureLoginProfile() {

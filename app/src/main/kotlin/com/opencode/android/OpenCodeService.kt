@@ -300,9 +300,21 @@ class OpenCodeService : Service() {
         val service = this
         builder.environment().apply {
             clear()
+            // A JDK installed with 'pkg install openjdk' is only usable when the loader and PATH
+            // know about it: the Termux RUNPATH points at the com.termux prefix, and the package
+            // relies on update-alternatives for bin/java.
+            val javaHome = OpenCodeBootstrap.javaHome()
             put("HOME", OpenCodeBootstrap.HOME)
             put("PREFIX", OpenCodeBootstrap.PREFIX)
-            put("PATH", "${OpenCodeBootstrap.PREFIX}/bin:/system/bin")
+            put(
+                "PATH",
+                if (javaHome == null) {
+                    "${OpenCodeBootstrap.PREFIX}/bin:/system/bin"
+                } else {
+                    "${OpenCodeBootstrap.PREFIX}/bin:$javaHome/bin:/system/bin"
+                },
+            )
+            if (javaHome != null) put("JAVA_HOME", javaHome)
             put("TMPDIR", "${OpenCodeBootstrap.PREFIX}/tmp")
             put("TERM", "xterm-256color")
             put("LANG", "en_US.UTF-8")
@@ -326,7 +338,18 @@ class OpenCodeService : Service() {
             // as an ELF file. For a native (patched) binary the loader still finds libc.so.6 and
             // friends through its own relocated tree; this directory only contains the bionic
             // names.
-            put("LD_LIBRARY_PATH", "${OpenCodeBootstrap.PREFIX}/lib")
+            put(
+                "LD_LIBRARY_PATH",
+                buildString {
+                    append(OpenCodeBootstrap.PREFIX).append("/lib")
+                    if (javaHome != null) {
+                        // The JDK was built for /data/data/com.termux: its RUNPATH is unusable,
+                        // the loader finds libjli/libjvm and their dependencies here instead.
+                        append(':').append(javaHome).append("/lib")
+                        append(':').append(javaHome).append("/lib/server")
+                    }
+                },
+            )
             // git from the Termux repository was built for the com.termux prefix: its helper
             // programs (git-remote-https, git-upload-pack, …) and its template directory live
             // below the old prefix, which is unreadable for this app. OpenCode runs git itself

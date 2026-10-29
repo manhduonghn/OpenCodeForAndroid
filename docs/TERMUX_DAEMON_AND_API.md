@@ -315,14 +315,103 @@ Luồng trong `LinuxEnvironment`:
 5. Play Store không chấp nhận target 28 cho bản cập nhật mới → nếu phát hành Play phải
    làm mục 1-3. Nếu chỉ sideload, giữ 28 là lựa chọn hợp lý và đơn giản nhất.
 
+### 4.6. `pkg install` trên Android 13+: vì sao `am start-service` thất bại
+
+Đây là lỗi có thật, gặp trên máy Android 13 (MIUI, API 33):
+
+```text
+$ pkg install -y openjdk
+Installing openjdk ...
+pkg: the app refused the request: Error: Can't start from invalid source: 10233
+```
+
+**Nguyên nhân** không phải quyền của app, mà là cách `am` gửi request:
+
+- `am` là *shell command* chạy trong tiến trình của chính app (UID `10233`), nhưng
+  `ActivityManagerShellCommand` luôn gửi `callingPackage = "com.android.shell"`.
+- `ActivityTaskManagerService.assertPackageMatchesCallingUid()` thấy package
+  `com.android.shell` không thuộc UID `10233` nên ném `SecurityException`, và
+  `ActiveServices` in ra `Can't start from invalid source: <uid>`.
+- Vì vậy **`am start-service`, `am start-foreground-service` và cả `am start-activity`**
+  đều bị từ chối khi gọi từ shell của app. `am broadcast --user 0` thì **không**, vì
+  broadcast không cần `callingPackage` khớp UID.
+
+**Cách sửa** (đã triển khai):
+
+1. `OpenCodePkgReceiver`: `exported="true"`, nhưng bảo vệ bằng permission
+   `com.opencode.android.permission.PACKAGE_REQUEST` với `protectionLevel="signature"`.
+   Chỉ app cùng chữ ký mới gửi được, app khác không thể lợi dụng.
+2. Launcher `pkg` gửi **ordered broadcast** `com.opencode.android.pkg.REQUEST`:
+   ```sh
+   am broadcast --user "$USER_ID" -n "$APP/.OpenCodePkgReceiver" \
+       -a com.opencode.android.pkg.REQUEST \
+       --es action install --es session "$SESSION" --es packages "$packages"
+   ```
+   Receiver gọi `startForegroundService(OpenCodePkgService)` (cùng UID) rồi
+   `setResultCode(1)`; launcher đọc `Broadcast completed: result=1` mới coi là app đã nhận,
+   `result=0` hoặc `Error` thì báo lỗi rõ ràng thay vì treo.
+3. `wait_for_service` chờ tối đa ~30 giây và nhắc "Bring OpenCode to the foreground" —
+   broadcast vẫn đánh thức app, nhưng lần cài đầu cần runtime đã sẵn sàng.
+
+Lưu ý: `USER_ID` được launcher sinh ra từ `Process.myUid() / 100000`, không hardcode `0`,
+nên multi-user vẫn đúng.
+
+### 4.7. `pkg bundle`: cài nhanh bộ công cụ cho agent
+
+Không thể "cài toàn bộ repo Termux": index `binary-aarch64` có **3.028 gói**, trong đó
+nhiều gói xung đột nhau (nhiều phiên bản `python`, `node`, `openjdk`), có gói chạy
+`postinst` cần `dpkg`/root, có daemon và tổng dung lượng hàng GB. Extract hết sẽ phá prefix
+và không có cơ chế remove. Thay vào đó là các nhóm chọn lọc:
+
+| Nhóm | Nội dung chính |
+| --- | --- |
+| `pkg bundle dev` | `clang make cmake ninja pkg-config autoconf automake libtool patchelf git gh ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop procps lsof ncurses-utils bash-completion sqlite` |
+| `pkg bundle python` | `python python-pip python-cryptography python-numpy python-pillow` |
+| `pkg bundle node` | `nodejs npm yarn pnpm` |
+| `pkg bundle java` | `openjdk-17 ca-certificates-java` |
+| `pkg bundle net` | `curl wget openssh rsync nmap dnsutils whois net-tools socat` |
+| `pkg bundle all` | hợp của tất cả nhóm trên (lớn, nhưng vẫn không phải cả repo) |
+
+Alias tên gói hay bị gõ sai:
+
+| Người dùng gõ | Gói thật |
+| --- | --- |
+| `openjdk`, `java`, `javac`, `jdk` | `openjdk-17` |
+| `node` | `nodejs` |
+| `pip`, `pip3` | `python-pip` |
+
+**JDK cần cấu hình thêm** vì Termux dùng `update-alternatives` trong `postinst`, mà prefix
+này không chạy `postinst`:
+
+- `openjdk-17` (96 MB deb, ~218 MB sau cài) nằm ở `$PREFIX/lib/jvm/java-17-openjdk`,
+  không có `$PREFIX/bin/java`.
+- `OpenCodePackages.configureJdk()` tự tạo symlink `bin/*` → `lib/jvm/.../bin/*` (thay cả
+  symlink treo của gói cũ), chọn JDK mới nhất nếu có nhiều bản.
+- `OpenCodeBootstrap` ghi `JAVA_HOME`, thêm `$JAVA_HOME/lib` + `$JAVA_HOME/lib/server` vào
+  `LD_LIBRARY_PATH` (RUNPATH của JDK trỏ `/data/data/com.termux`), thêm `$JAVA_HOME/bin`
+  vào `PATH` trong `etc/opencode-env.sh`; server cũng nhận `JAVA_HOME` trong env.
+- Nếu có `$PREFIX/etc/ssl/certs/java/cacerts` (từ `ca-certificates-java`), app link vào
+  `$JAVA_HOME/lib/security/cacerts` để HTTPS từ Java/Gradle hoạt động.
+- `openjdk-17` kéo theo `alsa-plugins` → `pulseaudio` (vài MB) do dependency khai báo;
+  không ảnh hưởng JVM nhưng làm lần cài lâu hơn.
+
+Sau khi cài:
+
+```sh
+. "$PREFIX/etc/opencode-env.sh"   # hoặc mở terminal mới
+java -version
+javac -version
+```
+
 ---
 
 ## 5. Kế hoạch đề xuất cho repo này
 
-> **Trạng thái: P0, P1 và P1.5 đã được triển khai** trong
+> **Trạng thái: P0, P1, P1.5 và P1.6 đã được triển khai** trong
 > `OpenCodeService.kt`, `OpenCodeWatchdog.kt`, `OpenCodeBootReceiver.kt`,
+> `OpenCodePkgReceiver.kt`, `OpenCodePkgService.kt`, `OpenCodePackages.kt`,
 > `OpenCodeSettings.kt`, `OpenCodeWebActivity.kt`, `OpenCodeSessionTracker.kt`,
-> `launcher_opencode.sh`, `AndroidManifest.xml` và layout/strings.
+> `launcher_opencode.sh`, `launcher_pkg.sh`, `AndroidManifest.xml` và layout/strings.
 > P2 vẫn để ngỏ.
 
 ### P0 — Sống sót khi vuốt recents (đã làm)
@@ -384,16 +473,33 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     Stop chủ động: đặt `user_stopped`, huỷ watchdog, xoá `service.json` và `stopSelf()`, nên
     watchdog không bật lại server sau vài phút.
 
+### P1.6 — `pkg` dùng được trên Android 13+ (đã làm)
+
+15. **Broadcast thay cho `am start-service`:** `OpenCodePkgReceiver` (signature permission
+    `com.opencode.android.permission.PACKAGE_REQUEST`) nhận ordered broadcast của launcher
+    `pkg`, gọi `startForegroundService(OpenCodePkgService)` trong cùng UID và trả
+    `result=1`. Sửa đúng lỗi `Can't start from invalid source: 10233`, xem mục 4.6.
+16. **Alias + bundle:** `openjdk|java|javac|jdk` → `openjdk-17`, `node` → `nodejs`,
+    `pip` → `python-pip`; thêm `pkg bundle dev|python|node|java|net|all`, xem mục 4.7.
+    `LAUNCHER_VERSION` tăng lên 9 để bản cài cũ được rewrite.
+17. **JDK chạy được:** `configureJdk()` tạo symlink `bin/*`, link trust store
+    (`cacerts`); env có `JAVA_HOME`, `LD_LIBRARY_PATH` và `PATH` cho JDK, cả trong terminal
+    lẫn env của server. `openjdk-17` là tên gói thật (`openjdk` không tồn tại trong repo).
+18. **Chưa kiểm chứng trên máy:** `java -version` trong prefix mới chỉ được suy luận từ
+    cấu trúc gói + env, chưa chạy thật vì môi trường build hiện tại không có JDK/Android
+    SDK và máy chưa cài APK mới. Sau khi cài APK: mở app một lần, chạy
+    `pkg install openjdk`, rồi `java -version`.
+
 ### P2 — Nâng cao
 
-15. **Shizuku/root detached server** (như AndroidHarness `spawnDetached`):
+19. **Shizuku/root detached server** (như AndroidHarness `spawnDetached`):
     - chạy `opencode serve` trong Shizuku user service → sống sót khi app chết;
     - app chỉ là client HTTP tới `127.0.0.1`;
     - chỉ bật khi user có Shizuku/root, kèm cảnh báo bảo mật.
-16. **runit/termux-services** như tiện ích: cho user chạy sshd/cron; tài liệu ghi rõ
+20. **runit/termux-services** như tiện ích: cho user chạy sshd/cron; tài liệu ghi rõ
     "chết cùng app", không quảng cáo là daemon thật.
-17. **Live Updates** (Android 16) cho notification khi agent đang chạy (tùy chọn).
-18. **Health check** định kỳ bằng `GET /api/info` thay vì chỉ `Socket.connect`, để phân
+21. **Live Updates** (Android 16) cho notification khi agent đang chạy (tùy chọn).
+22. **Health check** định kỳ bằng `GET /api/info` thay vì chỉ `Socket.connect`, để phân
     biệt "port mở" và "server thật sự khoẻ".
 
 ---
@@ -412,6 +518,8 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 | Thoát khỏi app hoàn toàn | Shizuku/root detached process | — |
 | Gọi termux-api | Port native | Cài Termux:API, fork plugin |
 | Cài thư viện ngoài `com.termux` | Extractor `.deb` + rewrite (đã có) | `apt`/`dpkg` vào prefix riêng |
+| `pkg` báo `Can't start from invalid source` | Broadcast + receiver có signature permission | `am start-service` từ shell của app |
+| Cài nhanh bộ công cụ | `pkg bundle dev\|python\|node\|java\|net\|all` | Cài cả 3.028 gói của index |
 | Nâng targetSdk | termux-exec preload/linker shim + FGS type + notification permission | Chỉ đổi số trong Gradle |
 
 ---
@@ -427,6 +535,13 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 - **Termux:API** là GPLv3; fork sẽ ràng buộc giấy phép và làm tăng bề mặt bảo trì.
 - **Shizuku** chạy UID 2000, có thể đọc/ghi ngoài sandbox; chỉ dành cho user nâng cao,
   phải cảnh báo rõ.
+- **Broadcast receiver** của `pkg` là `exported="true"`; an toàn nhờ permission
+  `signature` — đừng đổi thành `normal` hay bỏ permission, app khác sẽ start service được.
+- **JDK** chiếm ~218 MB trong prefix; không có `postinst` nên mọi thứ phải do app tự nối
+  (symlink, `JAVA_HOME`, `cacerts`). Gói `openjdk-17` kéo theo `pulseaudio` qua
+  `alsa-plugins`, làm lần cài đầu lâu hơn.
+- **Không có "cài hết repo"**: 3.028 gói Termux có xung đột và postinst; `pkg bundle all`
+  chỉ là nhóm chọn lọc, và index vẫn có thể đổi giữa các lần cài.
 
 ---
 

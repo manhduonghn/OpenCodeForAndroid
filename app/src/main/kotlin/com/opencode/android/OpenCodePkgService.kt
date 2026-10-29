@@ -20,9 +20,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * There is no `apt`, `dpkg` or `pkg` in this prefix: the app installs the Debian archives itself
  * with [OpenCodePackages]. The `pkg` shell script of the terminal has no way to call into the
- * app, so it starts this service with `am start-foreground-service` and follows the result
- * through a small status file. The service is not exported, the request therefore comes from the
- * same UID as the app.
+ * app, so it sends an ordered broadcast that [OpenCodePkgReceiver] turns into a start of this
+ * service; the script then follows the result through a small status file. The service is not
+ * exported, the request therefore comes from the same UID as the app.
  *
  * Every request carries a session name. The service writes
  * `$HOME/.opencode/<session>.status` (key=value lines) and, for a search,
