@@ -156,6 +156,13 @@ app shows a progress screen instead of a blank WebView. The WebView only loads
 the web UI once the server really accepts connections, which avoids
 `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.
 
+The activity is `singleTask` and handles the orientation/`screenSize`/`uiMode`/
+`density` configuration changes itself, so rotating the phone, switching apps or
+tapping the icon again brings the same WebView back: the UI, the scroll position
+and the open session are kept and nothing is fetched again. When the activity is
+recreated anyway (process death), the saved WebView state is restored instead of
+starting a new pairing round.
+
 ### Terminal usage
 
 ```sh

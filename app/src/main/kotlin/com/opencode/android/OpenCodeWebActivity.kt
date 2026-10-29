@@ -136,19 +136,59 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
         OpenCodeBootstrap.restoreState()
         OpenCodeBootstrap.addInstallListener(this)
 
+        // A rotation does not recreate this activity (see android:configChanges in the manifest),
+        // so the WebView keeps its DOM, its scroll position and the open session. When the
+        // activity is recreated anyway (process death, or a configuration change that is not
+        // listed in the manifest), the saved WebView state is restored instead of downloading
+        // the UI again: only the progress screen is skipped, nothing is fetched from the server.
+        val restoredPage = savedInstanceState != null
+            && savedInstanceState.getBoolean(KEY_PAGE_LOADED, false)
+            && webView.restoreState(savedInstanceState) != null
+        if (restoredPage) {
+            pageLoaded = true
+            statusPanel.visibility = View.GONE
+            webView.visibility = View.VISIBLE
+        }
+
         // Make sure the OpenCode server is running before the WebView talks to it.
         startServerService()
-        handler.post(poll)
+        if (!restoredPage) handler.post(poll)
 
         // 'oc-install' (and the 'opencode upgrade' command) opens this activity with this extra to
-        // force a fresh download of the runtime.
-        if (intent?.getBooleanExtra(OpenCodeBootstrap.ACTION_FORCE_UPDATE, false) == true) {
-            waitingForInstall = true
-            statusTitle.text = getString(R.string.opencode_updating)
-            statusDetail.text = getString(R.string.opencode_update_preparing)
-            statusProgress.isIndeterminate = true
-            OpenCodeBootstrap.requestUpdate(this)
-        }
+        // force a fresh download of the runtime. A restored page must never trigger it again.
+        if (!restoredPage && wantsForcedUpdate(intent)) beginForcedUpdate()
+    }
+
+    /**
+     * The activity is 'singleTask', so tapping the icon or the notification while it is still
+     * alive brings the existing instance forward instead of creating a new one: the WebView is
+     * not reloaded. The only intent that still has to be handled here is the forced update of
+     * 'oc-install', which arrives while the activity is already running.
+     */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (wantsForcedUpdate(intent)) beginForcedUpdate()
+    }
+
+    private fun wantsForcedUpdate(intent: Intent?): Boolean =
+        intent?.getBooleanExtra(OpenCodeBootstrap.ACTION_FORCE_UPDATE, false) == true
+
+    /** Re-download the runtime while the progress screen takes the place of the web UI. */
+    private fun beginForcedUpdate() {
+        pageLoaded = false
+        waitingForInstall = true
+        pairAttempts = 0
+        loadFailures = 0
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        statusTitle.text = getString(R.string.opencode_updating)
+        statusDetail.text = getString(R.string.opencode_update_preparing)
+        statusProgress.isIndeterminate = true
+        statusRetry.visibility = View.GONE
+        OpenCodeBootstrap.requestUpdate(this)
+        handler.removeCallbacks(poll)
+        handler.post(poll)
     }
 
     private fun configureWebView() {
@@ -482,6 +522,15 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (pageLoaded) {
+            // The history and the DOM of the WebView, so a recreation does not reload the UI.
+            webView.saveState(outState)
+        }
+        outState.putBoolean(KEY_PAGE_LOADED, pageLoaded)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onDestroy() {
         destroyed = true
         probeExecutor.shutdownNow()
@@ -501,5 +550,8 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
 
         /** Endpoint that redeems a pairing code for a session token. */
         private const val PAIR_PATH = "/auth/connect/"
+
+        /** Saved state: the web UI was already loaded, its WebView state is in the bundle too. */
+        private const val KEY_PAGE_LOADED = "page_loaded"
     }
 }
