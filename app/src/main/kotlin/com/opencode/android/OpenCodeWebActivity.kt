@@ -199,7 +199,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
      * intent that starts this activity. When the activity is already on screen the system may
      * deliver it here instead, so both paths are handled.
      */
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         if (wantsForcedUpdate(intent)) beginForcedUpdate()
