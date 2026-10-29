@@ -24,7 +24,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:gravity="center"
-            android:text="Đang chuẩn bị OpenCode…"
+            android:text="@string/opencode_preparing"
             android:textColor="#FFF5F5F5"
             android:textSize="18sp"
             android:textStyle="bold" />
@@ -44,7 +44,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
             android:gravity="center"
-            android:text="Lần chạy đầu tiên sẽ tải và cài đặt Linux toolchain cùng OpenCode, việc này mất vài phút."
+            android:text="@string/opencode_first_start"
             android:textColor="#FFBDBDBD"
             android:textSize="13sp" />
 
@@ -53,7 +53,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="22dp"
-            android:text="Thử lại"
+            android:text="@string/opencode_retry"
             android:visibility="gone" />
     </LinearLayout>
 </FrameLayout>

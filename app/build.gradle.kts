@@ -14,8 +14,8 @@ android {
         // execve() of app data files for apps that target API 29 or higher (the same reason the
         // Termux app itself still targets API 28), so stay on 28.
         targetSdk = 28
-        versionCode = 8
-        versionName = "1.0.7"
+        versionCode = 9
+        versionName = "1.0.8"
     }
 
     signingConfigs {
@@ -55,6 +55,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // The app is written in Kotlin only, the sources live in src/main/kotlin.
+    sourceSets {
+        getByName("main") {
+            java.srcDirs("src/main/kotlin")
+        }
+    }
+
     buildFeatures {
         buildConfig = true
     }
@@ -69,9 +76,6 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.activity:activity-compose:1.12.4")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
 }

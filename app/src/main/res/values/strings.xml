@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenCode for Android</string>
+
+    <!-- Progress screen -->
+    <string name="opencode_preparing">Đang chuẩn bị OpenCode…</string>
+    <string name="opencode_preparing_detail">Đang kiểm tra lại các thành phần còn thiếu.</string>
+    <string name="opencode_first_start">Lần chạy đầu tiên sẽ tải và cài đặt Linux toolchain cùng OpenCode, việc này mất vài phút.</string>
+    <string name="opencode_installing">Đang cài đặt OpenCode…</string>
+    <string name="opencode_install_failed">Cài đặt thất bại</string>
+    <string name="opencode_starting">Đang khởi động OpenCode…</string>
+    <string name="opencode_install_done_detail">Quá trình cài đặt đã xong, server đang khởi động.</string>
+    <string name="opencode_updating">Đang cập nhật OpenCode…</string>
+    <string name="opencode_update_preparing">Đang chuẩn bị tải lại OpenCode.</string>
+    <string name="opencode_retry">Thử lại</string>
+    <string name="opencode_ui_unavailable">Không tải được giao diện OpenCode</string>
+    <string name="opencode_ui_unavailable_detail">Mã %1$d: %2$s. Ứng dụng sẽ thử lại.</string>
+    <string name="opencode_retry_hint">Nhấn \"Thử lại\" để thử lại.</string>
+
+    <!-- Notification -->
+    <string name="opencode_server_channel">OpenCode server</string>
+    <string name="opencode_pkg_channel">OpenCode packages</string>
+</resources>
