@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -83,7 +84,7 @@ class OpenCodeService : Service() {
      * Wi-Fi lock that keeps the radio awake, like Termux does for `termux-wake-lock`. Without it
      * the Wi-Fi stack can go into power save after a while even when the CPU stays awake.
      */
-    private var wifiLock: PowerManager.WifiLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     /**
      * How often the server was restarted after a SIGKILL, used for the exponential backoff. It is
@@ -873,9 +874,9 @@ class OpenCodeService : Service() {
         try {
             val held = wifiLock
             if (held != null && held.isHeld) return
-            val manager = getSystemService(PowerManager::class.java) ?: return
+            val manager = getSystemService(WifiManager::class.java) ?: return
             wifiLock = manager
-                .createWifiLock(PowerManager.WIFI_MODE_FULL_HIGH_PERF, "opencode:foreground:wifi")
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "opencode:foreground:wifi")
                 .apply {
                     setReferenceCounted(false)
                     acquire()
