@@ -24,16 +24,20 @@
     <string name="opencode_notification_session">Phiên: %1$s</string>
     <string name="opencode_notification_no_session">Chưa mở phiên chat nào</string>
     <string name="opencode_notification_action_open">Mở</string>
+    <string name="opencode_notification_action_restart">Khởi động lại</string>
     <string name="opencode_notification_action_stop">Dừng</string>
     <string name="opencode_notification_stopped">OpenCode đã dừng</string>
     <string name="opencode_notification_stopped_text">Server đang tắt, mở ứng dụng để khởi động lại.</string>
+    <string name="opencode_notification_phantom_title">Android đã dừng server OpenCode</string>
+    <string name="opencode_notification_phantom_text">Server bị Android kill (mã 9/137). Ứng dụng sẽ tự khởi động lại; nếu lặp lại, hãy tắt giới hạn tiến trình phantom.</string>
+    <string name="opencode_notification_phantom_big">Android 12 trở lên giới hạn số tiến trình con của mọi ứng dụng (phantom process killer) và gửi SIGKILL khi vượt hạn mức hoặc khi tiến trình dùng quá nhiều CPU. Wake lock và foreground service không chặn được cơ chế này.\n\nCách xử lý:\n• Android 12L/13+: bật Tùy chọn nhà phát triển → “Tắt giới hạn tiến trình con” (Disable child process restrictions) nếu có.\n• Android 12L/13+: adb shell settings put global settings_enable_monitor_phantom_procs false\n• Android 12: adb shell device_config put activity_manager max_phantom_processes 2147483647\n• Android 14+: Tùy chọn nhà phát triển → tắt giới hạn tiến trình con.\n• Xiaomi/Oppo/vivo/Samsung: bật “Khởi động cùng hệ thống”/“Tự khởi động” và tắt tối ưu pin cho OpenCode.\n\nSau đó bấm “Khởi động lại” hoặc mở ứng dụng.</string>
 
     <!-- Top bar and settings -->
     <string name="opencode_web_title">OpenCode</string>
     <string name="opencode_web_subtitle">Web UI · 127.0.0.1:49374</string>
     <string name="opencode_settings">Cài đặt</string>
     <string name="opencode_settings_close">Đóng</string>
-    <string name="opencode_settings_subtitle">Phiên chat, pin, bộ nhớ, cập nhật và GitHub</string>
+    <string name="opencode_settings_subtitle">Phiên chat, chạy nền, bộ nhớ, cập nhật và GitHub</string>
     <string name="opencode_settings_open">Mở cài đặt</string>
 
     <!-- Current session -->
@@ -73,8 +77,14 @@
     <string name="opencode_battery_title">Pin &amp; hiệu năng</string>
     <string name="opencode_battery_wakelock">Giữ CPU hoạt động</string>
     <string name="opencode_battery_wakelock_desc">Dùng PARTIAL_WAKE_LOCK để Android không ngủ và không giới hạn server khi màn hình tắt.</string>
-    <string name="opencode_battery_wakelock_on">Đang bật wake lock</string>
+    <string name="opencode_battery_wakelock_on">Đang bật wake lock (CPU và Wi-Fi)</string>
     <string name="opencode_battery_wakelock_off">Đang tắt wake lock</string>
+    <string name="opencode_battery_boot">Tự chạy khi khởi động máy</string>
+    <string name="opencode_battery_boot_desc">Khởi động server ngay sau khi máy khởi động lại hoặc sau khi cập nhật ứng dụng.</string>
+    <string name="opencode_battery_watchdog">Watchdog giữ server sống</string>
+    <string name="opencode_battery_watchdog_desc">Kiểm tra mỗi 15 phút; nếu server không còn lắng nghe trên cổng 49374 thì tự khởi động lại. Job này tồn tại qua reboot.</string>
+    <string name="opencode_battery_keepalive_help">Hướng dẫn giữ chạy nền</string>
+    <string name="opencode_battery_keepalive_summary">Android có thể kill server khi ở nền hoặc khi vuốt ứng dụng khỏi danh sách gần đây. Xem hướng dẫn cho từng hãng máy.</string>
     <string name="opencode_battery_optimization">Bỏ tối ưu pin</string>
     <string name="opencode_battery_optimization_desc">Cho phép OpenCode chạy ổn định khi ứng dụng ở nền.</string>
     <string name="opencode_battery_optimization_ok">Đã bỏ tối ưu pin</string>
@@ -193,6 +203,10 @@
     <string name="opencode_settings_github_private">Riêng tư</string>
     <string name="opencode_settings_github_public">Công khai</string>
     <string name="opencode_settings_github_syncing">Đang đồng bộ GitHub với OpenCode…</string>
+
+    <!-- Keep-alive help -->
+    <string name="opencode_keepalive_help_title">Giữ OpenCode chạy nền</string>
+    <string name="opencode_keepalive_help_message">OpenCode chạy như một foreground service và giữ wake lock, nhưng Android và các bản ROM của hãng vẫn có thể dừng nó:\n\n1. Tắt tối ưu pin\n   • Mở Cài đặt → Pin → Tối ưu pin, chọn OpenCode rồi chọn “Không tối ưu”.\n   • Nút “Bỏ tối ưu pin” trong mục này mở đúng màn hình đó.\n\n2. Cho phép tự khởi động (ROM Trung Quốc)\n   • Xiaomi/MIUI: Cài đặt → Ứng dụng → Quản lý ứng dụng → OpenCode → Tự khởi động; bật “Hiển thị trên màn hình khóa” và tắt “Tiết kiệm pin”.\n   • Samsung: Cài đặt → Pin → Giới hạn sử dụng nền → thêm OpenCode vào “Ứng dụng không bao giờ ngủ”.\n   • Oppo/Realme/OnePlus: Cài đặt → Pin → Tối ưu ứng dụng → OpenCode → “Không tối ưu”; bật “Tự khởi động”.\n   • vivo/iQOO: Cài đặt → Pin → Quản lý nền → OpenCode → “Cho phép chạy nền”.\n   • Huawei: Cài đặt → Pin → Khởi chạy ứng dụng → OpenCode → tắt “Quản lý tự động” và bật cả ba mục.\n\n3. Phantom process killer (Android 12+)\n   Android giới hạn 32 tiến trình con trên toàn hệ thống và kill tiến trình dùng nhiều CPU. Foreground service không được miễn trừ.\n   • Android 12L/13+: adb shell settings put global settings_enable_monitor_phantom_procs false\n   • Android 12: adb shell device_config put activity_manager max_phantom_processes 2147483647\n   • Android 14+: Tùy chọn nhà phát triển → “Tắt giới hạn tiến trình con” (nếu có).\n\n4. Trong ứng dụng\n   • Bật “Giữ CPU hoạt động” để có wake lock CPU + Wi-Fi.\n   • Bật “Watchdog giữ server sống” để kiểm tra lại mỗi 15 phút.\n   • Bật “Tự chạy khi khởi động máy” nếu muốn server chạy lại sau reboot.\n\nVuốt ứng dụng khỏi danh sách gần đây không còn dừng server, nhưng một số ROM sẽ kill cả tiến trình; watchdog và START_STICKY sẽ khởi động lại.</string>
 
     <!-- Misc -->
     <string name="opencode_ok">OK</string>

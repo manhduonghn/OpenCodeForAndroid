@@ -38,6 +38,12 @@ class OpenCodeWebViewModel : ViewModel() {
     /** True once the web UI of the server was loaded, it survives a configuration change. */
     var pageLoaded = false
 
+    /**
+     * Session that has to be opened after the start page finished loading. It lives here, not in
+     * the activity, so a rotation during the load does not lose the session the user picked.
+     */
+    var pendingSessionId: String? = null
+
     /** HTTP Basic password of the local server, the WebView answers its challenges with it. */
     var serverPassword = ""
 

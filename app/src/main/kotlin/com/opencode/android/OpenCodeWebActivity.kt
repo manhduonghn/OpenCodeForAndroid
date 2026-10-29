@@ -96,6 +96,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var wakeLockSwitch: Switch
     private lateinit var wakeLockStatus: TextView
     private lateinit var batteryOptimizationButton: Button
+    private lateinit var bootStartSwitch: Switch
+    private lateinit var watchdogSwitch: Switch
+    private lateinit var keepAliveHelpButton: Button
     private lateinit var storageStatus: TextView
     private lateinit var storageGrant: Button
     private lateinit var storagePick: Button
@@ -166,7 +169,11 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private var loadFailures = 0
 
     /** Session that has to be opened after the start page finished loading. */
-    private var pendingSessionId: String? = null
+    private var pendingSessionId: String?
+        get() = viewModel.pendingSessionId
+        set(value) {
+            viewModel.pendingSessionId = value
+        }
 
     private var sessionRefreshing = false
     private var updateChecking = false
@@ -233,6 +240,13 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         bindViews()
         bindSettings()
 
+        // Remember the open chat across a process death: the start page is loaded first and
+        // onPageFinished routes to this session, like reopening a TUI reattaches the last one.
+        OpenCodeSessionTracker.attach(applicationContext)
+        if (!viewModel.pageLoaded && pendingSessionId == null) {
+            pendingSessionId = OpenCodeSettings.lastSessionId(this)
+        }
+
         // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
         // the same page: it only has to be moved from the view hierarchy of the previous activity
         // into this one. Nothing is reloaded.
@@ -278,8 +292,12 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             webView.visibility = View.GONE
         }
 
-        // Make sure the OpenCode server is running before the WebView talks to it.
+        // Make sure the OpenCode server is running before the WebView talks to it. Opening the
+        // activity is an explicit start and overrides a previous Stop.
+        OpenCodeSettings.setStoppedByUser(this, false)
         startServerService()
+        // The watchdog only needs to be scheduled once, ensureScheduled is idempotent.
+        OpenCodeWatchdog.ensureScheduled(this)
         if (!pageAlive) {
             handler.post(poll)
             if (wantsForcedUpdate(intent)) beginForcedUpdate()
@@ -312,6 +330,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         wakeLockSwitch = findViewById(R.id.wakelock_switch)
         wakeLockStatus = findViewById(R.id.wakelock_status)
         batteryOptimizationButton = findViewById(R.id.battery_optimization_button)
+        bootStartSwitch = findViewById(R.id.boot_start_switch)
+        watchdogSwitch = findViewById(R.id.watchdog_switch)
+        keepAliveHelpButton = findViewById(R.id.keepalive_help_button)
         storageStatus = findViewById(R.id.storage_status)
         storageGrant = findViewById(R.id.storage_grant)
         storagePick = findViewById(R.id.storage_pick)
@@ -361,6 +382,15 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             )
         }
         batteryOptimizationButton.setOnClickListener { requestIgnoreBatteryOptimizations() }
+        bootStartSwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeSettings.setBootStartEnabled(this, checked)
+        }
+        watchdogSwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeWatchdog.setEnabled(this, checked)
+        }
+        keepAliveHelpButton.setOnClickListener { showKeepAliveHelp() }
 
         storageGrant.setOnClickListener { requestStorageAccess() }
         storagePick.setOnClickListener { pickProjectDirectory() }
@@ -404,6 +434,8 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         suppressSettingsCallbacks = true
         updatesAuto.isChecked = OpenCodeSettings.autoUpdateCheck(this)
         wakeLockSwitch.isChecked = OpenCodeSettings.wakeLockEnabled(this)
+        bootStartSwitch.isChecked = OpenCodeSettings.bootStartEnabled(this)
+        watchdogSwitch.isChecked = OpenCodeSettings.watchdogEnabled(this)
         suppressSettingsCallbacks = false
 
         val installed = OpenCodeBootstrap.getInstalledVersion().ifEmpty { "-" }
@@ -605,6 +637,18 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                 ).show()
             }
         }
+    }
+
+    /** Explain the OEM settings and the phantom process killer that a foreground service cannot beat. */
+    private fun showKeepAliveHelp() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.opencode_keepalive_help_title)
+            .setMessage(R.string.opencode_keepalive_help_message)
+            .setPositiveButton(R.string.opencode_ok, null)
+            .setNeutralButton(R.string.opencode_battery_optimization) { _, _ ->
+                requestIgnoreBatteryOptimizations()
+            }
+            .show()
     }
 
     /* ------------------------------------------------------------------ shared storage */
@@ -1103,7 +1147,18 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (wantsForcedUpdate(intent)) beginForcedUpdate()
+        // Bringing the app to the front is an explicit start.
+        OpenCodeSettings.setStoppedByUser(this, false)
+        OpenCodeWatchdog.ensureScheduled(this)
+        if (wantsForcedUpdate(intent)) {
+            beginForcedUpdate()
+        } else {
+            startServerService()
+            if (!pageLoaded) {
+                handler.removeCallbacks(poll)
+                handler.post(poll)
+            }
+        }
     }
 
     private fun wantsForcedUpdate(intent: Intent?): Boolean =
@@ -1284,6 +1339,18 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     /** Show the last known progress, it is useful before the first listener callback arrives. */
     private fun updateProgress() {
         if (pageLoaded || waitingForInstall) return
+        if (OpenCodeSettings.stoppedByUser(this)) {
+            // The user pressed Stop in the notification while the activity was still alive.
+            handler.removeCallbacks(poll)
+            waitingForInstall = false
+            webView.visibility = View.GONE
+            statusPanel.visibility = View.VISIBLE
+            statusProgress.isIndeterminate = false
+            statusTitle.text = getString(R.string.opencode_notification_stopped)
+            statusDetail.text = getString(R.string.opencode_notification_stopped_text)
+            statusRetry.visibility = View.VISIBLE
+            return
+        }
         val state = OpenCodeBootstrap.getInstallState()
         applyState(state)
         if (state.failed) return
@@ -1336,6 +1403,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     /** Start the foreground service that hosts the server, ignoring background restrictions. */
     private fun startServerService() {
+        // Never override an explicit Stop from the notification. A real user action (opening the
+        // activity, Retry, Restart) clears the flag before asking for a start.
+        if (OpenCodeSettings.stoppedByUser(this)) return
         try {
             val intent = Intent(this, OpenCodeService::class.java)
             intent.putExtra(EXTRA_PORT, PORT)
@@ -1347,12 +1417,18 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun retryInstall() {
+        OpenCodeSettings.setStoppedByUser(this, false)
         statusRetry.visibility = View.GONE
         statusTitle.text = getString(R.string.opencode_preparing)
         statusDetail.text = getString(R.string.opencode_preparing_detail)
         statusProgress.isIndeterminate = true
-        waitingForInstall = true
-        OpenCodeBootstrap.setupIfNeeded(this, null)
+        // Retry is also the way back from an explicit Stop, when the runtime is already installed.
+        waitingForInstall = !OpenCodeBootstrap.isRuntimeComplete()
+        if (waitingForInstall) {
+            OpenCodeBootstrap.setupIfNeeded(this, null)
+        } else {
+            startServerService()
+        }
         pairAttempts = 0
         loadFailures = 0
         handler.removeCallbacks(poll)
@@ -1546,7 +1622,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     companion object {
         private const val TAG = "OpenCodeWebActivity"
 
-        const val PORT = 49374
+        const val PORT = OpenCodeService.DEFAULT_PORT
 
         /** Extra accepted by [OpenCodeService] to know the port it should serve. */
         const val EXTRA_PORT = "port"

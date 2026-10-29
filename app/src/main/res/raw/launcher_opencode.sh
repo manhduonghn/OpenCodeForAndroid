@@ -39,6 +39,44 @@ fi
 # if the loader was passed explicitly.
 MARK=$(cat "$H/.opencode/.native-interp" 2>/dev/null)
 NOW=$(/system/bin/stat -L -c '%s %Y' "$BIN" 2>/dev/null)
+
+# The interactive TUI must use the server of the app, not start a second one. The
+# app registers its server in the state file that OpenCode discovers, but attaching
+# explicitly also works on older builds and when the file is stale.
+ATTACH=1
+for arg in "$@"; do
+  case "$arg" in
+    --server|--server=*|--standalone|--help|-h|--version|-v|--completions) ATTACH=0 ;;
+  esac
+done
+SUB=""
+EXPECT_VALUE=0
+for arg in "$@"; do
+  if [ "$EXPECT_VALUE" = 1 ]; then EXPECT_VALUE=0; continue; fi
+  case "$arg" in
+    --session|-s|--prompt|--log-level|--server) EXPECT_VALUE=1 ;;
+    -*) ;;
+    *) SUB="$arg"; break ;;
+  esac
+done
+case "$SUB" in
+  ""|mini) ;;
+  upgrade|update|uninstall|acp|api|debug|auth|mcp|plugin|models|stats|run|session|service|reload|pair|serve) ATTACH=0 ;;
+  *) ;;
+esac
+if [ "$ATTACH" = 1 ]; then
+  SERVER_PID=$(cat "$H/.opencode/server.pid" 2>/dev/null)
+  if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    SERVER_URL="http://127.0.0.1:${OPENCODE_PORT:-49374}"
+    if [ "$SUB" = "mini" ] && [ "${1:-}" = "mini" ]; then
+      shift
+      set -- mini --server "$SERVER_URL" "$@"
+    else
+      set -- --server "$SERVER_URL" "$@"
+    fi
+  fi
+fi
+
 if [ -n "$MARK" ] && [ "$MARK" = "$NOW" ]; then
   exec "$BIN" "$@"
 fi

@@ -1,5 +1,6 @@
 package com.opencode.android
 
+import android.content.Context
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -29,6 +30,18 @@ object OpenCodeSessionTracker {
 
     private val listeners = CopyOnWriteArrayList<Listener>()
 
+    /** Application context used to persist the last session, set by [attach]. */
+    @Volatile
+    private var appContext: Context? = null
+
+    /**
+     * Connect the tracker to the preferences. Called by [OpenCodeWebActivity] before the WebView
+     * reports its first route, so the session survives the death of the app process.
+     */
+    fun attach(context: Context) {
+        appContext = context.applicationContext
+    }
+
     /**
      * Record the session of the current route. A null or empty id means that no chat session is
      * open (for example the start page or the settings of the web UI).
@@ -40,7 +53,13 @@ object OpenCodeSessionTracker {
         if (resolvedTitle.isNotEmpty()) activeSessionTitle = resolvedTitle
         if (normalized == null && activeSessionId == null) return
         activeSessionId = normalized
-        if (normalized == null) activeSessionTitle = ""
+        if (normalized == null) {
+            activeSessionTitle = ""
+        } else {
+            // Keep the last real session when the user goes back to the start page: reopening
+            // the app continues that chat instead of showing an empty home screen.
+            appContext?.let { OpenCodeSettings.setLastSessionId(it, normalized) }
+        }
         if (changed) {
             for (listener in listeners) {
                 try {

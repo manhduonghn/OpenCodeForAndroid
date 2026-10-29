@@ -15,8 +15,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.system.Os
 import android.util.Base64
 import android.util.Log
+import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
@@ -41,12 +43,12 @@ class OpenCodeService : Service() {
 
     /** The parameters of the last start request, they are passed through the intent. */
     class Params {
-        var port: Int = 49374
+        var port: Int = OpenCodeService.DEFAULT_PORT
     }
 
     private var process: Process? = null
     private val handler = Handler(Looper.getMainLooper())
-    private var port: Int = 49374
+    private var port: Int = DEFAULT_PORT
 
     /** True once the bootstrap reports that the toolchain and the binary are installed. */
     @Volatile
@@ -77,6 +79,19 @@ class OpenCodeService : Service() {
     /** PARTIAL_WAKE_LOCK that keeps the server alive while the screen is off. */
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /**
+     * Wi-Fi lock that keeps the radio awake, like Termux does for `termux-wake-lock`. Without it
+     * the Wi-Fi stack can go into power save after a while even when the CPU stays awake.
+     */
+    private var wifiLock: PowerManager.WifiLock? = null
+
+    /**
+     * How often the server was restarted after a SIGKILL, used for the exponential backoff. It is
+     * reset whenever a server starts successfully.
+     */
+    @Volatile
+    private var restartAttempts = 0
+
     /** Last status line of the server, shown when no chat session is open. */
     @Volatile
     private var serverStatusText = "Starting the OpenCode server..."
@@ -102,6 +117,8 @@ class OpenCodeService : Service() {
         applyWakeLock()
         startForegroundCompat(buildNotification())
         startSessionPolling()
+        // The watchdog is persisted, but an update of the app or a disabled job can lose it.
+        OpenCodeWatchdog.ensureScheduled(this)
         // Make sure the Linux toolchain and OpenCode itself are installed first, then start the
         // server. The callback runs on the UI thread, the installation itself runs in the
         // background thread of the bootstrap.
@@ -120,12 +137,24 @@ class OpenCodeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) return START_STICKY
 
-        if (intent.getStringExtra("action") == ACTION_STOP) {
-            stopSelf()
+        val action = intent.getStringExtra("action")
+        if (action == ACTION_STOP) {
+            // Remember the explicit stop: otherwise the watchdog would start the server again a
+            // few minutes later and the Stop action would look broken.
+            OpenCodeSettings.setStoppedByUser(this, true)
+            OpenCodeWatchdog.cancel(this)
+            // stopServer() kills the child first and calls stopSelf() when it is gone, so the
+            // server cannot survive as an orphan of a service that was destroyed immediately.
+            stopServer()
             return START_NOT_STICKY
         }
 
-        if (intent.getStringExtra("action") == ACTION_RESTART) {
+        // Any real start (app, notification, watchdog, boot) overrides an earlier Stop.
+        OpenCodeSettings.setStoppedByUser(this, false)
+        OpenCodeWatchdog.ensureScheduled(this)
+
+        if (action == ACTION_RESTART) {
+            restartAttempts = 0
             restartServer()
             return START_STICKY
         }
@@ -143,15 +172,22 @@ class OpenCodeService : Service() {
 
     override fun onDestroy() {
         stopSessionPolling()
+        handler.removeCallbacksAndMessages(null)
         stopServer()
         releaseWakeLock()
+        getSystemService(NotificationManager::class.java)?.cancel(PHANTOM_NOTIFICATION_ID)
         super.onDestroy()
         sInstance = null
     }
 
     override fun onTaskRemoved(intent: Intent?) {
         super.onTaskRemoved(intent)
-        stopSelf()
+        // Swiping the app away only removes the task, not the server: the foreground service must
+        // keep running so a running chat is not interrupted. The old code called stopSelf() here,
+        // which also killed the server and was the main reason a swipe ended the session.
+        Log.i(TAG, "The task was removed from the recents list, keeping the server alive.")
+        OpenCodeWatchdog.ensureScheduled(this)
+        postNotification()
     }
 
     /* ------------------------------------------------------------------ server lifecycle */
@@ -171,7 +207,7 @@ class OpenCodeService : Service() {
             restartIfNewBinary()
             if (adopted && isPortOpen(port)) {
                 Log.i(TAG, "The adopted OpenCode server is still running.")
-                updateNotification("Running on http://127.0.0.1:$port")
+                markServerRunning()
                 return
             }
             process?.let { running ->
@@ -208,7 +244,7 @@ class OpenCodeService : Service() {
                     recoveredFromBusyPort = false
                     runningBinaryPath = binary.absolutePath
                     writePidFile(inherited)
-                    updateNotification("Running on http://127.0.0.1:$port")
+                    markServerRunning()
                     return
                 }
                 // A server of an earlier installation was started with another password, or it
@@ -332,12 +368,22 @@ class OpenCodeService : Service() {
         recoveredFromBusyPort = false
         runningBinaryPath = binary.absolutePath
         Log.i(TAG, "The OpenCode server process was started: $port (pid $startedPid)")
+        markServerRunning()
 
         Thread({ watchServer(started, startedPid) }, "opencode-service-reader").apply {
             isDaemon = true
             start()
         }
+    }
 
+    /** Reset the restart backoff and clear the explanation of an earlier phantom kill. */
+    private fun markServerRunning() {
+        restartAttempts = 0
+        getSystemService(NotificationManager::class.java)?.cancel(PHANTOM_NOTIFICATION_ID)
+        // Register the server in the state file that the TUI and the CLI of OpenCode discover.
+        // Without it `opencode` starts a second server of its own, which then fights for the
+        // port that this service already owns.
+        writeServiceRegistration()
         updateNotification("Running on http://127.0.0.1:$port")
     }
 
@@ -370,10 +416,27 @@ class OpenCodeService : Service() {
             serverPid = -1
             adopted = false
             clearPidFile(startedPid)
+            clearServiceRegistration(startedPid)
         }
         Log.w(TAG, "The OpenCode server exited with $exitCode")
 
         val intentional = stopping || !current
+        // `opencode service stop` sends SIGTERM to the registered server. That is an explicit
+        // request of the user, exactly like the Stop action of the notification: the watchdog
+        // must not start the server again a few minutes later.
+        if (!intentional && exitCode == 143) {
+            Log.i(TAG, "The OpenCode server was stopped by 'opencode service stop'.")
+            handleUserStop()
+            return
+        }
+        // Android's phantom process killer (and the low memory killer) sends SIGKILL, which the
+        // JVM reports as 9 or 137. A foreground service and a wake lock cannot prevent that, so
+        // explain it instead of showing a generic crash and retry with a backoff.
+        if (!intentional && (exitCode == 9 || exitCode == 137)) {
+            Log.w(TAG, "The OpenCode server was killed by Android (exit $exitCode).")
+            handlePhantomKill(exitCode)
+            return
+        }
         if (exitCode != 0 && !intentional) {
             updateNotification("The OpenCode server stopped (exit $exitCode).")
         }
@@ -389,15 +452,96 @@ class OpenCodeService : Service() {
         }
     }
 
+    /**
+     * Explain a SIGKILL of the server and start it again with an exponential backoff. The delay
+     * avoids a tight loop when the phantom process killer is still deciding to kill every new
+     * child of the app.
+     */
+    private fun handlePhantomKill(exitCode: Int) {
+        val explanation = getString(R.string.opencode_notification_phantom_text)
+        updateNotification(explanation)
+        postPhantomKillNotification()
+        if (sInstance !== this || stopping) return
+        val attempt = restartAttempts.coerceAtMost(6)
+        val delay = (5_000L shl attempt).coerceAtMost(5 * 60_000L)
+        restartAttempts++
+        Log.i(TAG, "Restarting the server after a kill in ${delay}ms (attempt $restartAttempts).")
+        handler.postDelayed({
+            if (sInstance !== this || stopping) return@postDelayed
+            if (process?.isAlive == true) return@postDelayed
+            startServer()
+        }, delay)
+    }
+
+    /**
+     * Handle a stop that was requested outside the app (`opencode service stop`). It is treated
+     * like the Stop action: remember the explicit stop, cancel the watchdog and remove the
+     * foreground service so its notification does not claim a dead server is running.
+     */
+    private fun handleUserStop() {
+        OpenCodeSettings.setStoppedByUser(this, true)
+        OpenCodeWatchdog.cancel(this)
+        updateNotification("The OpenCode server was stopped.")
+        handler.post {
+            if (sInstance === this) stopSelf()
+        }
+    }
+
+    /**
+     * A separate, dismissible notification with the phantom process killer commands. The ongoing
+     * notification cannot be dismissed, so the instructions would otherwise stay forever.
+     */
+    private fun postPhantomKillNotification() {
+        val openIntent = PendingIntent.getActivity(
+            this,
+            10,
+            Intent(this, OpenCodeWebActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val restartIntent = PendingIntent.getService(
+            this,
+            11,
+            Intent(this, OpenCodeService::class.java)
+                .putExtra("action", ACTION_RESTART),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = getString(R.string.opencode_notification_phantom_big)
+        val notification = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_service_notification)
+            .setContentTitle(getString(R.string.opencode_notification_phantom_title))
+            .setContentText(getString(R.string.opencode_notification_phantom_text))
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(openIntent)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .addAction(
+                R.drawable.ic_refresh,
+                getString(R.string.opencode_notification_action_restart),
+                restartIntent,
+            )
+            .build()
+        try {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(PHANTOM_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not post the phantom killer notification", e)
+        }
+    }
+
     /** Kill the OpenCode server process, the next start command starts it again. */
     fun stopServer() {
         WORKER.execute {
             synchronized(SERVER_LOCK) {
+                restartAttempts = 0
                 if (process == null && !adopted) {
+                    clearServiceRegistration(serverPid)
+                    clearPidFile()
                     stopSelf()
                     return@synchronized
                 }
                 stopping = true
+                val stoppedPid = serverPid
                 val running = process
                 if (running != null) {
                     terminate(running)
@@ -408,6 +552,7 @@ class OpenCodeService : Service() {
                 serverPid = -1
                 adopted = false
                 clearPidFile()
+                clearServiceRegistration(stoppedPid)
                 waitForPortFree(3000)
                 stopSelf()
             }
@@ -419,6 +564,7 @@ class OpenCodeService : Service() {
         WORKER.execute {
             synchronized(SERVER_LOCK) {
                 if (sInstance !== this) return@synchronized
+                restartAttempts = 0
                 stopExisting()
                 if (bootstrapReady) startServerBlocking()
             }
@@ -429,6 +575,7 @@ class OpenCodeService : Service() {
     private fun stopExisting() {
         if (process == null && !adopted) return
         stopping = true
+        val stoppedPid = serverPid
         process?.let {
             terminate(it)
             process = null
@@ -437,6 +584,7 @@ class OpenCodeService : Service() {
         serverPid = -1
         adopted = false
         clearPidFile()
+        clearServiceRegistration(stoppedPid)
         waitForPortFree(4000)
         stopping = false
     }
@@ -588,6 +736,12 @@ class OpenCodeService : Service() {
             Intent(this, OpenCodeService::class.java).putExtra("action", ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val restartIntent = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, OpenCodeService::class.java).putExtra("action", ACTION_RESTART),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
         val session = activeSession
         val title: String
@@ -616,6 +770,11 @@ class OpenCodeService : Service() {
                 R.drawable.ic_service_notification,
                 getString(R.string.opencode_notification_action_open),
                 openIntent,
+            )
+            .addAction(
+                R.drawable.ic_refresh,
+                getString(R.string.opencode_notification_action_restart),
+                restartIntent,
             )
             .addAction(
                 R.drawable.ic_close,
@@ -657,6 +816,7 @@ class OpenCodeService : Service() {
     private fun applyWakeLock() {
         if (OpenCodeSettings.wakeLockEnabled(this)) {
             acquireWakeLock()
+            acquireWifiLock()
         } else {
             releaseWakeLock()
         }
@@ -680,6 +840,30 @@ class OpenCodeService : Service() {
         }
     }
 
+    /**
+     * Termux acquires the same high performance Wi-Fi lock in `TermuxService`. The CPU wake lock
+     * alone does not keep the Wi-Fi radio out of power save, so a long answer could stall while
+     * the screen is off.
+     */
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        try {
+            val held = wifiLock
+            if (held != null && held.isHeld) return
+            val manager = getSystemService(PowerManager::class.java) ?: return
+            wifiLock = manager
+                .createWifiLock(PowerManager.WIFI_MODE_FULL_HIGH_PERF, "opencode:foreground:wifi")
+                .apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            Log.i(TAG, "High performance Wi-Fi lock acquired")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire the Wi-Fi lock", e)
+            wifiLock = null
+        }
+    }
+
     private fun releaseWakeLock() {
         try {
             wakeLock?.takeIf { it.isHeld }?.release()
@@ -687,6 +871,12 @@ class OpenCodeService : Service() {
             Log.w(TAG, "Could not release the wake lock", e)
         }
         wakeLock = null
+        try {
+            wifiLock?.takeIf { it.isHeld }?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not release the Wi-Fi lock", e)
+        }
+        wifiLock = null
     }
 
     private fun startSessionPolling() {
@@ -738,8 +928,14 @@ class OpenCodeService : Service() {
     companion object {
         private const val TAG = "OpenCodeService"
 
+        /** Default port of `opencode serve`, shared with the activity and the watchdog. */
+        const val DEFAULT_PORT = 49374
+
         const val NOTIFICATION_CHANNEL_ID = "opencode_service_channel"
         const val NOTIFICATION_ID = 1340
+
+        /** Dismissible notification that explains an Android SIGKILL of the server. */
+        const val PHANTOM_NOTIFICATION_ID = 1341
 
         const val ACTION_START = "com.opencode.android.opencode.START"
         const val ACTION_STOP = "com.opencode.android.opencode.STOP"
@@ -780,6 +976,16 @@ class OpenCodeService : Service() {
 
         /** Pid of the server process, it survives app restarts so a stale server can be reused. */
         private val PID_FILE = OpenCodeBootstrap.HOME + "/.opencode/server.pid"
+
+        /** State file with which the TUI discovers the server, see `writeServiceRegistration`. */
+        private val SERVICE_STATE_DIR = OpenCodeBootstrap.HOME + "/.local/state/opencode"
+        private val SERVICE_FILE = "$SERVICE_STATE_DIR/service.json"
+
+        /** Release channel of the installed build: `latest` uses the plain `service.json`. */
+        private const val SERVICE_CHANNEL = "latest"
+
+        /** 0600: the registration contains the server password. */
+        private const val SERVICE_FILE_MODE = 384
 
         /** True while the OpenCode server process is running. */
         @JvmStatic
@@ -862,6 +1068,73 @@ class OpenCodeService : Service() {
             file.writeText(pid.toString())
         } catch (e: Exception) {
             Log.w(TAG, "Could not write the server pid file", e)
+        }
+    }
+
+    /**
+     * Write `$XDG_STATE_HOME/opencode/service.json`, the registration that the OpenCode TUI and
+     * CLI use to find a background server. `opencode` probes the URL with the password, checks
+     * the pid and the version, and then attaches instead of spawning its own `serve`.
+     *
+     * The format is the one of the upstream service manager:
+     * `{id, version, url, pid, password}`. The channel of this build is `latest`, so the file is
+     * `service.json` (other channels use `service-<channel>.json`).
+     */
+    private fun writeServiceRegistration() {
+        val pid = serverPid
+        if (pid <= 0) return
+        val version = OpenCodeBootstrap.getInstalledVersion()
+        if (version.isEmpty()) return
+
+        val directory = File(SERVICE_STATE_DIR)
+        try {
+            directory.mkdirs()
+            val json = JSONObject()
+                .put("id", SERVICE_CHANNEL)
+                .put("version", version)
+                .put("url", "http://127.0.0.1:$port")
+                .put("pid", pid)
+                .put("password", OpenCodeBootstrap.getServerPassword(this))
+                .toString()
+            // Write next to the target and rename, so a reader never sees a half written file.
+            val temporary = File.createTempFile("service", ".json", directory)
+            temporary.writeText(json)
+            Os.chmod(temporary.absolutePath, SERVICE_FILE_MODE)
+            val target = File(SERVICE_FILE)
+            if (!temporary.renameTo(target)) {
+                target.delete()
+                if (!temporary.renameTo(target)) {
+                    temporary.delete()
+                    Log.w(TAG, "Could not move the service registration to $SERVICE_FILE")
+                    return
+                }
+            }
+            Os.chmod(target.absolutePath, SERVICE_FILE_MODE)
+            Log.i(TAG, "Registered the server for the terminal in $SERVICE_FILE")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not write the service registration", e)
+        }
+    }
+
+    /**
+     * Remove the service registration, but only when it still points at the server that is being
+     * stopped. A file written by another `opencode serve --service` must survive.
+     */
+    private fun clearServiceRegistration(expectedPid: Int = -1) {
+        val file = File(SERVICE_FILE)
+        if (!file.isFile) return
+        if (expectedPid > 0) {
+            val registered = try {
+                JSONObject(file.readText()).optInt("pid", -1)
+            } catch (e: Exception) {
+                -1
+            }
+            if (registered != expectedPid) return
+        }
+        try {
+            if (file.delete()) Log.i(TAG, "Removed the service registration $SERVICE_FILE")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not remove the service registration", e)
         }
     }
 
