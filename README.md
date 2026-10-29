@@ -22,6 +22,12 @@ The app combines the two techniques that make this possible:
    * `data/data/com.termux/files/usr/...` → `$PREFIX/...`
    * absolute symlinks → relative symlinks inside the prefix
    * `#!/data/data/com.termux/files/usr/bin/sh` shebangs → `$PREFIX/bin/sh`
+   * `#!/…/bin/env node` and `#!/…/bin/env python` launchers → `$PREFIX/bin/env …`
+   * the dead Android-bridge wrappers of `termux-tools` (`pm`, `cmd`, `am`, …)
+     are dropped instead of shadowing the real `/system` commands
+   * git's ELF `SHELL_PATH` (`/data/data/com.termux/files/usr/bin/sh`) is patched
+     in place to `/system/bin/sh`; git runs hooks, aliases and `!` credential
+     helpers through that literal, which does not exist outside the Termux app
 
    No `apt`/`dpkg` is involved, they would write into the real Termux prefix.
 
@@ -73,11 +79,12 @@ The app combines the two techniques that make this possible:
 
 ### What gets installed
 
-Only the minimum the runtime needs (≈14 MB of packages):
+Only the minimum the runtime needs (≈20 MB of packages):
 
 | package | why |
 | --- | --- |
 | `bash` (+ `readline`, `ncurses`, `libiconv`, `libandroid-support`) | shell for OpenCode and scripts |
+| `coreutils` (+ `openssl`, `libgmp`, …) | `bin/env` for `#!/…/bin/env node` launchers and the standard utilities |
 | `glibc` (+ `linux-api-headers-glibc`) | glibc loader and libraries for the OpenCode binary |
 | `patchelf` (+ `libc++`) | rewrites the RUNPATH of `bash`/`patchelf` themselves |
 | `ca-certificates` | HTTPS trust store (`SSL_CERT_FILE`) |
@@ -93,6 +100,8 @@ download/verify/extract code:
 
 ```sh
 pkg install git gh
+pkg install npm
+pkg install python-pip
 pkg search editor
 pkg list-installed
 ```
@@ -102,25 +111,35 @@ pkg list-installed
 status file, so the terminal shows the "Downloading… / Extracting…" progress
 while the app does the work. The service is not exported; the request comes from
 the same UID as the app, which is also why no root is needed. Dependencies are
-resolved from the package index, the archives are extracted directly into
-`$PREFIX`, and `termux-tools`/`termux-exec` are skipped (`termux-exec` is not
-needed because the app targets API 28, so binaries in its data directory may be
-executed).
+resolved from the package index — including `Provides:` virtual packages
+(`python3` → `python`) and `a | b` alternatives (`nodejs | nodejs-lts`) — the
+archives are extracted directly into `$PREFIX`, and `termux-tools`/`termux-exec`
+are skipped.
+
+`termux-exec` is not needed because the app targets API 28, so binaries in its
+data directory may be executed directly. That is also why there is no linker
+shim: a script whose shebang points into this prefix is exec'ed by the kernel
+normally. The app still repairs prefixes installed by older builds on every
+start: dangling Termux symlinks are relinked, dead Termux shebangs are rewritten
+or removed, and git's ELF shell path is patched. A package that the marker lists
+but whose files are gone is installed again instead of being treated as present.
 
 The Termux binaries are linked against `$PREFIX/lib` with an absolute RUNPATH
 that points at the com.termux prefix. `$PREFIX/etc/opencode-env.sh` (sourced by
-`etc/profile` and hooked into `etc/bash.bashrc`) exports `LD_LIBRARY_PATH`, and
-the OpenCode server gets the same variable in its environment, so `git`, `gh`,
-`python`, `node`, … find their libraries. The git build additionally has
-`libexec/git-core` and its template directory compiled in for the old prefix;
-both are re-pointed with `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable
-system git config is disabled with `GIT_CONFIG_NOSYSTEM`.
+`etc/profile` and hooked into `etc/bash.bashrc`) exports `PATH`, `TMPDIR`,
+`LD_LIBRARY_PATH`, the npm/pip caches and the CA bundle (`SSL_CERT_FILE`,
+`CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`), and the OpenCode server gets the same
+variables in its environment, so `git`, `gh`, `python`, `node`, … find their
+libraries. The git build additionally has `libexec/git-core` and its template
+directory compiled in for the old prefix; both are re-pointed with
+`GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable system git config is
+disabled with `GIT_CONFIG_NOSYSTEM`.
 
 `pkg remove` is not implemented: packages are extracted without a dpkg
 database, so there is nothing to remove from. Clearing the app data is the
-supported way to start over. Reinstalling a core package (`bash`, `glibc`,
-`patchelf`, `ca-certificates`) is refused as well: the app patches their
-binaries (the login profile path, the relocated glibc loader), so they are
+supported way to start over. Reinstalling a core package (`bash`, `coreutils`,
+`glibc`, `patchelf`, `ca-certificates`) is refused as well: the app patches
+their binaries (the login profile path, the relocated glibc loader), so they are
 updated with `oc-install` / `opencode update`.
 
 `bash` and `patchelf` — the two tools the app itself spawns — get their RUNPATH
@@ -152,7 +171,7 @@ same server.
 
 ### Installation progress
 
-The first start downloads ≈14 MB of toolchain and ≈114 MB of OpenCode, so the
+The first start downloads ≈20 MB of toolchain and ≈114 MB of OpenCode, so the
 app shows a progress screen instead of a blank WebView. The WebView only loads
 the web UI once the server really accepts connections, which avoids
 `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.

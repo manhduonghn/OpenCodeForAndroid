@@ -120,6 +120,19 @@ object OpenCodeGitHub {
                     }
                 },
             )
+            // The extraction already repairs the package, run the same repair for a prefix that
+            // was installed by an older build, then refresh the shell environment so git and gh
+            // find their helpers and the shared libraries of the prefix.
+            try {
+                OpenCodePackages.repair(File(OpenCodeBootstrap.PREFIX))
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not repair the package environment", e)
+            }
+            try {
+                OpenCodeBootstrap.ensurePackageEnvironment()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not refresh the shell environment", e)
+            }
             Result(if (bothAvailable()) 0 else 1, "")
         } catch (e: Exception) {
             Log.w(TAG, "Could not install git/gh", e)

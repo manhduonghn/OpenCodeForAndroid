@@ -152,6 +152,13 @@ class OpenCodePkgService : Service() {
 
         // The profile and the shell startup file of the runtime are written by the app; make sure
         // a command installed right now is found and the shared libraries of the prefix are used.
+        // The repair also fixes a prefix of an older build (Termux symlinks/shebangs, git's
+        // embedded shell path) when the requested package was already installed.
+        try {
+            OpenCodePackages.repair(File(OpenCodeBootstrap.PREFIX))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not repair the package environment", e)
+        }
         try {
             OpenCodeBootstrap.ensurePackageEnvironment()
         } catch (e: Exception) {
@@ -265,7 +272,7 @@ class OpenCodePkgService : Service() {
          * terminal, so they are updated through the app instead.
          */
         private val RUNTIME_PACKAGES = setOf(
-            "bash", "glibc", "glibc-runner", "patchelf", "ca-certificates",
+            "bash", "coreutils", "glibc", "glibc-runner", "patchelf", "ca-certificates",
             "termux-tools", "termux-am", "termux-am-socket", "termux-core", "termux-exec",
         )
 

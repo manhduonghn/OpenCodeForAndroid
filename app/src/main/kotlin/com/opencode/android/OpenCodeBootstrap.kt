@@ -218,10 +218,11 @@ object OpenCodeBootstrap {
 
     /**
      * Termux packages that are extracted into the app-private prefix before OpenCode is
-     * downloaded: a shell, the core utilities, the certificate store, the glibc runtime (the
-     * loader that runs OpenCode) and patchelf (it rewrites the RUNPATH of the binaries).
+     * downloaded: a shell, the core utilities (they provide `bin/env`, which the `#!/…/bin/env`
+     * launchers of npm and pip need), the certificate store, the glibc runtime (the loader that
+     * runs OpenCode) and patchelf (it rewrites the RUNPATH of the binaries).
      */
-    private val CORE_PACKAGES = listOf("bash", "ca-certificates", "patchelf", "glibc")
+    private val CORE_PACKAGES = listOf("bash", "coreutils", "ca-certificates", "patchelf", "glibc")
 
     /** Endpoint telling which OpenCode version is the latest one. */
     private const val VERSION_API_URL = "https://opencode.ai/update/api/latest/cli/npm"
@@ -598,14 +599,23 @@ object OpenCodeBootstrap {
      * re-rooted here. The file is sourced by the login profile and by etc/bash.bashrc.
      */
     private fun buildPackageEnvironment(): String = buildString {
-        append("# Managed by the OpenCode for Android app (package environment v1).\n")
+        append("# Managed by the OpenCode for Android app (package environment v2).\n")
         append("# Sourced by etc/profile and etc/bash.bashrc of the runtime.\n")
         append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
         append("export PREFIX\n")
+        append("case \":\${PATH:-}:\" in\n")
+        append("  *\":\$PREFIX/bin:\"*) ;;\n")
+        append("  *) PATH=\"\$PREFIX/bin\${PATH:+:\$PATH}\"; export PATH ;;\n")
+        append("esac\n")
+        append("TMPDIR=\"\${TMPDIR:-\$PREFIX/tmp}\"; export TMPDIR\n")
+        append("[ -d \"\$TMPDIR\" ] || mkdir -p \"\$TMPDIR\" 2>/dev/null\n")
         append("case \":\${LD_LIBRARY_PATH:-}:\" in\n")
         append("  *\":\$PREFIX/lib:\"*) ;;\n")
         append("  *) LD_LIBRARY_PATH=\"\$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
         append("esac\n")
+        append("# npm and pip keep their caches in the app HOME, the prefix may be read only for them.\n")
+        append("npm_config_cache=\"\${npm_config_cache:-\${HOME:-\$PREFIX}/.npm}\"; export npm_config_cache\n")
+        append("PIP_CACHE_DIR=\"\${PIP_CACHE_DIR:-\${HOME:-\$PREFIX}/.cache/pip}\"; export PIP_CACHE_DIR\n")
         append("# git was built for /data/data/com.termux/files/usr: its helpers would be looked up\n")
         append("# there, which belongs to another app.\n")
         append("if [ -d \"\$PREFIX/libexec/git-core\" ]; then\n")
@@ -627,6 +637,7 @@ object OpenCodeBootstrap {
         append("if [ -f \"\$PREFIX/etc/tls/cert.pem\" ]; then\n")
         append("  SSL_CERT_FILE=\"\$PREFIX/etc/tls/cert.pem\"; export SSL_CERT_FILE\n")
         append("  CURL_CA_BUNDLE=\"\$SSL_CERT_FILE\"; export CURL_CA_BUNDLE\n")
+        append("  NODE_EXTRA_CA_CERTS=\"\$SSL_CERT_FILE\"; export NODE_EXTRA_CA_CERTS\n")
         append("fi\n")
         append(":\n")
     }
@@ -839,6 +850,29 @@ object OpenCodeBootstrap {
 
         fun doMaintenance() {
             deleteQuietly(File(LEGACY_SETUP_SCRIPT_PATH))
+            // Repair a prefix that was installed by an older build: dangling Termux symlinks,
+            // dead Termux shebangs and the git ELF shell path. Then reinstall packages whose
+            // marker entry exists but whose files are gone (an interrupted extraction).
+            try {
+                val repaired = OpenCodePackages.repair(File(PREFIX))
+                if (repaired != null) Log.i(LOG_TAG, "Repaired the package environment: $repaired")
+                val broken = OpenCodePackages.brokenPackages(File(PREFIX))
+                // A prefix installed by an older build predates coreutils: install it, the
+                // `#!/…/bin/env node` launchers of npm need bin/env.
+                val needsCoreutils = !File("$PREFIX/bin/coreutils").exists()
+                if (broken.isNotEmpty() || needsCoreutils) {
+                    val repair = (CORE_PACKAGES + broken).distinct()
+                    Log.i(LOG_TAG, "Reinstalling broken packages: $repair")
+                    installPackages(repair, "Could not repair the Linux toolchain")
+                    // A reinstalled bash/patchelf carries the com.termux RUNPATH again; the tools
+                    // the app spawns directly must start without LD_LIBRARY_PATH.
+                    patchRpath(File("$PREFIX/bin/bash"), "$PREFIX/lib")
+                    patchRpath(File("$PREFIX/bin/patchelf"), "$PREFIX/lib")
+                }
+            } catch (e: Exception) {
+                // Offline is not a reason to fail the maintenance of an otherwise ready runtime.
+                Log.w(LOG_TAG, "Could not repair the package environment", e)
+            }
             // Repair the parts that a reinstall of a package or an OpenCode update may have
             // replaced: the aliases, the relocated runtime, the login profile and the marker.
             ensurePathAliases()

@@ -24,7 +24,6 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
-import java.util.ArrayDeque
 import java.util.Locale
 
 /**
@@ -33,6 +32,19 @@ import java.util.Locale
  * data archives are extracted directly into the prefix. The absolute paths of the Termux prefix
  * are rewritten while extracting, so the package does not need the Termux app and does not need
  * the com.termux package name.
+ *
+ * The extraction rules follow the AndroidHarness project:
+ *
+ *  - absolute symlinks into `/data/data/com.termux/files/usr` become relative links, so the tree
+ *    stays relocatable and never points at another app;
+ *  - scripts with a Termux shebang (`bin/pip`, `lib/node_modules/npm/bin/npm-cli.js`, the git
+ *    helpers, …) get the shebang rewritten into this prefix, which also makes the coreutils
+ *    `bin/env` work for `#!/…/bin/env node` launchers;
+ *  - the Android bridge wrappers of termux-tools (`pm`, `cmd`, `am`, …) are dropped, they only
+ *    shadow the real /system commands and die with exit 126;
+ *  - git's ELF carries `SHELL_PATH=/data/data/com.termux/files/usr/bin/sh`, it is patched in
+ *    place to `/system/bin/sh`, otherwise hooks, aliases and the credential helper of
+ *    `gh auth setup-git` cannot spawn a shell.
  */
 object OpenCodePackages {
 
@@ -41,7 +53,13 @@ object OpenCodePackages {
     /** Prefix that is baked into the Termux packages. */
     private const val TERMUX_USR = "data/data/com.termux/files/usr"
     private const val TERMUX_USR_ABS = "/$TERMUX_USR/"
-    private const val TERMUX_SHEBANG = "#!$TERMUX_USR_ABS"
+    private const val TERMUX_USR_ROOT = "/$TERMUX_USR"
+
+    /** Marker of any shebang that points at the Termux app, even outside files/usr. */
+    private const val TERMUX_SHEBANG_MARK = "#!/data/data/com.termux/"
+
+    /** Written after the one-time deep repair of the node package tree. */
+    private const val DEEP_REPAIR_MARKER = ".packages-repaired-v2"
 
     /** Android bridge wrappers of termux-tools, they only shadow the real /system binaries. */
     private val SYSTEM_WRAPPERS = setOf(
@@ -52,6 +70,12 @@ object OpenCodePackages {
     )
 
     /**
+     * Bridge commands that cannot work here at all. `cmd` is also shipped as an ELF and
+     * `termux-am`/`termux-am-socket` need the socket service of the Termux app.
+     */
+    private val UNSUPPORTED_BRIDGES = setOf("cmd", "termux-am", "termux-am-socket")
+
+    /**
      * Dependencies that the app does not need. 'termux-tools' is a collection of wrappers around
      * the Android commands of the Termux app (am, pm, …) and pulls the Termux app itself
      * (termux-am, termux-am-socket, termux-core) plus a dozen command line packages. The bash
@@ -59,6 +83,26 @@ object OpenCodePackages {
      */
     private val SKIPPED_DEPENDENCIES = setOf(
         "termux-tools", "termux-am", "termux-am-socket", "termux-core", "termux-exec",
+    )
+
+    /**
+     * Package name → files proving that the package is actually usable. A marker entry whose
+     * files vanished (an interrupted extraction, a wiped prefix) must not make the installer
+     * believe the package is installed: that was the silent no-op bug of the old installer.
+     */
+    private val BINARY_PROOF: Map<String, List<String>> = mapOf(
+        "bash" to listOf("bin/bash"),
+        "coreutils" to listOf("bin/coreutils", "bin/env"),
+        "busybox" to listOf("bin/busybox"),
+        "ca-certificates" to listOf("etc/tls/cert.pem"),
+        "patchelf" to listOf("bin/patchelf"),
+        "git" to listOf("bin/git"),
+        "gh" to listOf("bin/gh"),
+        "openssl" to listOf("bin/openssl"),
+        "python" to listOf("bin/python3", "bin/python"),
+        "python-pip" to listOf("bin/pip", "bin/pip3"),
+        "nodejs" to listOf("bin/node"),
+        "npm" to listOf("bin/npm"),
     )
 
     private val MAIN_MIRRORS = arrayOf(
@@ -90,7 +134,10 @@ object OpenCodePackages {
         var sha256: String = ""
         var description: String = ""
         var repo: String = ""
-        val depends: MutableList<String> = ArrayList()
+
+        /** One entry per dependency; an entry holds the alternatives of `a | b`. */
+        val depends: MutableList<List<String>> = ArrayList()
+        val provides: MutableList<String> = ArrayList()
     }
 
     /** The Debian architecture of the device, or null when OpenCode has no build for it. */
@@ -105,7 +152,8 @@ object OpenCodePackages {
 
     /**
      * Install the given packages and all of their dependencies into the prefix. Already installed
-     * packages are skipped, the installation is idempotent.
+     * packages are skipped, the installation is idempotent. Packages that the marker lists but
+     * whose files are gone are installed again instead of being trusted.
      */
     @Throws(Exception::class)
     fun install(prefix: File, wanted: List<String>, progress: Progress) {
@@ -113,21 +161,31 @@ object OpenCodePackages {
             ?: throw IOException("The CPU architecture \"${firstAbi()}\" is not supported.")
 
         val marker = File(prefix, ".packages-installed")
-        val installed = readInstalled(marker).toMutableList()
-        if (installed.containsAll(wanted) && File(prefix, "bin/bash").isFile) {
+        var recorded = readInstalled(marker)
+        var broken = brokenPackages(prefix)
+        if (recorded.containsAll(wanted) && broken.isEmpty() && File(prefix, "bin/bash").isFile) {
             progress.onStatus("The Linux toolchain is already installed.")
             progress.onPercent(100, "")
-            ensureShellLink(prefix)
+            ensureEnvironmentLinks(prefix)
             return
         }
 
-        // A prefix without a shell is broken, even when the marker says the packages were
-        // installed (an earlier run may have been interrupted while extracting). Left over files
-        // of the apt based bootstrap are not relocatable either, start from a clean directory.
-        if (!File(prefix, "bin/bash").isFile && prefix.exists()) {
+        // A prefix without a shell is broken. When there is no marker either, the files are
+        // leftovers of the old apt based bootstrap, they are not relocatable: start clean.
+        // With a marker the tree is kept (a full wipe would throw away every package the user
+        // installed) and the recorded packages are extracted again, see below.
+        val shellMissing = !File(prefix, "bin/bash").isFile
+        if (shellMissing && !marker.isFile && prefix.exists()) {
             progress.onStatus("Removing the files of the previous installation...")
             deleteTree(prefix)
-            installed.clear()
+            recorded = emptyList()
+            broken = emptyList()
+        }
+        if (shellMissing) {
+            // Without a shell the tree cannot be trusted. The marker lists what should be there,
+            // so every recorded package is installed again (with its dependencies) instead of
+            // only bash: reinstalling bash alone would leave its missing libraries behind.
+            broken = recorded
         }
         if (!prefix.isDirectory && !prefix.mkdirs()) throw IOException("Could not create $prefix")
 
@@ -159,8 +217,23 @@ object OpenCodePackages {
             }
         }
 
-        val closure = dependencyClosure(index, wanted, installed)
-        if (closure.isEmpty() && !File(prefix, "bin/bash").isFile) {
+        val providers = buildProviders(index)
+        // The shell is the base of everything the app spawns; when it is gone, install it again
+        // even when the caller only asked for an add-on (git, gh, npm, …).
+        val effectiveWanted = LinkedHashSet(wanted)
+        if (shellMissing) effectiveWanted.add("bash")
+        effectiveWanted.addAll(broken)
+        val required = LinkedHashSet(wanted)
+        if (shellMissing) required.add("bash")
+        val already = recorded.filter { it !in broken }
+        val closure = dependencyClosure(
+            index,
+            providers,
+            effectiveWanted.toList(),
+            already,
+            required.toList(),
+        )
+        if (closure.isEmpty() && shellMissing) {
             throw IOException("The package list does not contain the required packages.")
         }
 
@@ -176,15 +249,24 @@ object OpenCodePackages {
 
             val deb = File(cache, packageFileName(pkg))
             if (!deb.isFile || deb.length() == 0L) {
-                downloadVerified("${pkg.repo}/${pkg.filename}", deb, pkg.sha256)
+                downloadWithMirrors(pkg, deb)
             }
             progress.onStatus("Extracting ${pkg.name} ${pkg.version}...")
-            extractDeb(deb, prefix)
+            try {
+                extractDeb(deb, prefix)
+            } catch (e: Exception) {
+                // A cached archive may be truncated by an earlier crash, fetch it again once.
+                deb.delete()
+                downloadWithMirrors(pkg, deb)
+                extractDeb(deb, prefix)
+            }
             deb.delete()
         }
 
-        appendInstalled(marker, closure, installed)
-        ensureShellLink(prefix)
+        // The marker is rewritten, not appended: entries of broken packages must disappear so the
+        // next run does not trust them again.
+        writeInstalled(marker, already, closure)
+        ensureEnvironmentLinks(prefix)
         progress.onPercent(100, "")
     }
 
@@ -226,6 +308,138 @@ object OpenCodePackages {
             .sorted()
     }
 
+    /**
+     * Repair a prefix that was installed by an older build of the app: dangling Termux symlinks,
+     * dead Termux shebangs and the git ELF shell path. Cheap enough to run on every start of the
+     * app, it returns a summary or null when nothing needed fixing.
+     */
+    fun repair(prefix: File): String? {
+        if (!File(prefix, ".packages-installed").isFile) return null
+        var relinked = 0
+        var removed = 0
+        var rewritten = 0
+        var shellPatched = 0
+
+        fun repairShebangs(dir: File, isBin: Boolean) {
+            if (!dir.isDirectory) return
+            val files = dir.listFiles() ?: return
+            for (file in files) {
+                if (!file.isFile) continue
+                val name = file.name
+                if (isBin && name in UNSUPPORTED_BRIDGES) {
+                    if (file.delete()) removed++
+                    continue
+                }
+                val firstLine = firstLineOf(file) ?: continue
+                if (!firstLine.startsWith(TERMUX_SHEBANG_MARK)) continue
+                val repaired = TermuxShebangs.rewrittenFirstLine(firstLine, prefix.absolutePath)
+                val wrapper = isBin && TermuxShebangs.isWrapperScript(name, firstLine)
+                if (repaired != null && !wrapper) {
+                    if (rewriteFirstLine(file, repaired)) rewritten++
+                } else if (isBin && file.delete()) {
+                    removed++
+                }
+            }
+        }
+
+        for (dir in listOf(File(prefix, "bin"), File(prefix, "bin/applets"))) {
+            if (!dir.isDirectory) continue
+            val files = dir.listFiles() ?: continue
+            for (file in files) {
+                val link = readLink(file) ?: continue
+                val target = TermuxLinkRewrite.relativeTarget(link, file.toRelativeString(prefix))
+                    ?: continue
+                if (relink(file, target)) relinked++
+            }
+        }
+
+        // Cheap scan: bin/ (the wrappers, the applets and the python/pip scripts) and the git
+        // helpers.
+        repairShebangs(File(prefix, "bin"), true)
+        repairShebangs(File(prefix, "libexec/git-core"), false)
+
+        // A prefix installed by an older build has node packages whose `#!/…/bin/env node`
+        // shebangs were never rewritten (npm, npx, node-gyp, …). Walk that tree once: the new
+        // extractor rewrites every shebang, so a second pass is not needed.
+        val deepMarker = File(prefix, DEEP_REPAIR_MARKER)
+        if (!deepMarker.isFile) {
+            val modules = File(prefix, "lib/node_modules")
+            if (modules.isDirectory) {
+                try {
+                    Files.walkFileTree(
+                        modules.toPath(),
+                        object : SimpleFileVisitor<Path>() {
+                            override fun visitFile(path: Path, attrs: BasicFileAttributes): FileVisitResult {
+                                val file = path.toFile()
+                                val firstLine = firstLineOf(file) ?: return FileVisitResult.CONTINUE
+                                if (firstLine.startsWith(TERMUX_SHEBANG_MARK)) {
+                                    val repaired =
+                                        TermuxShebangs.rewrittenFirstLine(firstLine, prefix.absolutePath)
+                                    if (repaired != null && rewriteFirstLine(file, repaired)) rewritten++
+                                }
+                                return FileVisitResult.CONTINUE
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not repair the shebangs below $modules", e)
+                }
+            }
+            try {
+                deepMarker.writeText("2\n")
+            } catch (e: IOException) {
+                Log.w(TAG, "Could not write $deepMarker", e)
+            }
+        }
+
+        for (dir in listOf(File(prefix, "bin"), File(prefix, "libexec/git-core"))) {
+            if (!dir.isDirectory) continue
+            val gitOnly = dir.name == "bin"
+            dir.listFiles()?.forEach { file ->
+                if (!file.isFile) return@forEach
+                if (gitOnly && !file.name.startsWith("git")) return@forEach
+                if (TermuxShellPath.patch(file) > 0) shellPatched++
+            }
+        }
+
+        ensureEnvironmentLinks(prefix)
+
+        if (relinked == 0 && removed == 0 && rewritten == 0 && shellPatched == 0) return null
+        return buildString {
+            if (relinked > 0) append("relinked ").append(relinked).append(" Termux symlink(s)")
+            if (removed > 0) {
+                if (isNotEmpty()) append("; ")
+                append("removed ").append(removed).append(" dead Termux shim(s)")
+            }
+            if (rewritten > 0) {
+                if (isNotEmpty()) append("; ")
+                append("rewrote ").append(rewritten).append(" Termux shebang(s)")
+            }
+            if (shellPatched > 0) {
+                if (isNotEmpty()) append("; ")
+                append("patched ").append(shellPatched).append(" git binary(ies)")
+            }
+        }
+    }
+
+    /** Packages whose marker entry exists but whose proof files are gone. */
+    fun brokenPackages(prefix: File): List<String> {
+        val recorded = readInstalled(File(prefix, ".packages-installed"))
+        if (recorded.isEmpty()) return emptyList()
+        return recorded.filter { name ->
+            if (name == "glibc") return@filter !hasGlibcLoader(prefix)
+            val proof = BINARY_PROOF[name] ?: return@filter false
+            proof.none { File(prefix, it).exists() }
+        }
+    }
+
+    private fun hasGlibcLoader(prefix: File): Boolean =
+        File(prefix, "glibc/lib").listFiles()?.any { it.name.startsWith("ld-linux") } == true
+
+    /** The packages recorded in the installation marker. */
+    fun installed(prefix: File): List<String> =
+        readInstalled(File(prefix, ".packages-installed"))
+
     /* ------------------------------------------------------------------ package index */
 
     private fun parseIndex(text: String, repo: String, out: MutableMap<String, Pkg>) {
@@ -241,6 +455,7 @@ object OpenCodePackages {
                 val pkg = current ?: continue
                 when (lastKey) {
                     "Depends", "Pre-Depends" -> pkg.depends.addAll(parseDepends(rawLine.trim()))
+                    "Provides" -> pkg.provides.addAll(parseProvides(rawLine.trim()))
                     "Description" -> pkg.description = "${pkg.description} ${rawLine.trim()}".trim()
                 }
                 continue
@@ -266,47 +481,93 @@ object OpenCodePackages {
                 "Filename" -> pkg.filename = value
                 "SHA256" -> pkg.sha256 = value
                 "Depends", "Pre-Depends" -> pkg.depends.addAll(parseDepends(value))
+                "Provides" -> pkg.provides.addAll(parseProvides(value))
                 "Description" -> pkg.description = value
             }
         }
     }
 
-    private fun parseDepends(value: String?): List<String> {
+    /**
+     * Parse a dependency list into alternatives: `nodejs | nodejs-lts` becomes
+     * `["nodejs", "nodejs-lts"]`. The resolver picks the first alternative that exists, so a
+     * package that is not built for this architecture does not make the installation fail.
+     */
+    private fun parseDepends(value: String?): List<List<String>> {
         if (value.isNullOrBlank()) return emptyList()
         return value.split(",").mapNotNull { part ->
-            var name = part.trim()
-            name.indexOf('|').let { if (it >= 0) name = name.substring(0, it).trim() }
-            name.indexOf('(').let { if (it >= 0) name = name.substring(0, it).trim() }
-            name.indexOf(':').let { if (it >= 0) name = name.substring(0, it).trim() }
-            name.ifEmpty { null }
+            val alternatives = part.split("|").mapNotNull { alternative -> cleanName(alternative) }
+                .distinct()
+            alternatives.ifEmpty { null }
         }
+    }
+
+    private fun parseProvides(value: String?): List<String> {
+        if (value.isNullOrBlank()) return emptyList()
+        return value.split(",").mapNotNull { part -> cleanName(part) }
+    }
+
+    private fun cleanName(value: String): String? {
+        var name = value.trim()
+        name = name.substringBefore('(').trim()
+        name = name.substringBefore(':').trim()
+        return name.ifEmpty { null }
+    }
+
+    /**
+     * Map virtual package names (`python3`, `awk`, …) to the package that provides them. A real
+     * package always wins over a provider.
+     */
+    private fun buildProviders(index: Map<String, Pkg>): Map<String, Pkg> {
+        val providers = LinkedHashMap<String, Pkg>()
+        for (pkg in index.values) {
+            for (provided in pkg.provides) {
+                if (provided in index) continue
+                providers.putIfAbsent(provided, pkg)
+            }
+        }
+        return providers
     }
 
     private fun dependencyClosure(
         index: Map<String, Pkg>,
+        providers: Map<String, Pkg>,
         wanted: List<String>,
         installed: List<String>,
+        required: List<String>,
     ): List<Pkg> {
         val out = LinkedHashMap<String, Pkg>()
-        val queue = ArrayDeque(wanted)
         val seen = HashSet(installed)
         val missing = LinkedHashSet<String>()
-        while (!queue.isEmpty()) {
-            val name = queue.poll() ?: break
-            if (name in SKIPPED_DEPENDENCIES) continue
-            if (!seen.add(name)) continue
-            val pkg = index[name]
+
+        fun lookup(name: String): Pkg? = index[name] ?: providers[name]
+
+        // Depth-first, dependencies before the package that needs them: an add-on extracted
+        // after its dependencies can safely overwrite a shared file.
+        fun visit(name: String) {
+            if (name in SKIPPED_DEPENDENCIES) return
+            if (!seen.add(name)) return
+            val pkg = lookup(name)
             if (pkg == null) {
                 missing.add(name)
-                continue
+                return
             }
-            out[name] = pkg
-            queue.addAll(pkg.depends)
+            // A provider has its own name in the marker, remember it under both names. When the
+            // provider is installed already, the virtual name is satisfied and nothing is added.
+            if (pkg.name != name && pkg.name in seen) return
+            seen.add(pkg.name)
+            for (alternatives in pkg.depends) {
+                val chosen = alternatives.firstOrNull { it in SKIPPED_DEPENDENCIES || lookup(it) != null }
+                    ?: alternatives.firstOrNull()
+                if (chosen != null) visit(chosen)
+            }
+            out.putIfAbsent(pkg.name, pkg)
         }
+
+        wanted.forEach { visit(it) }
 
         // A missing dependency is not fatal (some are optional), but a requested package has to
         // exist, otherwise the runtime is incomplete without a useful error message.
-        for (name in wanted) {
+        for (name in required) {
             if (name in missing) {
                 throw IllegalStateException(
                     "The repository does not provide the package '$name' for this architecture.",
@@ -343,6 +604,44 @@ object OpenCodePackages {
         } finally {
             connection.disconnect()
         }
+    }
+
+    /**
+     * Download a package from the mirror of its index first, then from every other mirror. A
+     * mirror that serves an outdated index or blocks the pool would otherwise break an install
+     * that another mirror can serve.
+     */
+    @Throws(IOException::class)
+    private fun downloadWithMirrors(pkg: Pkg, dest: File) {
+        val filename = pkg.filename
+        // The index is a network response, keep the download inside the repository pool.
+        val base = filename.substringAfterLast('/')
+        if (filename.startsWith('/') || filename.contains('\\') ||
+            filename.split('/').any { it.isEmpty() || it == "." || it == ".." } ||
+            !base.endsWith(".deb")
+        ) {
+            throw IOException("Unsafe package filename in the index: $filename")
+        }
+
+        val mirrors = LinkedHashSet<String>()
+        if (pkg.repo.isNotEmpty()) mirrors.add(pkg.repo)
+        mirrors.addAll(MAIN_MIRRORS)
+        mirrors.addAll(GLIBC_MIRRORS)
+
+        var lastError: IOException? = null
+        for (mirror in mirrors) {
+            val url = "$mirror/$filename"
+            try {
+                downloadVerified(url, dest, pkg.sha256)
+                return
+            } catch (e: IOException) {
+                lastError = e
+                Log.w(TAG, "Could not download $url: ${e.message}")
+                dest.delete()
+                File(dest.absolutePath + ".part").delete()
+            }
+        }
+        throw lastError ?: IOException("Could not download ${pkg.name}")
     }
 
     @Throws(IOException::class)
@@ -446,8 +745,9 @@ object OpenCodePackages {
         target.parentFile?.mkdirs()
 
         if (entry.isSymbolicLink) {
-            val rewritten = rewriteLink(entry.linkName, rel)
-            target.delete()
+            val original = entry.linkName
+            val rewritten = TermuxLinkRewrite.relativeTarget(original, rel) ?: original
+            deletePath(target)
             try {
                 Os.symlink(rewritten, target.absolutePath)
             } catch (e: Exception) {
@@ -470,23 +770,26 @@ object OpenCodePackages {
         val shebangLine = firstLine(head, headLength)
         val name = rel.substring(rel.lastIndexOf('/') + 1)
         val binEntry = rel.startsWith("bin/") && !rel.contains("/applets/")
+        val rewritten = TermuxShebangs.rewrittenFirstLine(shebangLine, prefix.absolutePath)
+        val deadTermuxScript = shebangLine.startsWith(TERMUX_SHEBANG_MARK) && rewritten == null
 
-        if (binEntry && shebangLine.startsWith(TERMUX_SHEBANG + "bin/sh") && name in SYSTEM_WRAPPERS) {
+        if (binEntry && (
+                name in UNSUPPORTED_BRIDGES ||
+                    TermuxShebangs.isWrapperScript(name, shebangLine) ||
+                    deadTermuxScript
+                )
+        ) {
             // Termux bridge wrapper, drop it and keep the real Android command.
             drain(tar)
             return
         }
 
-        val rewritten = rewriteShebang(shebangLine, prefix.absolutePath)
+        deletePath(target)
         FileOutputStream(target).use { out ->
-            if (rewritten != null) {
-                val newline = indexOfNewline(head, headLength)
-                if (newline >= 0) {
-                    out.write(rewritten.toByteArray(StandardCharsets.UTF_8))
-                    out.write(head, newline, headLength - newline)
-                } else {
-                    out.write(rewritten.toByteArray(StandardCharsets.UTF_8))
-                }
+            val newline = if (rewritten != null) indexOfNewline(head, headLength) else -1
+            if (rewritten != null && newline >= 0) {
+                out.write(rewritten.toByteArray(StandardCharsets.UTF_8))
+                out.write(head, newline, headLength - newline)
             } else {
                 out.write(head, 0, headLength)
             }
@@ -494,26 +797,9 @@ object OpenCodePackages {
             out.flush()
         }
         chmod(target, entry.mode)
-    }
 
-    private fun rewriteLink(target: String?, linkPath: String): String? {
-        if (target == null || !target.startsWith(TERMUX_USR_ABS)) return target
-        val inside = target.substring(TERMUX_USR_ABS.length)
-
-        var depth = 0
-        var path = linkPath
-        while (true) {
-            val slash = path.indexOf('/')
-            if (slash < 0) break
-            depth++
-            path = path.substring(slash + 1)
-        }
-        return "../".repeat(depth) + inside
-    }
-
-    private fun rewriteShebang(firstLine: String?, prefix: String): String? {
-        if (firstLine == null || !firstLine.startsWith(TERMUX_SHEBANG)) return null
-        return "#!$prefix/" + firstLine.substring(TERMUX_SHEBANG.length)
+        // git's ELFs embed the Termux shell path, no environment variable can redirect it.
+        if (TermuxShellPath.appliesTo(rel)) TermuxShellPath.patch(target)
     }
 
     private fun firstLine(head: ByteArray, length: Int): String {
@@ -570,6 +856,143 @@ object OpenCodePackages {
         FileInputStream(source).use { input -> FileOutputStream(target).use { out -> copy(input, out) } }
     }
 
+    /* ------------------------------------------------------------------ links and shebangs */
+
+    /**
+     * Termux packages ship absolute symlinks into their own build prefix. They dangle inside this
+     * app, so the target is turned into a relative path from the link's directory.
+     */
+    private object TermuxLinkRewrite {
+        fun relativeTarget(linkName: String, linkPath: String): String? {
+            val inside = when {
+                linkName.startsWith(TERMUX_USR_ABS) -> linkName.substring(TERMUX_USR_ABS.length)
+                linkName == TERMUX_USR_ROOT -> ""
+                else -> return null
+            }
+            val depth = linkPath.trim('/').split('/').dropLast(1).count { it.isNotEmpty() }
+            return "../".repeat(depth) + inside
+        }
+    }
+
+    /** Shebang repair for the scripts that ship with the packages. */
+    private object TermuxShebangs {
+        fun isWrapperScript(name: String, firstLine: String): Boolean =
+            name in SYSTEM_WRAPPERS && firstLine.startsWith("#!${TERMUX_USR_ABS}bin/sh")
+
+        /**
+         * Rewrite `#!/data/data/com.termux/files/usr/...` into this prefix. The `bin/env`
+         * launchers (`#!/…/bin/env node`) are covered too: coreutils installs bin/env.
+         */
+        fun rewrittenFirstLine(firstLine: String, prefix: String): String? {
+            if (!firstLine.startsWith("#!$TERMUX_USR_ABS")) return null
+            val line = "#!$prefix/" + firstLine.substring("#!$TERMUX_USR_ABS".length)
+            return if (line.contains("/data/data/com.termux")) null else line
+        }
+    }
+
+    /**
+     * Termux's git embeds its SHELL_PATH in the ELF: git runs hooks, aliases and `!` credential
+     * helpers through that literal, which does not exist outside the Termux app. The string is
+     * patched in place, only inside ELF files. The shorter replacement is terminated with one
+     * NUL and the leftover bytes of the old string are left alone: they are dead data, and
+     * padding the whole range with NULs would erase the string that follows SHELL_PATH in
+     * .rodata ("cannot get tree for HEAD", …).
+     */
+    private object TermuxShellPath {
+        private const val TERMUX_SHELL = "/data/data/com.termux/files/usr/bin/sh"
+        private const val NEUTRAL_SHELL = "/system/bin/sh"
+        private val NEEDLE = TERMUX_SHELL.toByteArray(StandardCharsets.UTF_8)
+        private val REPLACEMENT = NEUTRAL_SHELL.toByteArray(StandardCharsets.UTF_8)
+
+        fun appliesTo(relPath: String): Boolean =
+            relPath.startsWith("bin/git") || relPath.startsWith("libexec/git-core/")
+
+        fun patch(file: File): Int = try {
+            val bytes = file.readBytes()
+            if (bytes.size < 4 || bytes[0] != 0x7f.toByte() ||
+                bytes[1] != 'E'.code.toByte() || bytes[2] != 'L'.code.toByte() ||
+                bytes[3] != 'F'.code.toByte()
+            ) {
+                0
+            } else {
+                val count = patchBytes(bytes)
+                if (count > 0) file.writeBytes(bytes)
+                count
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not patch the shell path of $file", e)
+            0
+        }
+
+        private fun patchBytes(bytes: ByteArray): Int {
+            var count = 0
+            var i = 0
+            val last = bytes.size - NEEDLE.size
+            while (i <= last) {
+                var j = 0
+                while (j < NEEDLE.size && bytes[i + j] == NEEDLE[j]) j++
+                if (j == NEEDLE.size) {
+                    REPLACEMENT.copyInto(bytes, i)
+                    bytes[i + REPLACEMENT.size] = 0
+                    count++
+                    i += NEEDLE.size
+                } else {
+                    i++
+                }
+            }
+            return count
+        }
+    }
+
+    private fun readLink(file: File): String? = try {
+        Os.readlink(file.absolutePath)
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun relink(file: File, target: String): Boolean = try {
+        Os.remove(file.absolutePath)
+        Os.symlink(target, file.absolutePath)
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not repair the symlink $file", e)
+        false
+    }
+
+    private fun firstLineOf(file: File): String? = try {
+        FileInputStream(file).use { input ->
+            val head = ByteArray(256)
+            val length = readUpTo(input, head, head.size)
+            val elf = length >= 4 && head[0] == 0x7f.toByte() &&
+                head[1] == 'E'.code.toByte() && head[2] == 'L'.code.toByte() &&
+                head[3] == 'F'.code.toByte()
+            val newline = if (elf) -1 else indexOfNewline(head, length)
+            if (newline > 0) String(head, 0, newline, StandardCharsets.UTF_8).trim() else null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun rewriteFirstLine(file: File, firstLine: String): Boolean = try {
+        val text = file.readText(StandardCharsets.UTF_8)
+        val newline = text.indexOf('\n')
+        val rest = if (newline >= 0) text.substring(newline) else ""
+        file.writeText(firstLine + rest, StandardCharsets.UTF_8)
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not rewrite the shebang of $file", e)
+        false
+    }
+
+    /** Delete a file or symlink, including a dangling symlink that File.exists() misses. */
+    private fun deletePath(file: File) {
+        try {
+            Os.remove(file.absolutePath)
+        } catch (e: Exception) {
+            // Does not exist.
+        }
+    }
+
     /* ------------------------------------------------------------------ markers */
 
     private fun readInstalled(marker: File): List<String> {
@@ -579,13 +1002,14 @@ object OpenCodePackages {
                 .split("\n")
                 .map { line -> line.substringBefore(' ').trim() }
                 .filter { it.isNotEmpty() }
+                .distinct()
         } catch (e: Exception) {
             Log.w(TAG, "Could not read $marker", e)
             emptyList()
         }
     }
 
-    private fun appendInstalled(marker: File, packages: List<Pkg>, already: List<String>) {
+    private fun writeInstalled(marker: File, already: List<String>, packages: List<Pkg>) {
         val sb = StringBuilder()
         for (name in already) sb.append(name).append('\n')
         for (pkg in packages) sb.append(pkg.name).append(' ').append(pkg.version).append('\n')
@@ -618,15 +1042,40 @@ object OpenCodePackages {
         )
     }
 
-    /** Some packages ship a /bin/sh link, make sure the prefix always has one. */
-    private fun ensureShellLink(prefix: File) {
-        val bash = File(prefix, "bin/bash")
-        val sh = File(prefix, "bin/sh")
-        if (!bash.isFile || sh.exists()) return
-        try {
-            Os.symlink("bash", sh.absolutePath)
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not create $sh", e)
+    /**
+     * Some packages ship a /bin/sh link, make sure the prefix always has one. The env link is
+     * what `#!/…/bin/env node` launchers of npm need: coreutils provides it, and a prefix
+     * installed before coreutils joined the toolchain gets the toybox env as a fallback.
+     */
+    private fun ensureEnvironmentLinks(prefix: File) {
+        val bin = File(prefix, "bin")
+        if (!bin.isDirectory) return
+
+        val bash = File(bin, "bash")
+        val sh = File(bin, "sh")
+        if (bash.isFile && !lexists(sh)) {
+            try {
+                Os.symlink("bash", sh.absolutePath)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not create $sh", e)
+            }
         }
+
+        val env = File(bin, "env")
+        if (!lexists(env)) {
+            val target = if (File(bin, "coreutils").isFile) "coreutils" else "/system/bin/env"
+            try {
+                Os.symlink(target, env.absolutePath)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not create $env", e)
+            }
+        }
+    }
+
+    private fun lexists(file: File): Boolean = try {
+        Os.lstat(file.absolutePath)
+        true
+    } catch (e: Exception) {
+        false
     }
 }
