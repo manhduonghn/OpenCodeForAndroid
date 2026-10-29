@@ -147,6 +147,9 @@ public final class OpenCodeBootstrap {
     public static final String OC_INSTALL_PATH = PREFIX + "/bin/oc-install";
     /** Explains that this prefix has no apt/dpkg, so {@code pkg} cannot be used. */
     public static final String PKG_PATH = PREFIX + "/bin/pkg";
+
+    /** Environment snippet that the shell startup files of the runtime source. */
+    public static final String ENV_SCRIPT_PATH = PREFIX + "/etc/opencode-env.sh";
     /** HTTP Basic user name the {@code opencode serve} of the 2.x line expects. */
     public static final String SERVER_USER = "opencode";
     /** Password of the server, exported by the launchers and used by the WebView. */
@@ -171,9 +174,14 @@ public final class OpenCodeBootstrap {
      * ========================================================================================== */
 
     /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private static final int LAUNCHER_VERSION = 6;
+    private static final int LAUNCHER_VERSION = 7;
 
     private static final String LAUNCHER_MARKER = "Managed by the OpenCode for Android app. opencode-launcher-version: " + LAUNCHER_VERSION;
+    /** First line of the profile this app writes, a profile without it is left alone. */
+    private static final String PROFILE_MARKER = "# Managed by the OpenCode for Android app. opencode-profile-version: 2";
+    /** Markers of the block that hooks the package environment into etc/bash.bashrc. */
+    private static final String BASHRC_BLOCK_BEGIN = "# >>> OpenCode for Android package environment >>>";
+    private static final String BASHRC_BLOCK_END = "# <<< OpenCode for Android package environment <<<";
 
     private static final String USER_AGENT = "OpenCodeForAndroid";
 
@@ -540,6 +548,126 @@ public final class OpenCodeBootstrap {
     public static boolean isPrefixReady() {
         File bash = new File(PREFIX + "/bin/bash");
         return bash.isFile() && bash.canExecute();
+    }
+
+    /**
+     * Write the environment of the installed Termux packages and hook it into the shell startup
+     * files of the prefix. The package service calls this after every installation: the Termux
+     * binaries link against {@code $PREFIX/lib} and the git build has its helper programs below
+     * the old Termux prefix. Idempotent, safe to call at any time.
+     */
+    public static void ensurePackageEnvironment() {
+        writePackageEnvironment();
+    }
+
+    /**
+     * Write {@code etc/opencode-env.sh} and hook it into the shell startup files. The profile is
+     * only replaced when this app wrote it or when it still points at the Termux app; a profile
+     * edited by the user is left untouched.
+     */
+    private static void writePackageEnvironment() {
+        File etc = new File(PREFIX, "etc");
+        if (!etc.isDirectory() && !etc.mkdirs()) {
+            Log.w(LOG_TAG, "Could not create " + etc);
+            return;
+        }
+        writeTextFileQuietly(new File(ENV_SCRIPT_PATH), buildPackageEnvironment());
+        ensureLoginProfile();
+        hookBashrc();
+    }
+
+    /**
+     * The Termux packages link against {@code $PREFIX/lib} with an absolute RUNPATH that points at
+     * the com.termux prefix. The git build additionally has its helper programs and its template
+     * directory compiled in below the old prefix. Neither is readable from this app, so both are
+     * re-rooted here. The file is sourced by the login profile and by etc/bash.bashrc.
+     */
+    private static String buildPackageEnvironment() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# Managed by the OpenCode for Android app (package environment v1).\n");
+        sb.append("# Sourced by etc/profile and etc/bash.bashrc of the runtime.\n");
+        sb.append("PREFIX=\"${PREFIX:-").append(PREFIX).append("}\"\n");
+        sb.append("export PREFIX\n");
+        sb.append("case \":${LD_LIBRARY_PATH:-}:\" in\n");
+        sb.append("  *\":$PREFIX/lib:\"*) ;;\n");
+        sb.append("  *) LD_LIBRARY_PATH=\"$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n");
+        sb.append("esac\n");
+        sb.append("# git was built for /data/data/com.termux/files/usr: its helpers would be looked up\n");
+        sb.append("# there, which belongs to another app.\n");
+        sb.append("if [ -d \"$PREFIX/libexec/git-core\" ]; then\n");
+        sb.append("  GIT_EXEC_PATH=\"$PREFIX/libexec/git-core\"; export GIT_EXEC_PATH\n");
+        sb.append("fi\n");
+        sb.append("if [ -d \"$PREFIX/share/git-core/templates\" ]; then\n");
+        sb.append("  GIT_TEMPLATE_DIR=\"$PREFIX/share/git-core/templates\"; export GIT_TEMPLATE_DIR\n");
+        sb.append("fi\n");
+        sb.append("if [ -f \"$PREFIX/etc/gitconfig\" ]; then\n");
+        sb.append("  GIT_CONFIG_SYSTEM=\"$PREFIX/etc/gitconfig\"; export GIT_CONFIG_SYSTEM\n");
+        sb.append("  unset GIT_CONFIG_NOSYSTEM\n");
+        sb.append("else\n");
+        sb.append("  GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM\n");
+        sb.append("fi\n");
+        sb.append("GIT_ATTR_NOSYSTEM=1; export GIT_ATTR_NOSYSTEM\n");
+        sb.append("if [ -f \"$PREFIX/etc/openssl/openssl.cnf\" ]; then\n");
+        sb.append("  OPENSSL_CONF=\"$PREFIX/etc/openssl/openssl.cnf\"; export OPENSSL_CONF\n");
+        sb.append("fi\n");
+        sb.append("if [ -f \"$PREFIX/etc/tls/cert.pem\" ]; then\n");
+        sb.append("  SSL_CERT_FILE=\"$PREFIX/etc/tls/cert.pem\"; export SSL_CERT_FILE\n");
+        sb.append("  CURL_CA_BUNDLE=\"$SSL_CERT_FILE\"; export CURL_CA_BUNDLE\n");
+        sb.append("fi\n");
+        sb.append(":\n");
+        return sb.toString();
+    }
+
+    /** Write the managed login profile, unless the user replaced it with one of their own. */
+    private static void ensureLoginProfile() {
+        File profile = new File(PREFIX + "/etc/profile");
+        String current = readTextFileQuietly(profile);
+        boolean foreign = current.contains(PREFIX_TERMUX) || current.contains(HOME_TERMUX);
+        boolean ours = current.contains("Managed by the OpenCode for Android app.");
+        // A profile without our marker and without Termux paths belongs to the user.
+        if (profile.isFile() && !foreign && !ours) return;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(PROFILE_MARKER).append('\n');
+        sb.append("export HOME=\"${HOME:-").append(HOME).append("}\"\n");
+        sb.append("export PREFIX=\"${PREFIX:-").append(PREFIX).append("}\"\n");
+        sb.append("export SHELL=\"${SHELL:-$PREFIX/bin/bash}\"\n");
+        sb.append("export PATH=\"$PREFIX/bin:/system/bin\"\n");
+        sb.append("export TMPDIR=\"${TMPDIR:-$PREFIX/tmp}\"\n");
+        sb.append("export TERM=\"${TERM:-xterm-256color}\"\n");
+        sb.append("export LANG=\"${LANG:-en_US.UTF-8}\"\n");
+        sb.append("if [ -r \"$PREFIX/etc/opencode-env.sh\" ]; then . \"$PREFIX/etc/opencode-env.sh\"; fi\n");
+        sb.append("if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
+        writeTextFileQuietly(profile, sb.toString());
+    }
+
+    /**
+     * Hook the package environment into etc/bash.bashrc, which the interactive non-login shells of
+     * the terminal read. The block of an older app version is replaced, anything the user added
+     * above it is kept.
+     */
+    private static void hookBashrc() {
+        File bashrc = new File(PREFIX + "/etc/bash.bashrc");
+        if (!bashrc.isFile()) return;
+
+        String current = readTextFileQuietly(bashrc);
+        int start = current.indexOf(BASHRC_BLOCK_BEGIN);
+        String base = start >= 0 ? current.substring(0, start) : current;
+        // Trim the trailing whitespace of the package file so the block starts on a clean line.
+        while (base.endsWith("\n") || base.endsWith("\r") || base.endsWith(" ")) {
+            base = base.substring(0, base.length() - 1);
+        }
+
+        StringBuilder sb = new StringBuilder(base);
+        if (sb.length() > 0) sb.append("\n\n");
+        sb.append(BASHRC_BLOCK_BEGIN).append('\n');
+        sb.append("if [ -r \"").append(ENV_SCRIPT_PATH).append("\" ]; then\n");
+        sb.append("  . \"").append(ENV_SCRIPT_PATH).append("\"\n");
+        sb.append("fi\n");
+        sb.append(BASHRC_BLOCK_END).append('\n');
+
+        String updated = sb.toString();
+        if (!updated.equals(current)) writeTextFileQuietly(bashrc, updated);
     }
 
     /* ==========================================================================================
@@ -1532,7 +1660,7 @@ public final class OpenCodeBootstrap {
             // The profile and the bashrc are plain text files from the bash package, they are not
             // touched by the ELF rewrite and still point at the real Termux app.
             rewriteTextPaths(new File(PREFIX + "/etc/bash.bashrc"));
-            ensureLoginProfile();
+            writePackageEnvironment();
         }
 
         /** Rewrite the com.termux paths of a text file to this app's prefix and home. */
@@ -1547,32 +1675,6 @@ public final class OpenCodeBootstrap {
                 if (!rewritten.equals(text)) writeTextFile(file, rewritten);
             } catch (IOException e) {
                 Log.w(LOG_TAG, "Could not rewrite the paths of " + file, e);
-            }
-        }
-
-        /** Write a small profile, the one of the bash package points at the Termux app. */
-        private void ensureLoginProfile() {
-            File profile = new File(PREFIX + "/etc/profile");
-            String current = readTextFileQuietly(profile);
-            boolean foreign = current.contains(PREFIX_TERMUX) || current.contains(HOME_TERMUX);
-            // Keep a profile this app (or the user) already wrote without foreign paths.
-            if (profile.isFile() && !foreign) return;
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("# Managed by the OpenCode for Android app.\n");
-            sb.append("export HOME=\"${HOME:-").append(HOME).append("}\"\n");
-            sb.append("export PREFIX=\"${PREFIX:-").append(PREFIX).append("}\"\n");
-            sb.append("export SHELL=\"${SHELL:-$PREFIX/bin/bash}\"\n");
-            sb.append("export PATH=\"$PREFIX/bin:/system/bin\"\n");
-            sb.append("export TMPDIR=\"${TMPDIR:-$PREFIX/tmp}\"\n");
-            sb.append("export TERM=\"${TERM:-xterm-256color}\"\n");
-            sb.append("export LANG=\"${LANG:-en_US.UTF-8}\"\n");
-            sb.append("[ -f \"$PREFIX/etc/tls/cert.pem\" ] && export SSL_CERT_FILE=\"$PREFIX/etc/tls/cert.pem\"\n");
-            sb.append("if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
-            try {
-                writeTextFile(profile, sb.toString());
-            } catch (IOException e) {
-                Log.w(LOG_TAG, "Could not write " + profile, e);
             }
         }
 
@@ -1678,7 +1780,13 @@ public final class OpenCodeBootstrap {
             sb.append("export OPENCODE_DISABLE_AUTOUPDATE=1\n");
             sb.append("# Never load the bionic preload of Termux into a glibc process.\n");
             sb.append("unset LD_PRELOAD\n");
-            sb.append("unset LD_LIBRARY_PATH\n");
+            sb.append("# The tools OpenCode spawns (git, …) link against $P/lib. The glibc binary itself\n");
+            sb.append("# only needs libc.so.6/libm.so.6/libdl.so.2/libpthread.so.0, names that no bionic\n");
+            sb.append("# library provides, so this directory cannot shadow its own libraries.\n");
+            sb.append("case \":${LD_LIBRARY_PATH:-}:\" in\n");
+            sb.append("  *\":$P/lib:\"*) ;;\n");
+            sb.append("  *) LD_LIBRARY_PATH=\"$P/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n");
+            sb.append("esac\n");
             sb.append("[ -n \"${TMPDIR:-}\" ] || { TMPDIR=\"$P/tmp\"; export TMPDIR; }\n");
             sb.append("[ -n \"${SHELL:-}\" ] || { SHELL=\"$P/bin/bash\"; export SHELL; }\n");
             sb.append("[ -f \"$P/etc/tls/cert.pem\" ] && { SSL_CERT_FILE=\"$P/etc/tls/cert.pem\"; export SSL_CERT_FILE; }\n");
@@ -1704,18 +1812,208 @@ public final class OpenCodeBootstrap {
         }
 
         /**
-         * The app installs its packages itself, there is no apt/dpkg in the prefix. A real 'pkg'
-         * cannot work here, but a stub explains that instead of failing with "command not found".
+         * The 'pkg' of the terminal. There is no apt/dpkg in the prefix, the app downloads the
+         * archives of the Termux repository itself. The script starts OpenCodePkgService through
+         * the activity manager (same UID, the service is not exported) and follows the status
+         * file of the request.
          */
         private String buildPkgLauncher() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("#!").append("/system/bin/sh\n");
-            sb.append("# ").append(LAUNCHER_MARKER).append("\n");
-            sb.append("echo \"pkg: this app does not use apt/dpkg and has no package manager.\" >&2\n");
-            sb.append("echo \"     The runtime ships bash, ca-certificates, patchelf and glibc only.\" >&2\n");
-            sb.append("echo \"     Run 'oc-install' to reinstall or update the OpenCode runtime.\" >&2\n");
-            sb.append("exit 127\n");
-            return sb.toString();
+            String script = """
+                #!/system/bin/sh
+                # @MARKER@
+                #
+                # pkg - install Termux packages into the app-private prefix.
+                #
+                # The prefix has no apt/dpkg. The app downloads the .deb archives of the Termux
+                # repository, verifies their SHA-256 and extracts them itself. This script only
+                # talks to the app: it starts OpenCodePkgService through 'am' and follows the
+                # status file that the service writes.
+
+                P="${PREFIX:-@PREFIX@}"
+                H="${HOME:-@HOME@}"
+                case ":$PATH:" in
+                    *:/system/bin:*) ;;
+                    *) PATH="${PATH:+$PATH:}/system/bin"; export PATH ;;
+                esac
+                APP="com.opencode.android"
+                USER_ID=@USER_ID@
+                SVC="$APP/.OpenCodePkgService"
+                DIR="$H/.opencode"
+                SESSION="pkg-$$"
+                STATUS="$DIR/$SESSION.status"
+                RESULT="$DIR/$SESSION.out"
+                MARK="$P/.packages-installed"
+
+                usage() {
+                    cat <<'USAGE'
+                Usage: pkg <command> [arguments]
+
+                Commands:
+                  install <package...>   Install Termux packages and their dependencies
+                  search <text>          Search the Termux package repository
+                  list-installed         List the packages of this prefix
+                  update, upgrade        Refresh the index (every install uses the live index)
+                  help                   Show this help
+
+                Examples:
+                  pkg install git gh
+                  pkg search editor
+                  pkg list-installed
+
+                The packages are extracted into the app-private prefix by the app itself, so apt,
+                dpkg and the Termux app are not needed.
+                USAGE
+                }
+
+                fail() {
+                    echo "pkg: $*" >&2
+                    exit 1
+                }
+
+                pause() {
+                    sleep 0.2 2>/dev/null || sleep 1
+                }
+
+                valid_name() {
+                    case "$1" in
+                        ''|*[!a-zA-Z0-9+._-]*) return 1 ;;
+                    esac
+                    return 0
+                }
+
+                field() {
+                    # field <file> <key>
+                    [ -f "$1" ] || return 0
+                    sed -n "s/^$2=//p" "$1" | head -n 1
+                }
+
+                start_service() {
+                    # start_service <action> [extra 'am' arguments...]
+                    action="$1"
+                    shift
+                    rm -f "$STATUS" "$RESULT"
+                    output=$(/system/bin/am start-foreground-service --user "$USER_ID" -n "$SVC" --es action "$action" --es session "$SESSION" "$@" 2>&1)
+                    status=$?
+                    case "$output" in
+                        *Error*|*Exception*|*SecurityException*)
+                            fail "the app refused the request: $output" ;;
+                    esac
+                    [ "$status" -eq 0 ] || fail "the activity manager failed: $output"
+                }
+
+                wait_for_service() {
+                    waited=0
+                    while [ ! -f "$STATUS" ]; do
+                        pause
+                        waited=$((waited + 1))
+                        [ "$waited" -lt 50 ] || fail "the app did not answer. Bring OpenCode to the foreground and try again."
+                    done
+
+                    last=""
+                    idle=0
+                    while :; do
+                        state=$(field "$STATUS" state)
+                        message=$(field "$STATUS" message)
+                        percent=$(field "$STATUS" percent)
+                        if [ -n "$message" ] && [ "$message" != "$last" ]; then
+                            case "$percent" in
+                                ''|0) echo "$message" ;;
+                                *) echo "[$percent%] $message" ;;
+                            esac
+                            last="$message"
+                            idle=0
+                        else
+                            idle=$((idle + 1))
+                        fi
+                        case "$state" in
+                            done) return 0 ;;
+                            error) echo "pkg: $message" >&2; return 1 ;;
+                        esac
+                        [ "$idle" -lt 7200 ] || fail "no progress for 30 minutes, giving up. Check the notification of the app."
+                        pause
+                    done
+                }
+
+                pkg_install() {
+                    packages=""
+                    for argument in "$@"; do
+                        case "$argument" in
+                            -y|--yes|-f|--fix-broken) continue ;;
+                            -*) fail "install: unsupported option '$argument'" ;;
+                        esac
+                        valid_name "$argument" || fail "install: '$argument' is not a valid package name"
+                        packages="$packages $argument"
+                    done
+                    [ -n "$packages" ] || fail "install: no package name given. Try: pkg install git gh"
+                    [ -x "$P/bin/bash" ] || fail "the Linux runtime is not installed yet. Open the app first."
+
+                    echo "Installing$packages ..."
+                    start_service install --es packages "$packages"
+                    wait_for_service || return 1
+                    echo
+                    echo "Installed in $P."
+                    echo "For git in this shell run: . \"$P/etc/opencode-env.sh\""
+                }
+
+                pkg_search() {
+                    [ "$#" -ge 1 ] || fail "search: no search text given. Try: pkg search git"
+                    query="$*"
+                    echo "Searching for '$query' ..."
+                    start_service search --es query "$query"
+                    wait_for_service || return 1
+                    echo
+                    if [ -s "$RESULT" ]; then
+                        cat "$RESULT"
+                    else
+                        echo "No package matched '$query'."
+                    fi
+                }
+
+                pkg_list() {
+                    if [ ! -s "$MARK" ]; then
+                        echo "No package is installed yet."
+                        return 0
+                    fi
+                    sort -u "$MARK"
+                }
+
+                pkg_update() {
+                    echo "Every installation downloads the live package index, there is nothing to refresh."
+                    echo "Run 'pkg install <package>' to install or upgrade a package."
+                }
+
+                umask 077
+                mkdir -p "$DIR" 2>/dev/null
+                trap 'rm -f "$STATUS" "$RESULT"' EXIT
+
+                command="${1:-help}"
+                [ "$#" -gt 0 ] && shift
+
+                case "$command" in
+                    install|add) pkg_install "$@" ;;
+                    search|find) pkg_search "$@" ;;
+                    list-installed|list|installed) pkg_list ;;
+                    update|upgrade) pkg_update ;;
+                    remove|uninstall|delete)
+                        fail "'$command' is not supported: the app installs packages without dpkg, so there is no package database to remove from. Clear the app data to start over." ;;
+                    files|show)
+                        fail "'$command' is not supported: the packages are extracted directly into $P, without a dpkg database." ;;
+                    help|-h|--help|'') usage ;;
+                    *) echo "pkg: unknown command '$command'" >&2; usage >&2; exit 2 ;;
+                esac
+                """;
+            int userId;
+            try {
+                userId = android.os.Process.myUserHandle().getIdentifier();
+            } catch (Throwable t) {
+                // myUserHandle() is API 24, the uid layout is a stable fallback.
+                userId = android.os.Process.myUid() / 100000;
+            }
+            return script
+                .replace("@MARKER@", LAUNCHER_MARKER)
+                .replace("@PREFIX@", PREFIX)
+                .replace("@HOME@", HOME)
+                .replace("@USER_ID@", String.valueOf(userId));
         }
 
         private String buildOcInstallLauncher() {

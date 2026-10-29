@@ -69,15 +69,46 @@ Only the minimum the runtime needs (≈14 MB of packages):
 Termux app (`am`, `pm`, …) and would pull the Termux app and a dozen extra
 packages.
 
-Because of that **there is no `pkg`, `apt` or `dpkg` in this prefix**: packages
-are installed by the app itself, not by a package manager. `$PREFIX/bin/pkg` is
-a small stub that explains this instead of failing with `pkg: command not
-found`. Packages outside the minimum set (for example `git` or `gh`) are not
-installed; the OpenCode runtime does not need them.
+Because of that the prefix has **no `apt` or `dpkg`**, and the Termux app is not
+needed either. The app ships its own `pkg` command (`$PREFIX/bin/pkg`) that
+installs any package of the Termux repository with the same
+download/verify/extract code:
 
-The Termux binaries point at the `com.termux` prefix with their `RUNPATH`, so it
-is rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), which
-makes `bash` start even from a terminal without `LD_LIBRARY_PATH`.
+```sh
+pkg install git gh
+pkg search editor
+pkg list-installed
+```
+
+`pkg install` starts a short foreground service of the app
+(`OpenCodePkgService`) through `am start-foreground-service` and follows a
+status file, so the terminal shows the "Downloading… / Extracting…" progress
+while the app does the work. The service is not exported; the request comes from
+the same UID as the app, which is also why no root is needed. Dependencies are
+resolved from the package index, the archives are extracted directly into
+`$PREFIX`, and `termux-tools`/`termux-exec` are skipped (`termux-exec` is not
+needed because the app targets API 28, so binaries in its data directory may be
+executed).
+
+The Termux binaries are linked against `$PREFIX/lib` with an absolute RUNPATH
+that points at the com.termux prefix. `$PREFIX/etc/opencode-env.sh` (sourced by
+`etc/profile` and hooked into `etc/bash.bashrc`) exports `LD_LIBRARY_PATH`, and
+the OpenCode server gets the same variable in its environment, so `git`, `gh`,
+`python`, `node`, … find their libraries. The git build additionally has
+`libexec/git-core` and its template directory compiled in for the old prefix;
+both are re-pointed with `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable
+system git config is disabled with `GIT_CONFIG_NOSYSTEM`.
+
+`pkg remove` is not implemented: packages are extracted without a dpkg
+database, so there is nothing to remove from. Clearing the app data is the
+supported way to start over. Reinstalling a core package (`bash`, `glibc`,
+`patchelf`, `ca-certificates`) is refused as well: the app patches their
+binaries (the login profile path, the relocated glibc loader), so they are
+updated with `oc-install` / `opencode update`.
+
+`bash` and `patchelf` — the two tools the app itself spawns — get their RUNPATH
+rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), so they
+start even from a terminal without `LD_LIBRARY_PATH`.
 
 The Termux `bash` package has `/data/data/com.termux/files/usr/etc/profile`
 compiled in and starts as `bash -l` inside the OpenCode terminal. That path

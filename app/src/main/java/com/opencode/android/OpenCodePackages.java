@@ -23,6 +23,7 @@ import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -96,6 +97,7 @@ public final class OpenCodePackages {
         String version = "";
         String filename = "";
         String sha256 = "";
+        String description = "";
         String repo = "";
         final List<String> depends = new ArrayList<>();
     }
@@ -200,6 +202,46 @@ public final class OpenCodePackages {
         progress.onPercent(100, "");
     }
 
+    /**
+     * Search the main Termux repository. The result is one line per package:
+     * {@code name version - description}, sorted by name.
+     */
+    public static List<String> search(String query) throws Exception {
+        String arch = arch();
+        if (arch == null)
+            throw new IOException("The CPU architecture \"" + firstAbi() + "\" is not supported.");
+
+        Map<String, Pkg> index = new LinkedHashMap<>();
+        boolean loaded = false;
+        for (String mirror : MAIN_MIRRORS) {
+            try {
+                parseIndex(fetch(mirror + INDEX_PATH + arch + "/Packages"), mirror, index);
+                loaded = true;
+                break;
+            } catch (Exception e) {
+                Log.w(TAG, "Could not fetch the package list from " + mirror, e);
+            }
+        }
+        if (!loaded)
+            throw new IOException("Could not download the package list of the Termux repository.");
+
+        String needle = query == null ? "" : query.trim().toLowerCase(Locale.US);
+        List<String> lines = new ArrayList<>();
+        for (Pkg pkg : index.values()) {
+            if (!needle.isEmpty()
+                && !pkg.name.toLowerCase(Locale.US).contains(needle)
+                && !pkg.description.toLowerCase(Locale.US).contains(needle)) {
+                continue;
+            }
+            StringBuilder line = new StringBuilder();
+            line.append(pkg.name).append(' ').append(pkg.version);
+            if (!pkg.description.isEmpty()) line.append(" - ").append(pkg.description);
+            lines.add(line.toString());
+        }
+        Collections.sort(lines);
+        return lines;
+    }
+
     /* ==========================================================================================
      * Package index
      * ========================================================================================== */
@@ -215,8 +257,12 @@ public final class OpenCodePackages {
                 continue;
             }
             if (line.startsWith(" ") || line.startsWith("\t")) {
-                if (current != null && "Depends".equals(lastKey))
-                    current.depends.addAll(parseDepends(line.trim()));
+                if (current != null) {
+                    if ("Depends".equals(lastKey) || "Pre-Depends".equals(lastKey))
+                        current.depends.addAll(parseDepends(line.trim()));
+                    else if ("Description".equals(lastKey))
+                        current.description = (current.description + " " + line.trim()).trim();
+                }
                 continue;
             }
             int colon = line.indexOf(':');
@@ -244,7 +290,11 @@ public final class OpenCodePackages {
                     current.sha256 = value;
                     break;
                 case "Depends":
+                case "Pre-Depends":
                     current.depends.addAll(parseDepends(value));
+                    break;
+                case "Description":
+                    current.description = value;
                     break;
                 default:
                     break;

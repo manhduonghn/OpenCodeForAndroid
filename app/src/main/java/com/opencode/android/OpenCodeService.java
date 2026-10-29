@@ -290,6 +290,31 @@ public final class OpenCodeService extends Service {
         // For a native (patched) binary the loader still finds libc.so.6 and friends through its
         // own relocated tree; this directory only contains the bionic names.
         builder.environment().put("LD_LIBRARY_PATH", OpenCodeBootstrap.PREFIX + "/lib");
+        // git from the Termux repository was built for the com.termux prefix: its helper programs
+        // (git-remote-https, git-upload-pack, …) and its template directory live below the old
+        // prefix, which is unreadable for this app. OpenCode runs git itself for the workspace
+        // snapshots, so it needs these even without a shell.
+        builder.environment().put("GIT_EXEC_PATH",
+            OpenCodeBootstrap.PREFIX + "/libexec/git-core");
+        File gitTemplates = new File(OpenCodeBootstrap.PREFIX, "share/git-core/templates");
+        if (gitTemplates.isDirectory()) {
+            builder.environment().put("GIT_TEMPLATE_DIR", gitTemplates.getAbsolutePath());
+        }
+        File gitSystemConfig = new File(OpenCodeBootstrap.PREFIX, "etc/gitconfig");
+        if (gitSystemConfig.isFile()) {
+            builder.environment().put("GIT_CONFIG_SYSTEM", gitSystemConfig.getAbsolutePath());
+        } else {
+            // Without this git exits with 128 on every call: it tries to read the system config
+            // of the com.termux prefix, which belongs to another app.
+            builder.environment().put("GIT_CONFIG_NOSYSTEM", "1");
+        }
+        builder.environment().put("GIT_ATTR_NOSYSTEM", "1");
+        builder.environment().put("CURL_CA_BUNDLE",
+            OpenCodeBootstrap.PREFIX + "/etc/tls/cert.pem");
+        File opensslConf = new File(OpenCodeBootstrap.PREFIX, "etc/openssl/openssl.cnf");
+        if (opensslConf.isFile()) {
+            builder.environment().put("OPENSSL_CONF", opensslConf.getAbsolutePath());
+        }
         String ghToken = System.getenv("GH_TOKEN");
         if (ghToken != null && !ghToken.isEmpty()) {
             builder.environment().put("GH_TOKEN", ghToken);

@@ -27,6 +27,15 @@
             android:exported="false"
             android:foregroundServiceType="specialUse" />
 
+        <service
+            android:name=".OpenCodePkgService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Installs Termux packages into the private prefix of the app on request of the terminal" />
+        </service>
+
     </application>
 
 </manifest>
