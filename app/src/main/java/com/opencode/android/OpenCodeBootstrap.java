@@ -2047,8 +2047,10 @@ public final class OpenCodeBootstrap {
                 """;
             // 'am' is run from inside the app, where it belongs to this user. Without an explicit
             // --user the activity manager assumes user -2 (all users) and rejects the call with
-            // "requires INTERACT_ACROSS_USERS". Context.getUserId() is the public API for it.
-            int userId = context != null ? context.getUserId() : android.os.Process.myUid() / 100000;
+            // "requires INTERACT_ACROSS_USERS". UserHandle.getIdentifier() and
+            // Context.getUserId() are hidden APIs, the uid layout (100000 uids per user) is the
+            // documented, stable way to derive it.
+            int userId = android.os.Process.myUid() / 100000;
             return script
                 .replace("@MARKER@", LAUNCHER_MARKER)
                 .replace("@PREFIX@", PREFIX)
