@@ -79,3 +79,11 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
 }
+
+// The Java sources are gone, but AGP still compares both toolchains: the Kotlin JVM target has to
+// match compileOptions above or the build fails with "Inconsistent JVM Target Compatibility".
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
