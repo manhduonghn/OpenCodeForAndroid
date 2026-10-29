@@ -2045,13 +2045,10 @@ public final class OpenCodeBootstrap {
                     *) echo "pkg: unknown command '$command'" >&2; usage >&2; exit 2 ;;
                 esac
                 """;
-            int userId;
-            try {
-                userId = android.os.Process.myUserHandle().getIdentifier();
-            } catch (Throwable t) {
-                // myUserHandle() is API 24, the uid layout is a stable fallback.
-                userId = android.os.Process.myUid() / 100000;
-            }
+            // 'am' is run from inside the app, where it belongs to this user. Without an explicit
+            // --user the activity manager assumes user -2 (all users) and rejects the call with
+            // "requires INTERACT_ACROSS_USERS". Context.getUserId() is the public API for it.
+            int userId = context != null ? context.getUserId() : android.os.Process.myUid() / 100000;
             return script
                 .replace("@MARKER@", LAUNCHER_MARKER)
                 .replace("@PREFIX@", PREFIX)
