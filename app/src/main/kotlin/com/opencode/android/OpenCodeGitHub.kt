@@ -2,6 +2,7 @@ package com.opencode.android
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -35,6 +36,9 @@ object OpenCodeGitHub {
     private const val VERIFY_URL = "https://github.com/login/device"
     private const val SCOPES = "repo read:org gist"
 
+    /** scp-like (`git@github.com:owner/repo`) and `ssh://git@github.com/owner/repo` URLs. */
+    private val SSH_GITHUB_URL = Regex("^(?:ssh://)?git@github\\.com[:/](.+)$")
+
     data class DeviceCode(
         val deviceCode: String,
         val userCode: String,
@@ -57,6 +61,17 @@ object OpenCodeGitHub {
     fun gitAvailable(): Boolean = File(OpenCodeBootstrap.PREFIX, "bin/git").canExecute()
 
     fun ghAvailable(): Boolean = File(OpenCodeBootstrap.PREFIX, "bin/gh").canExecute()
+
+    /**
+     * Absolute path of git. Android's ProcessBuilder does not look the program up in the PATH of
+     * the environment it is given, it searches the PATH of the app process (which only contains
+     * /system/bin). A bare "git" therefore fails with ENOENT even after git was installed into
+     * the prefix, while `gh` always worked because [runGh] uses its absolute path.
+     */
+    private fun gitBinary(): String {
+        val git = File(OpenCodeBootstrap.PREFIX, "bin/git")
+        return if (git.canExecute()) git.absolutePath else "git"
+    }
 
     fun bothAvailable(): Boolean = gitAvailable() && ghAvailable()
 
@@ -255,6 +270,12 @@ object OpenCodeGitHub {
         var url = repo.trim()
         if (url.isEmpty()) return url
         while (url.endsWith("/")) url = url.dropLast(1)
+        // The prefix has no ssh binary and the GitHub login is an HTTPS token, so the ssh:// and
+        // scp-like URLs of GitHub would always fail. Rewrite them to HTTPS, which can use the
+        // stored token.
+        SSH_GITHUB_URL.find(url)?.let { match ->
+            url = "https://github.com/" + match.groupValues[1]
+        }
         if (url.startsWith("github.com/") || url.startsWith("www.github.com/")) {
             url = "https://$url"
         } else if (!url.contains("://") && !url.startsWith("git@") && url.indexOf('/') > 0) {
@@ -271,12 +292,30 @@ object OpenCodeGitHub {
     fun clone(repoUrl: String, onLine: ((String) -> Unit)? = null): Result {
         val url = normalizeCloneUrl(repoUrl)
         if (url.isEmpty()) return Result(-1, "empty URL")
+        val extraEnv = HashMap<String, String>()
+        extraEnv["GIT_TERMINAL_PROMPT"] = "0"
+        // The git package of Termux was built with SHELL_PATH pointing at the Termux app. Git runs
+        // a `!` credential helper through that shell, so the helper of `gh auth setup-git` cannot
+        // start inside this sandbox and private clones would fail. Send the token to libcurl
+        // instead, the request is authenticated before git asks a helper. An empty helper also
+        // keeps the unusable one out of the way when the token was revoked.
+        storedToken()?.let { token ->
+            val basic = Base64.encodeToString(
+                "x-access-token:$token".toByteArray(StandardCharsets.UTF_8),
+                Base64.NO_WRAP,
+            )
+            extraEnv["GIT_CONFIG_COUNT"] = "2"
+            extraEnv["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+            extraEnv["GIT_CONFIG_VALUE_0"] = "Authorization: Basic $basic"
+            extraEnv["GIT_CONFIG_KEY_1"] = "credential.helper"
+            extraEnv["GIT_CONFIG_VALUE_1"] = ""
+        }
         return run(
-            arrayOf("git", "clone", "--progress", "--", url),
+            arrayOf(gitBinary(), "clone", "--progress", "--", url),
             directory = File(OpenCodeBootstrap.HOME),
             input = null,
             timeoutMs = 900000L,
-            extraEnv = mapOf("GIT_TERMINAL_PROMPT" to "0"),
+            extraEnv = extraEnv,
             onLine = onLine,
         )
     }
