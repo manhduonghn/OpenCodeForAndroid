@@ -6,6 +6,9 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -32,6 +35,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -164,6 +168,20 @@ public final class OpenCodeBootstrap {
     public static final String SECOND_STAGE_LOCK_PATH = SECOND_STAGE_DIR + "/termux-bootstrap-second-stage.sh.lock";
     /** DNS configuration of Termux. */
     public static final String RESOLV_CONF_PATH = PREFIX + "/etc/resolv.conf";
+    /**
+     * Configuration directory of the glibc runtime. libc reads {@code resolv.conf},
+     * {@code hosts} and {@code nsswitch.conf} from here (via the {@code <dataDir>/glibc} alias),
+     * which is where the resolver configuration has to be written.
+     */
+    public static final String GLIBC_ETC_DIR = PREFIX + "/glibc/etc";
+    /** Records for which glibc build the shared objects were relocated to this sandbox. */
+    private static final String GLIBC_RELOCATED_PATH = OC_HOME + "/.glibc-relocated";
+    /**
+     * Upper bound of a glibc object that is relocated. libstdc++ (22 MB), libasan (11 MB) and the
+     * sanitizer runtimes carry only compiler paths, while everything that the resolver and the
+     * runtime read at run time stays well below this limit.
+     */
+    private static final long MAX_RELOCATED_FILE_SIZE = 8L * 1024 * 1024;
     /** APT configuration of the user. */
     public static final String APT_SOURCES_LIST_PATH = PREFIX + "/etc/apt/sources.list";
     /** APT configuration fragments of the user. */
@@ -437,6 +455,63 @@ public final class OpenCodeBootstrap {
         synchronized (sLock) {
             return copyOf(sState);
         }
+    }
+
+    /**
+     * Write the resolver configuration that the glibc runtime of this prefix reads.
+     *
+     * <p>glibc cannot use the resolver of Android (bionic hands DNS over to netd); it reads its
+     * nameservers from {@code $PREFIX/glibc/etc/resolv.conf}. The servers of the active network
+     * are used, because they change with Wi-Fi, mobile data and VPN, so the file is rewritten
+     * every time the server starts. Public resolvers are only a last resort for a network that
+     * does not report its own servers.</p>
+     */
+    public static void refreshResolvConf(Context context) {
+        List<String> servers = new ArrayList<>();
+        if (context != null) {
+            try {
+                ConnectivityManager manager =
+                    (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+                Network network = manager == null ? null : manager.getActiveNetwork();
+                LinkProperties properties =
+                    network == null ? null : manager.getLinkProperties(network);
+                if (properties != null) {
+                    for (InetAddress address : properties.getDnsServers()) {
+                        if (address == null || address.isAnyLocalAddress() || address.isLinkLocalAddress())
+                            continue;
+                        String host = address.getHostAddress();
+                        if (host == null || host.isEmpty() || servers.contains(host)) continue;
+                        servers.add(host);
+                        if (servers.size() >= 4) break;
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(LOG_TAG, "Could not read the DNS servers of the active network", e);
+            }
+        }
+        if (servers.isEmpty()) {
+            // The device does not report its resolvers (rare, but some ROMs do that).
+            servers.add("1.1.1.1");
+            servers.add("8.8.8.8");
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (String server : servers) sb.append("nameserver ").append(server).append('\n');
+        sb.append("options timeout:2 attempts:2\n");
+        String content = sb.toString();
+
+        // resolv.conf of the prefix and the one the glibc libraries read. In the Termux packages
+        // the second path is a symlink to the first one, writing both also repairs a missing link.
+        for (String path : new String[]{RESOLV_CONF_PATH, GLIBC_ETC_DIR + "/resolv.conf"}) {
+            File file = new File(path);
+            if (!file.getParentFile().isDirectory()) continue;
+            try {
+                writeTextFile(file, content);
+            } catch (IOException e) {
+                Log.w(LOG_TAG, "Could not write " + path, e);
+            }
+        }
+        Log.i(LOG_TAG, "Resolver configuration: " + servers);
     }
 
     /**
@@ -870,7 +945,11 @@ public final class OpenCodeBootstrap {
             // replaced: the aliases, the relocated loader, the login profile and the marker.
             ensurePathAliases();
             String loader = findGlibcLoader();
-            if (loader != null) relocateLoader(loader);
+            // The whole glibc runtime is relocated, not only the loader: libc.so.6 otherwise
+            // looks for resolv.conf in the unreadable prefix of the Termux app and every host
+            // name lookup of the server fails with "getaddrinfo".
+            if (loader != null) relocateGlibc(loader);
+            refreshResolvConf(context);
             patchLoginShellPaths();
             repairNativeInterp();
             refreshNativeMarker();
@@ -1506,7 +1585,7 @@ public final class OpenCodeBootstrap {
             // loader fallback still works for the foreground TUI, so it is not fatal.
             ensurePathAliases();
             boolean nativeInterp = false;
-            if (relocateLoader(loader)) {
+            if (relocateGlibc(loader)) {
                 status("Pointing the binary at the glibc runtime...");
                 CmdResult patch = run(Arrays.asList(
                     PREFIX + "/bin/patchelf", "--set-interpreter", loader, staged.getAbsolutePath()
@@ -1618,7 +1697,7 @@ public final class OpenCodeBootstrap {
             if (attempt.equals(readTrimmed(new File(NATIVE_REPAIR_MARKER_PATH)))) return;
 
             String loader = findGlibcLoader();
-            if (loader == null || !relocateLoader(loader) || !patchelfWorks()) return;
+            if (loader == null || !relocateGlibc(loader) || !patchelfWorks()) return;
 
             status("Preparing the installed OpenCode binary for a direct start...");
             File temp = new File(binary.getAbsolutePath() + ".native-new");
@@ -2107,15 +2186,7 @@ public final class OpenCodeBootstrap {
         }
 
         private void ensureResolvConf() {
-            File resolvConf = new File(RESOLV_CONF_PATH);
-            if (resolvConf.exists()) return;
-            if (!resolvConf.getParentFile().isDirectory()) return;
-
-            try {
-                writeTextFile(resolvConf, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n");
-            } catch (IOException e) {
-                Log.w(LOG_TAG, "Failed to write " + RESOLV_CONF_PATH, e);
-            }
+            refreshResolvConf(context);
         }
 
         private void writeDiagnostics() {
@@ -2759,6 +2830,85 @@ public final class OpenCodeBootstrap {
             Log.w(LOG_TAG, "Could not relocate the glibc loader " + loaderPath, e);
             return false;
         }
+    }
+
+    /** Incremented whenever the shared objects of the glibc runtime are rewritten. */
+    private static volatile int sGlibcPatchGeneration;
+
+    /**
+     * Make sure that the glibc runtime of the prefix is relocated to this sandbox. Called
+     * synchronously by the service before the server is spawned, so a server can never start with
+     * a libc that looks for its resolver configuration in the unreadable Termux prefix.
+     *
+     * @return true when this call rewrote the runtime, ie. a server that is still running uses the
+     *     old copy and has to be replaced
+     */
+    public static boolean ensureGlibcRelocated() {
+        ensurePathAliases();
+        String loader = findGlibcLoader();
+        if (loader == null) return false;
+        int generation = sGlibcPatchGeneration;
+        relocateGlibc(loader);
+        return sGlibcPatchGeneration != generation;
+    }
+
+    /**
+     * Rewrite the compiled-in Termux prefix of the glibc runtime itself (libc.so.6 and the other
+     * shared objects), not only of the loader.
+     *
+     * <p>Relocating the loader alone is enough to start a binary, but libc.so.6 keeps the paths of
+     * the Termux prefix compiled in: {@code /data/data/com.termux/files/usr/glibc/etc/resolv.conf}
+     * (21 occurrences), {@code .../glibc/etc/hosts}, {@code .../glibc/lib/gconv/...}. Those files
+     * belong to the Termux app and cannot be read from this sandbox, so the resolver would start
+     * without a single nameserver: the server runs, the web UI opens, but every request for a
+     * model or the model list dies with {@code getaddrinfo}. The same one-to-one replacement as
+     * for the loader points them at the {@code <dataDir>/glibc} and {@code <dataDir>/etc} aliases
+     * instead.</p>
+     *
+     * @return true when the loader was relocated too, ie. a direct start can work.
+     */
+    private static boolean relocateGlibc(String loaderPath) {
+        boolean loaderOk = loaderPath != null && relocateLoader(loaderPath);
+
+        File libDir = new File(GLIBC_LIB_DIR);
+        File libc = new File(libDir, "libc.so.6");
+        if (!libc.isFile()) return loaderOk;
+
+        // A package update replaces libc.so.6 and invalidates the marker, everything else is a
+        // no-op then (files without the prefix are not rewritten).
+        String stamp = DATA_DIR + "|" + libc.length() + "|" + libc.lastModified();
+        File marker = new File(GLIBC_RELOCATED_PATH);
+        if (stamp.equals(readTrimmed(marker))) return loaderOk;
+
+        File[] files = libDir.listFiles();
+        int patchedFiles = 0;
+        int patchedPaths = 0;
+        if (files != null) {
+            for (File file : files) {
+                // Only runtime objects are mapped into the process, and only those can carry
+                // paths that are read while OpenCode runs. Static archives and the huge
+                // development objects are skipped, they are never loaded.
+                if (!file.isFile() || file.length() > MAX_RELOCATED_FILE_SIZE) continue;
+                if (!file.getName().contains(".so") && !file.getName().startsWith("ld-")) continue;
+                try {
+                    // Do not replace a symlink such as libc.so -> libc.so.6 with a copy of its
+                    // target, the linker scripts and the aliases of the packages must survive.
+                    if (!file.getCanonicalPath().equals(file.getAbsolutePath())) continue;
+                } catch (IOException e) {
+                    continue;
+                }
+                int hits = patchFileStrings(file, PREFIX_TERMUX, DATA_DIR);
+                if (hits > 0) {
+                    patchedFiles++;
+                    patchedPaths += hits;
+                }
+            }
+        }
+        Log.i(LOG_TAG, "Relocated " + patchedPaths + " path(s) of " + patchedFiles
+            + " glibc runtime file(s) to " + DATA_DIR);
+        if (patchedFiles > 0) sGlibcPatchGeneration++;
+        writeTextFileQuietly(marker, stamp + "\n");
+        return loaderOk;
     }
 
     /**

@@ -200,9 +200,14 @@ public final class OpenCodeService extends Service {
             // A server started by an earlier app process can still own the port: Android does not
             // kill the children of a dead app process. Reuse it when it runs the current binary,
             // stop it when it is an older version, so 'serve' never fails with EADDRINUSE.
+            //
+            // An update of the runtime also forces a fresh server: the running one mapped the
+            // glibc of the old installation, which cannot resolve a single host name (see
+            // ensureGlibcRelocated), and adopting it would keep the broken resolver alive.
+            boolean glibcRewritten = OpenCodeBootstrap.ensureGlibcRelocated();
             int inherited = findServerPid(binary);
             if (inherited > 0 && isPortOpen(port)) {
-                if (acceptsCurrentPassword()) {
+                if (!glibcRewritten && acceptsCurrentPassword()) {
                     Log.i(TAG, "Reusing the OpenCode server that is already listening (pid "
                         + inherited + ").");
                     serverPid = inherited;
@@ -213,9 +218,13 @@ public final class OpenCodeService extends Service {
                     updateNotification("Running on http://127.0.0.1:" + port);
                     return;
                 }
-                // A server of an earlier installation was started with another password, the
-                // WebView could never pair with it. Replace it with a fresh one.
-                Log.w(TAG, "The inherited server rejects the password of this app, restarting it.");
+                // A server of an earlier installation was started with another password, or it
+                // still runs with the glibc of the previous installation (no DNS). The WebView
+                // could never pair with the first one and never resolve a host with the second
+                // one, so replace it with a fresh server.
+                Log.w(TAG, "The inherited server was started with another password or an outdated"
+                    + " runtime" + (glibcRewritten ? " (glibc was just relocated)" : "")
+                    + ", restarting it.");
                 killIfOurServer(inherited);
                 waitForPortFree(4000);
                 clearPidFile();
@@ -258,6 +267,10 @@ public final class OpenCodeService extends Service {
         }
         String command = "echo $$ > '" + PID_FILE + "'; " + exec;
         clearPidFile();
+        // The glibc runtime of the prefix resolves names itself and cannot use the resolver of
+        // Android: without resolv.conf every host lookup of the server fails with
+        // "getaddrinfo", and the UI shows no models and no answers.
+        OpenCodeBootstrap.refreshResolvConf(this);
         ProcessBuilder builder = new ProcessBuilder("/system/bin/sh", "-c", command);
         builder.directory(new File(OpenCodeBootstrap.HOME));
         builder.redirectErrorStream(true);

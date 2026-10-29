@@ -47,6 +47,16 @@ The app combines the two techniques that make this possible:
    back to the explicit `ld-linux --library-path …` invocation, which still runs
    the TUI (only the self-spawned server is affected).
 
+   The same replacement is applied to **every runtime object of the glibc
+   directory**, not only to the loader. `libc.so.6` carries 21 compiled-in
+   paths such as `/data/data/com.termux/files/usr/glibc/etc/resolv.conf`; that
+   directory belongs to the Termux app and is unreadable here, so a browser in
+   such a sandbox starts, serves the UI and then fails every host lookup with
+   `getaddrinfo`. The resolver configuration is written on every server start
+   too, using the DNS servers of the active network
+   (`ConnectivityManager`/`LinkProperties`), because glibc cannot use the
+   resolver of Android (bionic hands DNS over to `netd`).
+
 3. **Pairing the WebView.** `GET /` alone only serves the web app shell, which
    asks for a server address and password. The app therefore mints a one-time
    code with `POST /api/pair` (Basic auth), redeems it at
