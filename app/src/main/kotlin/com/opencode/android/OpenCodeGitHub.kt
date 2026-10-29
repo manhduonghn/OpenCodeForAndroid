@@ -323,8 +323,22 @@ object OpenCodeGitHub {
             extraEnv["GIT_CONFIG_KEY_1"] = "credential.helper"
             extraEnv["GIT_CONFIG_VALUE_1"] = ""
         }
+        val cert = File(OpenCodeBootstrap.PREFIX, "etc/tls/cert.pem")
+        if (!cert.isFile) {
+            return Result(
+                -1,
+                "Không tìm thấy CA bundle của runtime ($cert). " +
+                    "Hãy mở app để nó cài lại gói ca-certificates rồi thử lại.",
+            )
+        }
+        val command = mutableListOf(gitBinary())
+        // Termux's libcurl falls back to the CA file of the Termux app, which does not exist here.
+        // Pass the bundle of this prefix explicitly, even when etc/gitconfig was not written yet.
+        command += "-c"
+        command += "http.sslCAInfo=${cert.absolutePath}"
+        command += listOf("clone", "--progress", "--", url)
         return run(
-            arrayOf(gitBinary(), "clone", "--progress", "--", url),
+            command.toTypedArray(),
             directory = File(OpenCodeBootstrap.HOME),
             input = null,
             timeoutMs = 900000L,

@@ -428,6 +428,12 @@ object OpenCodePackages {
         if (recorded.isEmpty()) return emptyList()
         return recorded.filter { name ->
             if (name == "glibc") return@filter !hasGlibcLoader(prefix)
+            // A truncated extraction leaves a cert.pem that makes every HTTPS request fail with
+            // "error adding trust anchors"; the real bundle is ~200 KB.
+            if (name == "ca-certificates") {
+                val cert = File(prefix, "etc/tls/cert.pem")
+                return@filter !cert.isFile || cert.length() < 1024
+            }
             val proof = BINARY_PROOF[name] ?: return@filter false
             proof.none { File(prefix, it).exists() }
         }

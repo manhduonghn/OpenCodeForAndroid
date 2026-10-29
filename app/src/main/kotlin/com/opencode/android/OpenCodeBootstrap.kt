@@ -588,8 +588,27 @@ object OpenCodeBootstrap {
             return
         }
         writeTextFileQuietly(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
+        writeGitConfig()
         ensureLoginProfile()
         hookBashrc()
+    }
+
+    /**
+     * Write `etc/gitconfig` with the CA bundle of this prefix. Termux's libcurl was built with
+     * `/data/data/com.termux/files/usr/etc/tls/cert.pem` as its default CA file, a path that does
+     * not exist inside this app, and OpenSSL ignores `SSL_CERT_FILE` when curl passes that
+     * explicit file. `http.sslCAInfo` makes git hand our bundle to libcurl instead, for the app's
+     * clone as well as for a clone from the terminal.
+     */
+    private fun writeGitConfig() {
+        val cert = File(PREFIX, "etc/tls/cert.pem")
+        if (!cert.isFile) return
+        val text = buildString {
+            append("# Managed by the OpenCode for Android app.\n")
+            append("[http]\n")
+            append("\tsslCAInfo = ").append(cert.absolutePath).append('\n')
+        }
+        writeTextFileQuietly(File(PREFIX, "etc/gitconfig"), text)
     }
 
     /**

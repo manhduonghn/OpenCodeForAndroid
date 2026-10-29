@@ -146,6 +146,14 @@ updated with `oc-install` / `opencode update`.
 rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), so they
 start even from a terminal without `LD_LIBRARY_PATH`.
 
+Termux's `libcurl` was built with `/data/data/com.termux/files/usr/etc/tls/cert.pem`
+as its default CA file, a path that belongs to the Termux app and does not exist
+here. `SSL_CERT_FILE` is not enough because curl passes that explicit file to
+OpenSSL, so the app writes `$PREFIX/etc/gitconfig` with
+`http.sslCAInfo = $PREFIX/etc/tls/cert.pem` (and the clone command passes
+`-c http.sslCAInfo=…` as well), which makes git hand the bundle of this prefix
+to libcurl.
+
 The Termux `bash` package has `/data/data/com.termux/files/usr/etc/profile`
 compiled in and starts as `bash -l` inside the OpenCode terminal. That path
 belongs to another app and is unreadable here, which produced
