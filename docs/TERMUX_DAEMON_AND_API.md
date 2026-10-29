@@ -390,8 +390,10 @@ này không chạy `postinst`:
 - `OpenCodeBootstrap` ghi `JAVA_HOME`, thêm `$JAVA_HOME/lib` + `$JAVA_HOME/lib/server` vào
   `LD_LIBRARY_PATH` (RUNPATH của JDK trỏ `/data/data/com.termux`), thêm `$JAVA_HOME/bin`
   vào `PATH` trong `etc/opencode-env.sh`; server cũng nhận `JAVA_HOME` trong env.
-- Nếu có `$PREFIX/etc/ssl/certs/java/cacerts` (từ `ca-certificates-java`), app link vào
-  `$JAVA_HOME/lib/security/cacerts` để HTTPS từ Java/Gradle hoạt động.
+- `ca-certificates-java` chỉ là `Recommends` của `openjdk-17`, nên `pkg install openjdk`
+  tự thêm gói này. Nó đặt `lib/jvm/java-17-openjdk/lib/security/jssecacerts` (Java ưu
+  tiên file này hơn `cacerts`), nhờ vậy HTTPS từ Java/Gradle hoạt động; JDK cũng có sẵn
+  `lib/security/cacerts`.
 - `openjdk-17` kéo theo `alsa-plugins` → `pulseaudio` (vài MB) do dependency khai báo;
   không ảnh hưởng JVM nhưng làm lần cài lâu hơn.
 
@@ -481,10 +483,12 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     `result=1`. Sửa đúng lỗi `Can't start from invalid source: 10233`, xem mục 4.6.
 16. **Alias + bundle:** `openjdk|java|javac|jdk` → `openjdk-17`, `node` → `nodejs`,
     `pip` → `python-pip`; thêm `pkg bundle dev|python|node|java|net|all`, xem mục 4.7.
-    `LAUNCHER_VERSION` tăng lên 9 để bản cài cũ được rewrite.
-17. **JDK chạy được:** `configureJdk()` tạo symlink `bin/*`, link trust store
-    (`cacerts`); env có `JAVA_HOME`, `LD_LIBRARY_PATH` và `PATH` cho JDK, cả trong terminal
-    lẫn env của server. `openjdk-17` là tên gói thật (`openjdk` không tồn tại trong repo).
+    `LAUNCHER_VERSION` tăng lên 10 để bản cài cũ được rewrite.
+17. **JDK chạy được:** `configureJdk()` tạo symlink `bin/*` (gói `openjdk-17` chỉ có
+    `lib/jvm/java-17-openjdk/bin/java`, không có `bin/java`); env có `JAVA_HOME`,
+    `LD_LIBRARY_PATH` (`lib` + `lib/server`) và `PATH` cho JDK, cả trong terminal lẫn env
+    của server. `openjdk-17` là tên gói thật (`openjdk` không tồn tại trong repo).
+    `pkg install openjdk` tự thêm `ca-certificates-java` để có `jssecacerts`.
 18. **Chưa kiểm chứng trên máy:** `java -version` trong prefix mới chỉ được suy luận từ
     cấu trúc gói + env, chưa chạy thật vì môi trường build hiện tại không có JDK/Android
     SDK và máy chưa cài APK mới. Sau khi cài APK: mở app một lần, chạy
@@ -538,7 +542,7 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 - **Broadcast receiver** của `pkg` là `exported="true"`; an toàn nhờ permission
   `signature` — đừng đổi thành `normal` hay bỏ permission, app khác sẽ start service được.
 - **JDK** chiếm ~218 MB trong prefix; không có `postinst` nên mọi thứ phải do app tự nối
-  (symlink, `JAVA_HOME`, `cacerts`). Gói `openjdk-17` kéo theo `pulseaudio` qua
+  (symlink, `JAVA_HOME`, `jssecacerts`). Gói `openjdk-17` kéo theo `pulseaudio` qua
   `alsa-plugins`, làm lần cài đầu lâu hơn.
 - **Không có "cài hết repo"**: 3.028 gói Termux có xung đột và postinst; `pkg bundle all`
   chỉ là nhóm chọn lọc, và index vẫn có thể đổi giữa các lần cài.

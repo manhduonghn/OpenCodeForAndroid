@@ -1106,22 +1106,6 @@ object OpenCodePackages {
                 Log.w(TAG, "Could not create the JDK link $link", e)
             }
         }
-
-        // Java looks for its trust store in $JAVA_HOME/lib/security/cacerts. Termux keeps the
-        // store in ca-certificates-java and links it with update-alternatives, which never runs in
-        // this prefix: point Java at the file of the package instead (HTTPS from Java/Gradle then
-        // works out of the box). A store that the JDK itself ships is left alone.
-        val store = File(prefix, "etc/ssl/certs/java/cacerts")
-        val security = File(jdk, "lib/security")
-        val javaStore = File(security, "cacerts")
-        if (store.isFile && security.isDirectory && !javaStore.exists()) {
-            if (lexists(javaStore)) deletePath(javaStore)
-            try {
-                Os.symlink(store.absolutePath, javaStore.absolutePath)
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not link the Java trust store $javaStore", e)
-            }
-        }
     }
 
     /** Newest `lib/jvm/java-<version>-openjdk` directory, or null when no JDK is installed. */

@@ -159,6 +159,13 @@ wait_for_service() {
     done
 }
 
+add_package() {
+    case " $packages " in
+        *" $1 "*) ;;
+        *) packages="$packages $1" ;;
+    esac
+}
+
 pkg_install() {
     packages=""
     for argument in "$@"; do
@@ -168,7 +175,13 @@ pkg_install() {
         esac
         package=$(alias_for "$argument")
         valid_name "$package" || fail "install: '$argument' is not a valid package name"
-        packages="$packages $package"
+        add_package "$package"
+        # The JDK ships a trust store that is empty for real CAs; ca-certificates-java adds
+        # lib/security/jssecacerts, which Java prefers. It is only a Recommends of openjdk-17,
+        # so add it here to make HTTPS from Java/Gradle work out of the box.
+        case "$package" in
+            openjdk-*) add_package ca-certificates-java ;;
+        esac
     done
     [ -n "$packages" ] || fail "install: no package name given. Try: pkg install git gh"
     [ -x "$P/bin/bash" ] || fail "the Linux runtime is not installed yet. Open the app first."

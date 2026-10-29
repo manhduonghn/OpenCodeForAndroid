@@ -175,7 +175,7 @@ object OpenCodeBootstrap {
     /* ------------------------------------------------------------------ constants */
 
     /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private const val LAUNCHER_VERSION = 9
+    private const val LAUNCHER_VERSION = 10
     private const val LAUNCHER_MARKER =
         "Managed by the OpenCode for Android app. opencode-launcher-version: $LAUNCHER_VERSION"
 
