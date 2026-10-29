@@ -21,17 +21,30 @@ The app combines the two techniques that make this possible:
    No `apt`/`dpkg` is involved, they would write into the real Termux prefix.
 
 2. **Running OpenCode** (the opencode-termux technique). The official npm
-   platform package is downloaded, the binary is extracted and started through
-   the glibc loader of the toolchain:
+   platform package is downloaded, the binary is extracted and its `PT_INTERP`
+   is pointed at the glibc loader of the toolchain:
 
    ```
-   $PREFIX/glibc/lib/ld-linux-aarch64.so.1 \
-       --library-path $PREFIX/glibc/lib $HOME/.opencode/bin/opencode serve \
-       --hostname 127.0.0.1 --port 49374
+   $PREFIX/glibc/lib/ld-linux-aarch64.so.1   <- PT_INTERP of the binary
+   $HOME/.opencode/installed/opencode-v<ver>
    ```
 
-   The 240 MB binary is not rewritten with `patchelf` (that is slow and can run
-   out of memory on a phone); the glibc loader is passed explicitly instead.
+   Patching the interpreter (and only the interpreter, never `--set-rpath`) is
+   what makes the binary start **directly**. This matters for
+   `opencode serve`: the CLI spawns its own background server through
+   `/proc/self/exe`, and when the loader is passed explicitly that path is
+   `ld-linux`, so the child runs `ld-linux serve` and exits with
+   `serve: cannot open shared object file`. A directly started binary reports
+   itself as `/proc/self/exe` and the self-spawn works.
+
+   The Termux glibc loader has `/data/data/com.termux/files/usr/glibc/...`
+   compiled into its rodata. That prefix and the sandbox root
+   (`/data/data/com.opencode.android`) are both 31 characters, so the loader is
+   relocated with an in-place, same-length byte replacement and two symlinks
+   (`<dataDir>/glibc -> $PREFIX/glibc`, `<dataDir>/etc -> $PREFIX/etc`) make the
+   relocated paths resolve. If the patch fails, the app and the launcher fall
+   back to the explicit `ld-linux --library-path …` invocation, which still runs
+   the TUI (only the self-spawned server is affected).
 
 3. **Pairing the WebView.** `GET /` alone only serves the web app shell, which
    asks for a server address and password. The app therefore mints a one-time
@@ -56,9 +69,24 @@ Only the minimum the runtime needs (≈14 MB of packages):
 Termux app (`am`, `pm`, …) and would pull the Termux app and a dozen extra
 packages.
 
+Because of that **there is no `pkg`, `apt` or `dpkg` in this prefix**: packages
+are installed by the app itself, not by a package manager. `$PREFIX/bin/pkg` is
+a small stub that explains this instead of failing with `pkg: command not
+found`. Packages outside the minimum set (for example `git` or `gh`) are not
+installed; the OpenCode runtime does not need them.
+
 The Termux binaries point at the `com.termux` prefix with their `RUNPATH`, so it
 is rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), which
 makes `bash` start even from a terminal without `LD_LIBRARY_PATH`.
+
+The Termux `bash` package has `/data/data/com.termux/files/usr/etc/profile`
+compiled in and starts as `bash -l` inside the OpenCode terminal. That path
+belongs to another app and is unreadable here, which produced
+`bash: …/etc/profile: Permission denied`. The installer therefore rewrites the
+compiled-in login paths of `bash` to the sandbox root (same-length byte
+replacement), rewrites the `com.termux` paths inside `etc/bash.bashrc`, and
+writes a small managed `etc/profile` to replace the one shipped by the bash
+package.
 
 `targetSdk` is **28** on purpose: Android 10+ denies `execve()` of files inside
 the app data directory for apps that target API 29 or newer. Termux itself does

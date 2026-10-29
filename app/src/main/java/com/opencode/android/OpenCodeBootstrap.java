@@ -33,6 +33,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,13 +49,16 @@ import java.util.regex.Pattern;
  * Bootstraps the official OpenCode CLI natively inside Android and keeps it runnable.
  *
  * <p>The official OpenCode CLI is only published as a <b>glibc</b> ELF binary, while Android only
- * ships <b>bionic</b>. The binary therefore runs through the glibc loader of the toolchain:</p>
+ * ships <b>bionic</b>. The binary therefore gets the glibc loader as its ELF interpreter and runs
+ * directly, the way a normal Linux program does:</p>
  *
  * <pre>
  *   download the official npm tarball @opencode/cli-linux-&lt;arch&gt;
  *     -&gt; unpack package/bin/opencode in Java (no tar binary needed)
- *     -&gt; verify through $PREFIX/glibc/lib/ld-linux-*.so.* --library-path
- *     -&gt; atomic rename -&gt; $PREFIX/bin/opencode launcher (loader + --library-path)
+ *     -&gt; relocate the loader and set the binary's PT_INTERP to it
+ *     -&gt; start the binary directly: /proc/self/exe is the binary, so OpenCode can spawn
+ *        its own background `serve` process (that was broken with an explicit loader)
+ *     -&gt; fall back to "$PREFIX/glibc/lib/ld-linux-*.so.* --library-path" if the patch fails
  * </pre>
  *
  * <p>Everything is done from this single class so that the installation keeps its progress,
@@ -90,6 +94,19 @@ public final class OpenCodeBootstrap {
     /** App-private Termux-like prefix, eg. {@code /data/data/com.opencode.android/files/usr}. */
     public static final String PREFIX = "/data/data/com.opencode.android/files/usr";
 
+    /**
+     * Root of the sandbox ({@code context.getApplicationInfo().dataDir}). It has exactly the same
+     * length as the prefix that is baked into the Termux packages
+     * ({@code /data/data/com.termux/files/usr}), which makes it possible to relocate compiled-in
+     * paths in place: every byte is replaced one to one, so no offset moves.
+     */
+    public static final String DATA_DIR = "/data/data/com.opencode.android";
+
+    /** Alias of {@link #PREFIX}/glibc, target of the relocated loader search path. */
+    public static final String GLIBC_ALIAS_DIR = DATA_DIR + "/glibc";
+    /** Alias of {@link #PREFIX}/etc, target of the relocated login profile of bash. */
+    public static final String ETC_ALIAS_DIR = DATA_DIR + "/etc";
+
     /** App-private Termux-like home, eg. {@code /data/data/com.opencode.android/files/home}. */
     public static final String HOME = "/data/data/com.opencode.android/files/home";
 
@@ -103,6 +120,13 @@ public final class OpenCodeBootstrap {
     public static final String LINK_PATH = LINK_DIR + "/opencode";
     /** Contains the version that is currently installed. */
     public static final String READY_MARKER_PATH = OC_HOME + "/.native-ready";
+    /**
+     * Fingerprint ("&lt;size&gt; &lt;mtime&gt;") of the installed binary whose ELF interpreter was
+     * pointed at the glibc loader. Present only when the binary really starts directly.
+     */
+    public static final String NATIVE_INTERP_MARKER_PATH = OC_HOME + "/.native-interp";
+    /** Remembers a failed attempt, so a 240 MB copy is not retried on every app start. */
+    private static final String NATIVE_REPAIR_MARKER_PATH = OC_HOME + "/.native-repair-tried";
     /** Full log of every installer run. */
     public static final String SETUP_LOG_PATH = OC_HOME + "/setup.log";
     /** Human readable report of the last failure. */
@@ -121,6 +145,8 @@ public final class OpenCodeBootstrap {
     public static final String OPENCODE_BIN_PATH = PREFIX + "/bin/opencode";
     /** Launcher script, {@code oc-install}. */
     public static final String OC_INSTALL_PATH = PREFIX + "/bin/oc-install";
+    /** Explains that this prefix has no apt/dpkg, so {@code pkg} cannot be used. */
+    public static final String PKG_PATH = PREFIX + "/bin/pkg";
     /** HTTP Basic user name the {@code opencode serve} of the 2.x line expects. */
     public static final String SERVER_USER = "opencode";
     /** Password of the server, exported by the launchers and used by the WebView. */
@@ -145,7 +171,7 @@ public final class OpenCodeBootstrap {
      * ========================================================================================== */
 
     /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private static final int LAUNCHER_VERSION = 5;
+    private static final int LAUNCHER_VERSION = 6;
 
     private static final String LAUNCHER_MARKER = "Managed by the OpenCode for Android app. opencode-launcher-version: " + LAUNCHER_VERSION;
 
@@ -169,6 +195,11 @@ public final class OpenCodeBootstrap {
     private static final int FAILURE_LOG_LINES = 14;
     /** Maximum length of the detail part of a notification. */
     private static final int MAX_DETAIL_CHARS = 900;
+
+    /** Prefix that the Termux packages are built for, it has the same length as {@link #DATA_DIR}. */
+    private static final String PREFIX_TERMUX = "/data/data/com.termux/files/usr";
+    /** Home directory that is baked into the Termux profile scripts. */
+    private static final String HOME_TERMUX = "/data/data/com.termux/files/home";
 
     /** Mirrors of the main Termux repository, tried in order. */
     private static final String[] MAIN_MIRRORS = {
@@ -660,6 +691,12 @@ public final class OpenCodeBootstrap {
             patchRpath(new File(PREFIX + "/bin/bash"), PREFIX + "/lib");
             patchRpath(new File(PREFIX + "/bin/patchelf"), PREFIX + "/lib");
 
+            // The login shell of the terminal and the glibc loader both contain the com.termux
+            // prefix in their read-only data. Move it to the sandbox root, which has the same
+            // length, so no offset of either ELF moves.
+            ensurePathAliases();
+            patchLoginShellPaths();
+
             String loader = findGlibcLoader();
             if (loader == null)
                 throw new InstallException("The glibc loader (ld-linux-*.so.*) was not found in " + GLIBC_LIB_DIR + ". Install the 'glibc-runner' package and try again.");
@@ -701,8 +738,17 @@ public final class OpenCodeBootstrap {
 
         private void doMaintenance() {
             deleteQuietly(new File(LEGACY_SETUP_SCRIPT_PATH));
+            // Repair the parts that a reinstall of a package or an OpenCode update may have
+            // replaced: the aliases, the relocated loader, the login profile and the marker.
+            ensurePathAliases();
+            String loader = findGlibcLoader();
+            if (loader != null) relocateLoader(loader);
+            patchLoginShellPaths();
+            repairNativeInterp();
+            refreshNativeMarker();
             restoreLauncher(new File(OPENCODE_BIN_PATH), buildOpenCodeLauncher());
             restoreLauncher(new File(OC_INSTALL_PATH), buildOcInstallLauncher());
+            restoreLauncher(new File(PKG_PATH), buildPkgLauncher());
         }
 
         /* ------------------------------------------------------------------ apt */
@@ -1282,10 +1328,22 @@ public final class OpenCodeBootstrap {
             }
 
             setStage(OpenCodeInstallState.STAGE_PATCH, "Preparing the OpenCode binary...");
-            // The binary is ~240 MB and patchelf rewrites it in place, which is slow and may run
-            // out of memory on a phone. It is not needed either: the app and the launcher always
-            // start OpenCode through the glibc loader with an explicit --library-path.
-            status("The binary will be started through the glibc loader.");
+            // Patch PT_INTERP so that the binary starts directly. This is not cosmetic: OpenCode
+            // spawns its own background server through /proc/self/exe, and with the explicit
+            // loader that path is ld-linux, so the child would run "ld-linux serve" and die with
+            // "serve: cannot open shared object file". When the patch cannot be applied the
+            // loader fallback still works for the foreground TUI, so it is not fatal.
+            ensurePathAliases();
+            boolean nativeInterp = false;
+            if (relocateLoader(loader)) {
+                status("Pointing the binary at the glibc runtime...");
+                CmdResult patch = run(Arrays.asList(
+                    PREFIX + "/bin/patchelf", "--set-interpreter", loader, staged.getAbsolutePath()
+                ), PATCH_TIMEOUT_MS, false, null);
+                nativeInterp = patch.exitCode == 0;
+                if (!nativeInterp)
+                    Log.w(LOG_TAG, "Could not set the interpreter of the OpenCode binary: " + tail(patch.output, 200));
+            }
 
             try {
                 Os.chmod(staged.getAbsolutePath(), 0755);
@@ -1294,9 +1352,24 @@ public final class OpenCodeBootstrap {
             }
 
             setStage(OpenCodeInstallState.STAGE_VERIFY, "Verifying the OpenCode binary...");
-            CmdResult verify = run(Arrays.asList(
-                loader, "--library-path", GLIBC_LIB_DIR, staged.getAbsolutePath(), "--version"
-            ), VERIFY_TIMEOUT_MS, false, null);
+            CmdResult verify;
+            if (nativeInterp) {
+                // Same environment as the launcher: no bionic LD_LIBRARY_PATH/LD_PRELOAD.
+                verify = runNative(Arrays.asList(staged.getAbsolutePath(), "--version"), VERIFY_TIMEOUT_MS);
+                if (!looksLikeAVersion(verify)) {
+                    // The interpreter patch alone is not enough on this build, keep the binary
+                    // and let the launcher/service use the explicit loader instead.
+                    status("WARNING: this build does not start directly, falling back to the glibc loader.");
+                    verify = run(Arrays.asList(
+                        loader, "--library-path", GLIBC_LIB_DIR, staged.getAbsolutePath(), "--version"
+                    ), VERIFY_TIMEOUT_MS, false, null);
+                    nativeInterp = false;
+                }
+            } else {
+                verify = run(Arrays.asList(
+                    loader, "--library-path", GLIBC_LIB_DIR, staged.getAbsolutePath(), "--version"
+                ), VERIFY_TIMEOUT_MS, false, null);
+            }
             if (!looksLikeAVersion(verify)) {
                 deleteQuietly(staged);
                 if (target.isFile()) {
@@ -1322,10 +1395,91 @@ public final class OpenCodeBootstrap {
                 Log.w(LOG_TAG, "Could not make the OpenCode binary executable", e);
             }
 
+            writeNativeMarker(target, nativeInterp);
+
             // Every build is ~130 MB, keep only the one that is linked.
             pruneOldBuilds(target);
 
             return target;
+        }
+
+        /**
+         * Record whether the installed binary can be started directly. The launcher and the
+         * service compare the fingerprint before they skip the explicit loader.
+         */
+        private void writeNativeMarker(File binary, boolean nativeInterp) {
+            File marker = new File(NATIVE_INTERP_MARKER_PATH);
+            if (!nativeInterp) {
+                deleteQuietly(marker);
+                return;
+            }
+            try {
+                writeTextFile(marker, binaryFingerprint(binary) + "\n");
+            } catch (IOException e) {
+                Log.w(LOG_TAG, "Could not write " + marker, e);
+            }
+        }
+
+        /**
+         * Drop the marker when the binary behind the symlink changed (eg. the auto updater
+         * replaced it), so the launcher and the service use the explicit loader again.
+         */
+        private void refreshNativeMarker() {
+            String stamp = readTrimmed(new File(NATIVE_INTERP_MARKER_PATH));
+            if (stamp.isEmpty()) return;
+            File binary = resolveLink(new File(LINK_PATH));
+            if (!binary.isFile() || !stamp.equals(binaryFingerprint(binary))) {
+                status("The OpenCode binary changed, using the glibc loader again.");
+                deleteQuietly(new File(NATIVE_INTERP_MARKER_PATH));
+            }
+        }
+
+        /**
+         * Patch the interpreter of an already installed binary (an installation from an older
+         * version of the app). The binary is copied first; the original is only replaced after the
+         * copy starts natively, so a failure can never break a working installation.
+         */
+        private void repairNativeInterp() {
+            File binary = resolveLink(new File(LINK_PATH));
+            if (!binary.isFile() || isNativeBinary(binary)) return;
+
+            String attempt = LAUNCHER_VERSION + " " + binaryFingerprint(binary);
+            if (attempt.equals(readTrimmed(new File(NATIVE_REPAIR_MARKER_PATH)))) return;
+
+            String loader = findGlibcLoader();
+            if (loader == null || !relocateLoader(loader) || !patchelfWorks()) return;
+
+            status("Preparing the installed OpenCode binary for a direct start...");
+            File temp = new File(binary.getAbsolutePath() + ".native-new");
+            deleteQuietly(temp);
+            if (!copyFile(binary, temp)) {
+                Log.w(LOG_TAG, "Could not copy the OpenCode binary, keeping the glibc loader path.");
+                deleteQuietly(temp);
+                writeTextFileQuietly(new File(NATIVE_REPAIR_MARKER_PATH), attempt + "\n");
+                return;
+            }
+            try {
+                Os.chmod(temp.getAbsolutePath(), 0755);
+            } catch (Exception e) {
+                Log.w(LOG_TAG, "Could not make " + temp + " executable", e);
+            }
+
+            CmdResult patch = run(Arrays.asList(
+                PREFIX + "/bin/patchelf", "--set-interpreter", loader, temp.getAbsolutePath()
+            ), PATCH_TIMEOUT_MS, false, null);
+            CmdResult verify = patch.exitCode == 0
+                ? runNative(Arrays.asList(temp.getAbsolutePath(), "--version"), VERIFY_TIMEOUT_MS)
+                : null;
+
+            if (verify == null || !looksLikeAVersion(verify) || !temp.renameTo(binary)) {
+                Log.w(LOG_TAG, "Could not prepare the installed binary, keeping the glibc loader path.");
+                deleteQuietly(temp);
+                writeTextFileQuietly(new File(NATIVE_REPAIR_MARKER_PATH), attempt + "\n");
+                return;
+            }
+
+            writeNativeMarker(binary, true);
+            deleteQuietly(new File(NATIVE_REPAIR_MARKER_PATH));
         }
 
         /** Delete the binaries of earlier versions, they waste a lot of app storage. */
@@ -1360,6 +1514,80 @@ public final class OpenCodeBootstrap {
             return run(ppArgs, VERIFY_TIMEOUT_MS, false, null).exitCode == 0;
         }
 
+        /**
+         * Move the compiled-in login paths of bash to the sandbox root. Without this a login shell
+         * (OpenCode starts the terminal as {@code bash -l}) tries to read
+         * {@code /data/data/com.termux/files/usr/etc/profile}, which belongs to another app and
+         * fails with "Permission denied".
+         */
+        private void patchLoginShellPaths() {
+            File bash = new File(PREFIX + "/bin/bash");
+            if (!bash.isFile()) return;
+            int hits = patchFileStrings(bash,
+                PREFIX_TERMUX + "/etc/profile", ETC_ALIAS_DIR + "/profile",
+                PREFIX_TERMUX + "/etc/bash.bashrc", ETC_ALIAS_DIR + "/bash.bashrc",
+                PREFIX_TERMUX + "/etc/hosts", ETC_ALIAS_DIR + "/hosts");
+            if (hits > 0) status("Moved the login profile of bash to the app prefix.");
+
+            // The profile and the bashrc are plain text files from the bash package, they are not
+            // touched by the ELF rewrite and still point at the real Termux app.
+            rewriteTextPaths(new File(PREFIX + "/etc/bash.bashrc"));
+            ensureLoginProfile();
+        }
+
+        /** Rewrite the com.termux paths of a text file to this app's prefix and home. */
+        private void rewriteTextPaths(File file) {
+            if (!file.isFile()) return;
+            try {
+                String text = readTextFile(file);
+                if (text == null) return;
+                String rewritten = text
+                    .replace(PREFIX_TERMUX, PREFIX)
+                    .replace(HOME_TERMUX, HOME);
+                if (!rewritten.equals(text)) writeTextFile(file, rewritten);
+            } catch (IOException e) {
+                Log.w(LOG_TAG, "Could not rewrite the paths of " + file, e);
+            }
+        }
+
+        /** Write a small profile, the one of the bash package points at the Termux app. */
+        private void ensureLoginProfile() {
+            File profile = new File(PREFIX + "/etc/profile");
+            String current = readTextFileQuietly(profile);
+            boolean foreign = current.contains(PREFIX_TERMUX) || current.contains(HOME_TERMUX);
+            // Keep a profile this app (or the user) already wrote without foreign paths.
+            if (profile.isFile() && !foreign) return;
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("# Managed by the OpenCode for Android app.\n");
+            sb.append("export HOME=\"${HOME:-").append(HOME).append("}\"\n");
+            sb.append("export PREFIX=\"${PREFIX:-").append(PREFIX).append("}\"\n");
+            sb.append("export SHELL=\"${SHELL:-$PREFIX/bin/bash}\"\n");
+            sb.append("export PATH=\"$PREFIX/bin:/system/bin\"\n");
+            sb.append("export TMPDIR=\"${TMPDIR:-$PREFIX/tmp}\"\n");
+            sb.append("export TERM=\"${TERM:-xterm-256color}\"\n");
+            sb.append("export LANG=\"${LANG:-en_US.UTF-8}\"\n");
+            sb.append("[ -f \"$PREFIX/etc/tls/cert.pem\" ] && export SSL_CERT_FILE=\"$PREFIX/etc/tls/cert.pem\"\n");
+            sb.append("if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
+            try {
+                writeTextFile(profile, sb.toString());
+            } catch (IOException e) {
+                Log.w(LOG_TAG, "Could not write " + profile, e);
+            }
+        }
+
+        /** Run a byte-patched binary without the bionic library paths, exactly like the launcher. */
+        private CmdResult runNative(List<String> cmd, long timeoutMs) {
+            String libraryPath = env.remove("LD_LIBRARY_PATH");
+            String preload = env.remove("LD_PRELOAD");
+            try {
+                return run(cmd, timeoutMs, false, null);
+            } finally {
+                if (libraryPath != null) env.put("LD_LIBRARY_PATH", libraryPath);
+                if (preload != null) env.put("LD_PRELOAD", preload);
+            }
+        }
+
         private static boolean looksLikeAVersion(CmdResult result) {
             return result.exitCode == 0 && VERSION_OUTPUT_PATTERN.matcher(result.output == null ? "" : result.output).matches();
         }
@@ -1381,6 +1609,7 @@ public final class OpenCodeBootstrap {
         private void writeLaunchers() {
             restoreLauncher(new File(OPENCODE_BIN_PATH), buildOpenCodeLauncher());
             restoreLauncher(new File(OC_INSTALL_PATH), buildOcInstallLauncher());
+            restoreLauncher(new File(PKG_PATH), buildPkgLauncher());
         }
 
         /**
@@ -1451,6 +1680,7 @@ public final class OpenCodeBootstrap {
             sb.append("unset LD_PRELOAD\n");
             sb.append("unset LD_LIBRARY_PATH\n");
             sb.append("[ -n \"${TMPDIR:-}\" ] || { TMPDIR=\"$P/tmp\"; export TMPDIR; }\n");
+            sb.append("[ -n \"${SHELL:-}\" ] || { SHELL=\"$P/bin/bash\"; export SHELL; }\n");
             sb.append("[ -f \"$P/etc/tls/cert.pem\" ] && { SSL_CERT_FILE=\"$P/etc/tls/cert.pem\"; export SSL_CERT_FILE; }\n");
             sb.append("# The terminal uses the same server password as the app, so a server that is\n");
             sb.append("# started here and the one of the app cannot disagree about the credentials.\n");
@@ -1459,7 +1689,32 @@ public final class OpenCodeBootstrap {
             sb.append("  [ -n \"$OPENCODE_SERVER_PASSWORD\" ] && export OPENCODE_SERVER_PASSWORD\n");
             sb.append("fi\n");
             sb.append("\n");
+            sb.append("# When the binary is patched, start it directly: OpenCode spawns its background\n");
+            sb.append("# server through /proc/self/exe, which would be the loader (and 'serve' would fail)\n");
+            sb.append("# if the loader was passed explicitly.\n");
+            sb.append("MARK=$(cat \"$H/.opencode/.native-interp\" 2>/dev/null)\n");
+            sb.append("NOW=$(/system/bin/stat -L -c '%s %Y' \"$BIN\" 2>/dev/null)\n");
+            sb.append("if [ -n \"$MARK\" ] && [ \"$MARK\" = \"$NOW\" ]; then\n");
+            sb.append("  exec \"$BIN\" \"$@\"\n");
+            sb.append("fi\n");
+            sb.append("\n");
+            sb.append("echo \"opencode: this build is not patched; using the glibc loader.\" >&2\n");
             sb.append("exec \"$LOADER\" --library-path \"$GLIBCLIB\" \"$BIN\" \"$@\"\n");
+            return sb.toString();
+        }
+
+        /**
+         * The app installs its packages itself, there is no apt/dpkg in the prefix. A real 'pkg'
+         * cannot work here, but a stub explains that instead of failing with "command not found".
+         */
+        private String buildPkgLauncher() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("#!").append("/system/bin/sh\n");
+            sb.append("# ").append(LAUNCHER_MARKER).append("\n");
+            sb.append("echo \"pkg: this app does not use apt/dpkg and has no package manager.\" >&2\n");
+            sb.append("echo \"     The runtime ships bash, ca-certificates, patchelf and glibc only.\" >&2\n");
+            sb.append("echo \"     Run 'oc-install' to reinstall or update the OpenCode runtime.\" >&2\n");
+            sb.append("exit 127\n");
             return sb.toString();
         }
 
@@ -1534,6 +1789,7 @@ public final class OpenCodeBootstrap {
             sb.append("home: ").append(HOME).append("\n");
             sb.append("installed version: ").append(getInstalledVersion()).append("\n");
             sb.append("glibc loader: ").append(String.valueOf(findGlibcLoader())).append("\n");
+            sb.append("native interpreter: ").append(isNativeBinary(resolveLink(new File(LINK_PATH)))).append("\n");
 
             writeTextFileQuietly(new File(DIAGNOSTICS_PATH), sb.toString());
         }
@@ -2068,6 +2324,189 @@ public final class OpenCodeBootstrap {
                 return file.getAbsolutePath();
         }
         return null;
+    }
+
+    /**
+     * @return the fingerprint of an installed binary, it matches the
+     * {@code stat -L -c '%s %Y'} output that the launcher scripts compare.
+     */
+    public static String binaryFingerprint(File binary) {
+        if (binary == null || !binary.isFile()) return "";
+        // lastModified() is in milliseconds, %Y of stat prints seconds.
+        return binary.length() + " " + (binary.lastModified() / 1000L);
+    }
+
+    /**
+     * @return true when the binary itself is patched to be started directly, ie. its ELF
+     * interpreter is the glibc loader. Only then the process that OpenCode spawns for the
+     * background server sees the right {@code /proc/self/exe}.
+     */
+    public static boolean isNativeBinary(File binary) {
+        if (binary == null || !binary.isFile()) return false;
+        String stamp = readTrimmed(new File(NATIVE_INTERP_MARKER_PATH));
+        return !stamp.isEmpty() && stamp.equals(binaryFingerprint(binary));
+    }
+
+    /**
+     * Create the same-length aliases the relocated binaries look for. The Termux packages contain
+     * {@code /data/data/com.termux/files/usr/...} in their rodata; the app rewrites that prefix to
+     * {@link #DATA_DIR} (both are 31 characters), so the aliases must exist at the sandbox root.
+     */
+    private static void ensurePathAliases() {
+        linkAlias(new File(GLIBC_ALIAS_DIR), new File(PREFIX, "glibc"));
+        linkAlias(new File(ETC_ALIAS_DIR), new File(PREFIX, "etc"));
+    }
+
+    private static void linkAlias(File link, File target) {
+        if (!target.exists()) return;
+        try {
+            Os.lstat(link.getAbsolutePath());
+            return; // Already there, do not touch what the user may have made.
+        } catch (Exception ignored) {
+            // Does not exist yet.
+        }
+        try {
+            Os.symlink(target.getAbsolutePath(), link.getAbsolutePath());
+            Log.i(LOG_TAG, "Created the path alias " + link + " -> " + target);
+        } catch (Exception e) {
+            Log.w(LOG_TAG, "Could not create the path alias " + link, e);
+        }
+    }
+
+    /**
+     * Rewrite the compiled-in Termux prefix of the glibc loader to the sandbox root. The bytes are
+     * replaced one to one, so the size and every offset of the ELF stay identical. Without this
+     * the loader would look for libc in {@code /data/data/com.termux/...}, a directory this app
+     * cannot read, and a binary with a patched PT_INTERP would not start.
+     *
+     * @return true when the loader can be used for a direct (native) start.
+     */
+    private static boolean relocateLoader(String loaderPath) {
+        if (loaderPath == null) return false;
+        byte[] oldPrefix = PREFIX_TERMUX.getBytes(StandardCharsets.US_ASCII);
+        byte[] newPrefix = DATA_DIR.getBytes(StandardCharsets.US_ASCII);
+        if (oldPrefix.length != newPrefix.length) {
+            Log.w(LOG_TAG, "Cannot relocate the glibc loader: " + oldPrefix.length + " != " + newPrefix.length);
+            return false;
+        }
+
+        File loader = new File(loaderPath);
+        if (!loader.isFile()) return false;
+        try {
+            byte[] data = readAllBytes(loader);
+            int hits = replaceBytes(data, oldPrefix, newPrefix);
+            if (hits == 0) return true; // Already relocated (or nothing to rewrite).
+
+            File temp = new File(loader.getAbsolutePath() + ".reloc");
+            writeAllBytes(temp, data);
+            try {
+                Os.chmod(temp.getAbsolutePath(), 0755);
+            } catch (Exception e) {
+                Log.w(LOG_TAG, "Could not make the relocated loader executable", e);
+            }
+            if (!temp.renameTo(loader)) {
+                writeAllBytes(loader, data);
+                try {
+                    Os.chmod(loader.getAbsolutePath(), 0755);
+                } catch (Exception ignored) {
+                    // Not fatal.
+                }
+                deleteQuietly(temp);
+            }
+            Log.i(LOG_TAG, "Relocated " + hits + " path(s) of the glibc loader to " + DATA_DIR);
+            return true;
+        } catch (Exception e) {
+            Log.w(LOG_TAG, "Could not relocate the glibc loader " + loaderPath, e);
+            return false;
+        }
+    }
+
+    /**
+     * Replace same-length strings inside a binary in place. Used for the login shell paths of bash,
+     * which are compiled against the com.termux prefix and are unreadable from this app.
+     */
+    private static int patchFileStrings(File file, String... replacements) {
+        if (file == null || !file.isFile()) return 0;
+        try {
+            byte[] data = readAllBytes(file);
+            int total = 0;
+            for (int i = 0; i + 1 < replacements.length; i += 2) {
+                byte[] oldBytes = replacements[i].getBytes(StandardCharsets.US_ASCII);
+                byte[] newBytes = replacements[i + 1].getBytes(StandardCharsets.US_ASCII);
+                if (oldBytes.length != newBytes.length) {
+                    Log.w(LOG_TAG, "Cannot rewrite " + replacements[i] + ": the replacement differs in length");
+                    continue;
+                }
+                total += replaceBytes(data, oldBytes, newBytes);
+            }
+            if (total == 0) return 0;
+
+            File temp = new File(file.getAbsolutePath() + ".reloc");
+            writeAllBytes(temp, data);
+            try {
+                Os.chmod(temp.getAbsolutePath(), 0755);
+            } catch (Exception e) {
+                Log.w(LOG_TAG, "Could not make " + temp + " executable", e);
+            }
+            if (!temp.renameTo(file)) {
+                writeAllBytes(file, data);
+                try {
+                    Os.chmod(file.getAbsolutePath(), 0755);
+                } catch (Exception ignored) {
+                    // Not fatal.
+                }
+                deleteQuietly(temp);
+            }
+            Log.i(LOG_TAG, "Patched " + total + " path(s) of " + file);
+            return total;
+        } catch (Exception e) {
+            Log.w(LOG_TAG, "Could not patch the strings of " + file, e);
+            return 0;
+        }
+    }
+
+    /** @return the number of replaced occurrences. */
+    private static int replaceBytes(byte[] data, byte[] oldBytes, byte[] newBytes) {
+        if (oldBytes.length == 0 || oldBytes.length != newBytes.length) return 0;
+        int count = 0;
+        for (int i = 0; i <= data.length - oldBytes.length; i++) {
+            boolean match = true;
+            for (int j = 0; j < oldBytes.length; j++) {
+                if (data[i + j] != oldBytes[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (!match) continue;
+            System.arraycopy(newBytes, 0, data, i, newBytes.length);
+            count++;
+            i += oldBytes.length - 1;
+        }
+        return count;
+    }
+
+    private static byte[] readAllBytes(File file) throws IOException {
+        long length = file.length();
+        if (length <= 0 || length > Integer.MAX_VALUE)
+            throw new IOException("Unexpected size " + length + " of " + file);
+        byte[] data = new byte[(int) length];
+        try (InputStream in = new FileInputStream(file)) {
+            int offset = 0;
+            while (offset < data.length) {
+                int read = in.read(data, offset, data.length - offset);
+                if (read < 0) break;
+                offset += read;
+            }
+            if (offset != data.length)
+                throw new IOException("Could not read all of " + file);
+        }
+        return data;
+    }
+
+    private static void writeAllBytes(File file, byte[] data) throws IOException {
+        try (OutputStream out = new FileOutputStream(file)) {
+            out.write(data);
+        }
     }
 
     /** @return the file the opencode symlink points to. */

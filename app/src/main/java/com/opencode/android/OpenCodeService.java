@@ -31,9 +31,11 @@ import java.nio.charset.StandardCharsets;
 /**
  * Foreground service that hosts the OpenCode server natively on Android.
  *
- * <p>The official OpenCode CLI is a glibc binary, so it is executed through the glibc loader that
- * the {@link OpenCodeBootstrap} installed into the app-private toolchain prefix. The server binds
- * to {@code 127.0.0.1:<port>} and the {@link OpenCodeWebActivity} renders it inside a WebView.</p>
+ * <p>The official OpenCode CLI is a glibc binary. {@link OpenCodeBootstrap} installs the glibc
+ * runtime into the app-private toolchain prefix and patches the binary's interpreter, so it can be
+ * executed directly; if that patch is unavailable it is executed through the loader instead. The
+ * server binds to {@code 127.0.0.1:<port>} and the {@link OpenCodeWebActivity} renders it inside a
+ * WebView.</p>
  */
 public final class OpenCodeService extends Service {
 
@@ -238,11 +240,23 @@ public final class OpenCodeService extends Service {
     /** Spawn the server, the caller holds {@link #SERVER_LOCK}. */
     private void startProcess(String loader, File binary) {
         // Android's java.lang.Process has no pid(), so /system/bin/sh records its own pid and
-        // then exec()s the loader: the pid stays valid for the server and survives app restarts
+        // then exec()s the server: the pid stays valid for the server and survives app restarts
         // through the pid file. exec keeps a single process, no extra shell is left behind.
-        String command = "echo $$ > '" + PID_FILE + "'; exec '" + loader + "' --library-path '"
-            + OpenCodeBootstrap.GLIBC_LIB_DIR + "' '" + binary.getAbsolutePath()
-            + "' serve --hostname 127.0.0.1 --port " + port;
+        //
+        // A binary whose PT_INTERP was patched is exec'ed directly. That matters: OpenCode spawns
+        // its own `serve` child through /proc/self/exe, and when the loader is passed explicitly
+        // that path points at ld-linux, so the child would run "ld-linux serve" and exit 127.
+        boolean nativeBinary = OpenCodeBootstrap.isNativeBinary(binary);
+        String exec;
+        if (nativeBinary) {
+            exec = "exec '" + binary.getAbsolutePath() + "' serve"
+                + " --hostname 127.0.0.1 --port " + port;
+        } else {
+            exec = "exec '" + loader + "' --library-path '"
+                + OpenCodeBootstrap.GLIBC_LIB_DIR + "' '" + binary.getAbsolutePath()
+                + "' serve --hostname 127.0.0.1 --port " + port;
+        }
+        String command = "echo $$ > '" + PID_FILE + "'; " + exec;
         clearPidFile();
         ProcessBuilder builder = new ProcessBuilder("/system/bin/sh", "-c", command);
         builder.directory(new File(OpenCodeBootstrap.HOME));
@@ -255,6 +269,9 @@ public final class OpenCodeService extends Service {
         builder.environment().put("TERM", "xterm-256color");
         builder.environment().put("LANG", "en_US.UTF-8");
         builder.environment().put("COLORTERM", "truecolor");
+        // The pty of OpenCode starts "$SHELL -l"; make sure it is the patched bash of this prefix
+        // and not the bionic /system/bin/sh, whose login startup files are different.
+        builder.environment().put("SHELL", OpenCodeBootstrap.PREFIX + "/bin/bash");
         builder.environment().put("DEBIAN_FRONTEND", "noninteractive");
         builder.environment().put("OPENCODE_DISABLE_AUTOUPDATE", "1");
         // The 2.x server protects its API (/api, /api/session, …) with HTTP Basic auth. A fixed
@@ -270,6 +287,8 @@ public final class OpenCodeService extends Service {
         // The tools OpenCode spawns (bash, rg, …) are Termux binaries whose RUNPATH points at the
         // com.termux prefix. The glibc directory is deliberately not part of this variable: it
         // contains a 'libc.so' linker script that the bionic linker cannot load as an ELF file.
+        // For a native (patched) binary the loader still finds libc.so.6 and friends through its
+        // own relocated tree; this directory only contains the bionic names.
         builder.environment().put("LD_LIBRARY_PATH", OpenCodeBootstrap.PREFIX + "/lib");
         String ghToken = System.getenv("GH_TOKEN");
         if (ghToken != null && !ghToken.isEmpty()) {
