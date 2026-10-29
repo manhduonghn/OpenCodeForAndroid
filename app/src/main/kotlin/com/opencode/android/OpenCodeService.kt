@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
@@ -72,11 +74,34 @@ class OpenCodeService : Service() {
 
     private var params = Params()
 
+    /** PARTIAL_WAKE_LOCK that keeps the server alive while the screen is off. */
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    /** Last status line of the server, shown when no chat session is open. */
+    @Volatile
+    private var serverStatusText = "Starting the OpenCode server..."
+
+    /** The session the notification is currently about. */
+    @Volatile
+    private var activeSession: OpenCodeApi.Session? = null
+
+    private var sessionPolling = false
+
+    private val sessionPoll = object : Runnable {
+        override fun run() {
+            if (!sessionPolling) return
+            WORKER.execute { refreshActiveSession() }
+            handler.postDelayed(this, SESSION_POLL_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         sInstance = this
         createNotificationChannel()
-        startForegroundCompat(buildNotification("Starting the OpenCode server..."))
+        applyWakeLock()
+        startForegroundCompat(buildNotification())
+        startSessionPolling()
         // Make sure the Linux toolchain and OpenCode itself are installed first, then start the
         // server. The callback runs on the UI thread, the installation itself runs in the
         // background thread of the bootstrap.
@@ -100,6 +125,11 @@ class OpenCodeService : Service() {
             return START_NOT_STICKY
         }
 
+        if (intent.getStringExtra("action") == ACTION_RESTART) {
+            restartServer()
+            return START_STICKY
+        }
+
         port = intent.getIntExtra(EXTRA_PORT, params.port)
         params.port = port
         // Never start before the bootstrap finished, otherwise the missing glibc loader or the
@@ -112,7 +142,9 @@ class OpenCodeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopSessionPolling()
         stopServer()
+        releaseWakeLock()
         super.onDestroy()
         sInstance = null
     }
@@ -280,7 +312,9 @@ class OpenCodeService : Service() {
             File(OpenCodeBootstrap.PREFIX, "etc/openssl/openssl.cnf")
                 .takeIf { it.isFile }
                 ?.let { put("OPENSSL_CONF", it.absolutePath) }
-            System.getenv("GH_TOKEN")?.takeIf { it.isNotEmpty() }?.let { put("GH_TOKEN", it) }
+            val gitHubToken = System.getenv("GH_TOKEN")?.takeIf { it.isNotEmpty() }
+                ?: OpenCodeGitHub.storedToken()
+            gitHubToken?.let { put("GH_TOKEN", it) }
             put("OPENCODE_PORT", port.toString())
         }
 
@@ -376,6 +410,17 @@ class OpenCodeService : Service() {
                 clearPidFile()
                 waitForPortFree(3000)
                 stopSelf()
+            }
+        }
+    }
+
+    /** Restart the server in place, for example after the GitHub token changed. */
+    fun restartServer() {
+        WORKER.execute {
+            synchronized(SERVER_LOCK) {
+                if (sInstance !== this) return@synchronized
+                stopExisting()
+                if (bootstrapReady) startServerBlocking()
             }
         }
     }
@@ -520,23 +565,63 @@ class OpenCodeService : Service() {
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "The OpenCode server that runs natively on Android."
+            setShowBadge(false)
         }
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): Notification {
-        val contentIntent = PendingIntent.getActivity(
+    /**
+     * The notification identifies the chat session that is open in the WebView, not only the
+     * server URL. [OpenCodeSessionTracker] is fed by the injected route watcher, and the service
+     * polls `/api/session/<id>` for the title and the project directory.
+     */
+    private fun buildNotification(): Notification {
+        val openIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, OpenCodeWebActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, OpenCodeService::class.java).putExtra("action", ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val session = activeSession
+        val title: String
+        val text: String
+        if (session != null) {
+            title = session.title
+            val directory = session.directory.ifEmpty { OpenCodeBootstrap.HOME }
+            val age = OpenCodeApi.relativeAge(session.updated)
+            text = if (age.isEmpty()) directory else "$directory · $age"
+        } else {
+            title = getString(R.string.opencode_notification_title)
+            text = serverStatusText
+        }
+
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_service_notification)
-            .setContentTitle(getString(R.string.opencode_server_channel))
+            .setContentTitle(title)
             .setContentText(text)
-            .setContentIntent(contentIntent)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(openIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .addAction(
+                R.drawable.ic_service_notification,
+                getString(R.string.opencode_notification_action_open),
+                openIntent,
+            )
+            .addAction(
+                R.drawable.ic_close,
+                getString(R.string.opencode_notification_action_stop),
+                stopIntent,
+            )
             .build()
     }
 
@@ -553,7 +638,101 @@ class OpenCodeService : Service() {
         checkSelfPermission("android.permission.FOREGROUND_SERVICE_SPECIAL_USE") == PackageManager.PERMISSION_GRANTED
 
     private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, buildNotification(text))
+        serverStatusText = text
+        postNotification()
+    }
+
+    private fun postNotification() {
+        try {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID, buildNotification())
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not update the notification", e)
+        }
+    }
+
+    /* ------------------------------------------------------------------ wake lock and session */
+
+    /** The wake lock follows the user preference and is released when the service stops. */
+    private fun applyWakeLock() {
+        if (OpenCodeSettings.wakeLockEnabled(this)) {
+            acquireWakeLock()
+        } else {
+            releaseWakeLock()
+        }
+    }
+
+    private fun acquireWakeLock() {
+        try {
+            val held = wakeLock
+            if (held != null && held.isHeld) return
+            val manager = getSystemService(PowerManager::class.java) ?: return
+            wakeLock = manager
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "opencode:foreground")
+                .apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            Log.i(TAG, "Partial wake lock acquired")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire the wake lock", e)
+            wakeLock = null
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.takeIf { it.isHeld }?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not release the wake lock", e)
+        }
+        wakeLock = null
+    }
+
+    private fun startSessionPolling() {
+        if (sessionPolling) return
+        sessionPolling = true
+        handler.removeCallbacks(sessionPoll)
+        handler.post(sessionPoll)
+    }
+
+    private fun stopSessionPolling() {
+        sessionPolling = false
+        handler.removeCallbacks(sessionPoll)
+    }
+
+    /**
+     * Resolve the session of the notification: the route reported by the WebView when the app is
+     * open, otherwise the most recently updated session of the server. Runs on [WORKER].
+     */
+    private fun refreshActiveSession() {
+        if (!bootstrapReady) return
+        val currentPort = port
+        val secret = OpenCodeBootstrap.getServerPassword(this)
+        val reported = OpenCodeSessionTracker.activeSessionId
+        var resolved: OpenCodeApi.Session? = null
+        if (reported != null) resolved = OpenCodeApi.session(currentPort, secret, reported, 3500)
+        if (resolved == null && reported == null) {
+            val sessions = OpenCodeApi.sessionList(currentPort, secret, 3500)
+            resolved = sessions?.firstOrNull()
+        }
+        val previous = activeSession
+        if (resolved == null) {
+            if (reported == null && previous != null) {
+                activeSession = null
+                postNotification()
+            }
+            return
+        }
+        val changed = previous == null ||
+            previous.id != resolved.id ||
+            previous.title != resolved.title ||
+            previous.updated != resolved.updated ||
+            previous.directory != resolved.directory
+        if (changed) {
+            activeSession = resolved
+            postNotification()
+        }
     }
 
     companion object {
@@ -564,10 +743,28 @@ class OpenCodeService : Service() {
 
         const val ACTION_START = "com.opencode.android.opencode.START"
         const val ACTION_STOP = "com.opencode.android.opencode.STOP"
+        const val ACTION_RESTART = "com.opencode.android.opencode.RESTART"
         const val EXTRA_PORT = "port"
+
+        /** How often the service refreshes the session shown in the notification. */
+        private const val SESSION_POLL_INTERVAL_MS = 4000L
 
         @Volatile
         private var sInstance: OpenCodeService? = null
+
+        /**
+         * Apply the wake lock preference to the running service immediately. Preferences are
+         * stored either way, so the next service start uses the same value.
+         */
+        @JvmStatic
+        fun setWakeLockEnabled(context: Context, enabled: Boolean) {
+            OpenCodeSettings.setWakeLockEnabled(context, enabled)
+            sInstance?.applyWakeLock()
+        }
+
+        /** True while the service holds its partial wake lock. */
+        @JvmStatic
+        fun isWakeLockHeld(): Boolean = sInstance?.wakeLock?.isHeld == true
 
         /** Serialises start/stop calls, the service can be asked to start from several places. */
         private val SERVER_LOCK = Any()

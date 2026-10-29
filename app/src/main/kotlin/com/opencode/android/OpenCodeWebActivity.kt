@@ -1,11 +1,19 @@
 package com.opencode.android
 
+import android.Manifest
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.view.View
@@ -19,12 +27,19 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebViewDatabase
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -49,6 +64,9 @@ import java.util.concurrent.Executors
  * The WebView itself lives in [OpenCodeWebViewModel]: a rotation (or any other configuration
  * change) recreates this activity, but not the web app, so the page, the scroll position and the
  * open session survive.
+ *
+ * The settings panel groups everything that does not belong to the chat itself: the session that
+ * is open, updates, the wake lock, shared storage, the downloaded files and GitHub.
  */
 class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListener,
     OpenCodeWebViewModel.Ui {
@@ -63,6 +81,46 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var statusProgress: ProgressBar
     private lateinit var statusRetry: Button
 
+    private lateinit var topBarSubtitle: TextView
+    private lateinit var settingsPanel: View
+    private lateinit var sessionRefresh: Button
+    private lateinit var sessionCurrentTitle: TextView
+    private lateinit var sessionCurrentDetail: TextView
+    private lateinit var sessionStatus: TextView
+    private lateinit var sessionList: LinearLayout
+    private lateinit var updatesCurrent: TextView
+    private lateinit var updatesStatus: TextView
+    private lateinit var updatesCheck: Button
+    private lateinit var updatesUpdate: Button
+    private lateinit var updatesAuto: Switch
+    private lateinit var wakeLockSwitch: Switch
+    private lateinit var wakeLockStatus: TextView
+    private lateinit var batteryOptimizationButton: Button
+    private lateinit var storageStatus: TextView
+    private lateinit var storageGrant: Button
+    private lateinit var storagePick: Button
+    private lateinit var storagePaths: LinearLayout
+    private lateinit var githubProgress: ProgressBar
+    private lateinit var githubChip: TextView
+    private lateinit var githubStatus: TextView
+    private lateinit var githubInstallStatus: TextView
+    private lateinit var githubInstall: Button
+    private lateinit var githubLogin: Button
+    private lateinit var githubLogout: Button
+    private lateinit var githubUser: TextView
+    private lateinit var githubCode: TextView
+    private lateinit var githubCopy: Button
+    private lateinit var githubLink: Button
+    private lateinit var githubHint: TextView
+    private lateinit var githubCloneSection: View
+    private lateinit var githubCloneUrl: EditText
+    private lateinit var githubClone: Button
+    private lateinit var githubCloneStatus: TextView
+    private lateinit var githubRepoSection: View
+    private lateinit var githubRepoRefresh: Button
+    private lateinit var githubRepoStatus: TextView
+    private lateinit var githubRepoList: LinearLayout
+
     private val handler = Handler(Looper.getMainLooper())
 
     /**
@@ -72,6 +130,11 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
      */
     private val probeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "opencode-web-probe").apply { isDaemon = true }
+    }
+
+    /** Network and process work of the settings panel, never the UI thread. */
+    private val backgroundExecutor = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "opencode-settings").apply { isDaemon = true }
     }
 
     private var probeInFlight = false
@@ -101,6 +164,39 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     /** Number of failed loads of the web UI, the automatic retry stops after a few of them. */
     private var loadFailures = 0
+
+    /** Session that has to be opened after the start page finished loading. */
+    private var pendingSessionId: String? = null
+
+    private var sessionRefreshing = false
+    private var updateChecking = false
+    private var storageLinksInFlight = false
+    private var githubRefreshing = false
+    private var githubReposLoading = false
+    private var githubReposLoaded = false
+    private var githubInstalling = false
+    private var githubLoginInFlight = false
+    private var githubLoggingOut = false
+    private var githubCloning = false
+    private var githubUserCode = ""
+    private var githubVerificationUrl = ""
+    private val githubCloneLog = StringBuilder()
+
+    /** Guards the listeners while the switches are filled from the preferences. */
+    private var suppressSettingsCallbacks = false
+
+    private val sessionListener = OpenCodeSessionTracker.Listener {
+        handler.post {
+            if (!destroyed) renderTopBarSubtitle()
+        }
+    }
+
+    private val storagePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { _ ->
+        if (destroyed) return@registerForActivityResult
+        renderStorage()
+    }
 
     private val poll: Runnable = object : Runnable {
         override fun run() {
@@ -134,12 +230,8 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        webContainer = findViewById(R.id.web_container)
-        statusPanel = findViewById(R.id.status_panel)
-        statusTitle = findViewById(R.id.status_title)
-        statusDetail = findViewById(R.id.status_detail)
-        statusProgress = findViewById(R.id.status_progress)
-        statusRetry = findViewById(R.id.status_retry)
+        bindViews()
+        bindSettings()
 
         // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
         // the same page: it only has to be moved from the view hierarchy of the previous activity
@@ -191,8 +283,817 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         if (!pageAlive) {
             handler.post(poll)
             if (wantsForcedUpdate(intent)) beginForcedUpdate()
+        } else {
+            viewModel.installSessionWatcher()
+        }
+        renderTopBarSubtitle()
+    }
+
+    private fun bindViews() {
+        webContainer = findViewById(R.id.web_container)
+        statusPanel = findViewById(R.id.status_panel)
+        statusTitle = findViewById(R.id.status_title)
+        statusDetail = findViewById(R.id.status_detail)
+        statusProgress = findViewById(R.id.status_progress)
+        statusRetry = findViewById(R.id.status_retry)
+
+        topBarSubtitle = findViewById(R.id.top_bar_subtitle)
+        settingsPanel = findViewById(R.id.settings_panel)
+        sessionRefresh = findViewById(R.id.session_refresh)
+        sessionCurrentTitle = findViewById(R.id.session_current_title)
+        sessionCurrentDetail = findViewById(R.id.session_current_detail)
+        sessionStatus = findViewById(R.id.session_status)
+        sessionList = findViewById(R.id.session_list)
+        updatesCurrent = findViewById(R.id.updates_current)
+        updatesStatus = findViewById(R.id.updates_status)
+        updatesCheck = findViewById(R.id.updates_check)
+        updatesUpdate = findViewById(R.id.updates_update)
+        updatesAuto = findViewById(R.id.updates_auto)
+        wakeLockSwitch = findViewById(R.id.wakelock_switch)
+        wakeLockStatus = findViewById(R.id.wakelock_status)
+        batteryOptimizationButton = findViewById(R.id.battery_optimization_button)
+        storageStatus = findViewById(R.id.storage_status)
+        storageGrant = findViewById(R.id.storage_grant)
+        storagePick = findViewById(R.id.storage_pick)
+        storagePaths = findViewById(R.id.storage_paths)
+        githubProgress = findViewById(R.id.github_progress)
+        githubChip = findViewById(R.id.github_chip)
+        githubStatus = findViewById(R.id.github_status)
+        githubInstallStatus = findViewById(R.id.github_install_status)
+        githubInstall = findViewById(R.id.github_install)
+        githubLogin = findViewById(R.id.github_login)
+        githubLogout = findViewById(R.id.github_logout)
+        githubUser = findViewById(R.id.github_user)
+        githubCode = findViewById(R.id.github_code)
+        githubCopy = findViewById(R.id.github_copy)
+        githubLink = findViewById(R.id.github_link)
+        githubHint = findViewById(R.id.github_hint)
+        githubCloneSection = findViewById(R.id.github_clone_section)
+        githubCloneUrl = findViewById(R.id.github_clone_url)
+        githubClone = findViewById(R.id.github_clone)
+        githubCloneStatus = findViewById(R.id.github_clone_status)
+        githubRepoSection = findViewById(R.id.github_repo_section)
+        githubRepoRefresh = findViewById(R.id.github_repo_refresh)
+        githubRepoStatus = findViewById(R.id.github_repo_status)
+        githubRepoList = findViewById(R.id.github_repo_list)
+    }
+
+    private fun bindSettings() {
+        findViewById<View>(R.id.settings_button).setOnClickListener { openSettings() }
+        findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
+        findViewById<View>(R.id.files_manage).setOnClickListener {
+            FileManagerDialog.show(this) { directory -> openProject(directory) }
+        }
+
+        sessionRefresh.setOnClickListener { refreshSessionCard() }
+        updatesCheck.setOnClickListener { checkForUpdates() }
+        updatesUpdate.setOnClickListener { startUpdate() }
+        updatesAuto.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeSettings.setAutoUpdateCheck(this, checked)
+        }
+        wakeLockSwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeService.setWakeLockEnabled(this, checked)
+            wakeLockStatus.text = getString(
+                if (checked) R.string.opencode_battery_wakelock_on
+                else R.string.opencode_battery_wakelock_off,
+            )
+        }
+        batteryOptimizationButton.setOnClickListener { requestIgnoreBatteryOptimizations() }
+
+        storageGrant.setOnClickListener { requestStorageAccess() }
+        storagePick.setOnClickListener { pickProjectDirectory() }
+
+        githubInstall.setOnClickListener { startGithubInstall() }
+        githubLogin.setOnClickListener { startGithubLogin() }
+        githubLogout.setOnClickListener { startGithubLogout() }
+        githubCopy.setOnClickListener { copyGithubCode() }
+        githubLink.setOnClickListener { openGithubVerification() }
+        githubClone.setOnClickListener { startGithubClone() }
+        githubRepoRefresh.setOnClickListener { refreshGithubRepos(force = true) }
+
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (settingsPanel.visibility == View.VISIBLE) {
+                        closeSettings()
+                    } else {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                    }
+                }
+            },
+        )
+    }
+
+    private fun openSettings() {
+        settingsPanel.visibility = View.VISIBLE
+        renderSettings()
+        refreshSessionCard()
+        refreshGitHub()
+    }
+
+    private fun closeSettings() {
+        settingsPanel.visibility = View.GONE
+        renderTopBarSubtitle()
+    }
+
+    private fun renderSettings() {
+        suppressSettingsCallbacks = true
+        updatesAuto.isChecked = OpenCodeSettings.autoUpdateCheck(this)
+        wakeLockSwitch.isChecked = OpenCodeSettings.wakeLockEnabled(this)
+        suppressSettingsCallbacks = false
+
+        val installed = OpenCodeBootstrap.getInstalledVersion().ifEmpty { "-" }
+        updatesCurrent.text = getString(R.string.opencode_updates_current, installed)
+        updatesUpdate.visibility = View.GONE
+        updatesStatus.text = ""
+
+        wakeLockStatus.text = getString(
+            if (OpenCodeSettings.wakeLockEnabled(this)) R.string.opencode_battery_wakelock_on
+            else R.string.opencode_battery_wakelock_off,
+        )
+        renderBatteryOptimization()
+        renderStorage()
+    }
+
+    /* ------------------------------------------------------------------ top bar and sessions */
+
+    private fun renderTopBarSubtitle() {
+        val title = OpenCodeSessionTracker.activeSessionTitle
+        topBarSubtitle.text = if (title.isNotEmpty()) title
+        else getString(R.string.opencode_web_subtitle)
+    }
+
+    private fun refreshSessionCard() {
+        if (sessionRefreshing) return
+        sessionRefreshing = true
+        sessionStatus.text = getString(R.string.opencode_session_refreshing)
+        val secret = OpenCodeBootstrap.getServerPassword(this)
+        backgroundExecutor.execute {
+            val sessions = OpenCodeApi.sessionList(PORT, secret, 4500)
+            val activeId = OpenCodeSessionTracker.activeSessionId
+            val active = when {
+                sessions == null -> null
+                activeId == null -> null
+                else -> sessions.firstOrNull { it.id == activeId }
+                    ?: OpenCodeApi.session(PORT, secret, activeId, 4500)
+            }
+            handler.post {
+                if (destroyed) return@post
+                sessionRefreshing = false
+                renderSessionCard(sessions, active)
+            }
         }
     }
+
+    private fun renderSessionCard(sessions: List<OpenCodeApi.Session>?, active: OpenCodeApi.Session?) {
+        if (sessions == null) {
+            sessionStatus.text = getString(R.string.opencode_session_failed)
+            sessionCurrentTitle.text = getString(R.string.opencode_session_unknown)
+            sessionCurrentDetail.text = ""
+            sessionList.removeAllViews()
+            return
+        }
+        sessionStatus.text = ""
+
+        if (active != null) {
+            sessionCurrentTitle.text = active.title
+            val directory = active.directory.ifEmpty { OpenCodeBootstrap.HOME }
+            val age = OpenCodeApi.relativeAge(active.updated)
+            sessionCurrentDetail.text = if (age.isEmpty()) directory
+            else getString(R.string.opencode_session_meta, directory, age)
+            OpenCodeSessionTracker.setActiveSession(active.id, active.title)
+        } else if (OpenCodeSessionTracker.activeSessionId != null) {
+            sessionCurrentTitle.text = getString(R.string.opencode_session_unknown)
+            sessionCurrentDetail.text = ""
+        } else {
+            sessionCurrentTitle.text = getString(R.string.opencode_session_none)
+            sessionCurrentDetail.text = ""
+        }
+
+        sessionList.removeAllViews()
+        if (sessions.isEmpty()) {
+            sessionList.addView(listMessage(getString(R.string.opencode_session_empty)))
+            return
+        }
+        for (session in sessions.take(8)) {
+            sessionList.addView(sessionRow(session))
+        }
+    }
+
+    private fun sessionRow(session: OpenCodeApi.Session): View {
+        val row = TextView(this)
+        val directory = session.directory.ifEmpty { OpenCodeBootstrap.HOME }
+        val age = OpenCodeApi.relativeAge(session.updated)
+        row.text = session.title + "\n" +
+            if (age.isEmpty()) directory
+            else getString(R.string.opencode_session_meta, directory, age)
+        row.setTextColor(getColor(R.color.oc_text_muted))
+        row.textSize = 12f
+        row.setLineSpacing(dp(2).toFloat(), 1f)
+        row.setPadding(dp(10), dp(8), dp(10), dp(8))
+        row.background = getDrawable(R.drawable.bg_input)
+        row.isClickable = true
+        row.setOnClickListener { openSession(session.id) }
+        val params = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        params.topMargin = dp(6)
+        row.layoutParams = params
+        return row
+    }
+
+    private fun listMessage(message: String): View {
+        val view = TextView(this)
+        view.text = message
+        view.setTextColor(getColor(R.color.oc_text_faint))
+        view.textSize = 12f
+        view.setPadding(dp(2), dp(8), dp(2), dp(4))
+        return view
+    }
+
+    private fun openSession(id: String) {
+        closeSettings()
+        if (pageLoaded) {
+            webView.loadUrl(sessionUrl(id))
+        } else {
+            pendingSessionId = id
+        }
+    }
+
+    private fun sessionUrl(id: String): String = "$baseUrl/session/$id"
+
+    /* ------------------------------------------------------------------ updates */
+
+    private fun checkForUpdates() {
+        if (updateChecking) return
+        updateChecking = true
+        updatesCheck.isEnabled = false
+        updatesUpdate.visibility = View.GONE
+        updatesStatus.text = getString(R.string.opencode_updates_checking)
+        val installed = OpenCodeBootstrap.getInstalledVersion()
+        backgroundExecutor.execute {
+            val latest = OpenCodeApi.latestVersion()
+            handler.post {
+                if (destroyed) return@post
+                updateChecking = false
+                updatesCheck.isEnabled = true
+                updatesCurrent.text = getString(
+                    R.string.opencode_updates_current,
+                    installed.ifEmpty { "-" },
+                )
+                if (latest == null) {
+                    updatesStatus.text = getString(R.string.opencode_updates_failed)
+                } else if (latest == installed) {
+                    updatesStatus.text = getString(R.string.opencode_updates_uptodate)
+                } else {
+                    updatesStatus.text = getString(R.string.opencode_updates_available, latest)
+                    updatesUpdate.visibility = View.VISIBLE
+                }
+            }
+        }
+    }
+
+    private fun startUpdate() {
+        updatesUpdate.visibility = View.GONE
+        updatesStatus.text = getString(R.string.opencode_updates_installing)
+        try {
+            OpenCodeBootstrap.requestUpdate(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not start the update", e)
+            updatesStatus.text = getString(R.string.opencode_updates_failed)
+        }
+    }
+
+    /* ------------------------------------------------------------------ battery and wake lock */
+
+    private fun renderBatteryOptimization() {
+        val ignoring = isIgnoringBatteryOptimizations()
+        batteryOptimizationButton.text = getString(
+            if (ignoring) R.string.opencode_battery_optimization_ok
+            else R.string.opencode_battery_optimization,
+        )
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        val manager = getSystemService(PowerManager::class.java) ?: return false
+        return manager.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        if (isIgnoringBatteryOptimizations()) {
+            renderBatteryOptimization()
+            return
+        }
+        val packageUri = Uri.parse("package:$packageName")
+        val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri)
+        try {
+            startActivity(direct)
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (e2: Exception) {
+                Toast.makeText(
+                    this,
+                    R.string.opencode_storage_permission_failed,
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------ shared storage */
+
+    private fun renderStorage() {
+        val legacy = OpenCodeStorage.hasLegacyPermission(this)
+        val allFiles = OpenCodeStorage.hasAllFilesAccess()
+        val canReadPrimary = legacy || allFiles
+        val canReadEverything = allFiles || (legacy && Build.VERSION.SDK_INT < Build.VERSION_CODES.R)
+
+        storageStatus.text = getString(
+            when {
+                canReadEverything -> R.string.opencode_storage_granted
+                canReadPrimary -> R.string.opencode_storage_primary_only
+                else -> R.string.opencode_storage_not_granted
+            },
+        )
+        storageGrant.visibility = if (canReadEverything) View.GONE else View.VISIBLE
+        if (!canReadPrimary) {
+            storagePaths.removeAllViews()
+            return
+        }
+        setupStorageLinks()
+    }
+
+    private fun requestStorageAccess() {
+        val legacy = OpenCodeStorage.hasLegacyPermission(this)
+        if (!legacy) {
+            storagePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                ),
+            )
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !OpenCodeStorage.hasAllFilesAccess()) {
+            val packageUri = Uri.parse("package:$packageName")
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, packageUri))
+            } catch (e: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                } catch (e2: Exception) {
+                    Toast.makeText(
+                        this,
+                        R.string.opencode_storage_permission_failed,
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+            return
+        }
+        renderStorage()
+    }
+
+    private fun setupStorageLinks() {
+        if (storageLinksInFlight) return
+        storageLinksInFlight = true
+        backgroundExecutor.execute {
+            val linked = OpenCodeStorage.ensureLinks(this)
+            val volumes = OpenCodeStorage.volumeRoots(this)
+            handler.post {
+                if (destroyed) return@post
+                storageLinksInFlight = false
+                storagePaths.removeAllViews()
+                if (!linked) {
+                    storagePaths.addView(
+                        listMessage(getString(R.string.opencode_storage_links_missing)),
+                    )
+                    return@post
+                }
+                var secondary = 0
+                for (volume in volumes) {
+                    val text = if (OpenCodeStorage.isPrimaryRoot(volume)) {
+                        getString(
+                            R.string.opencode_storage_shared_path,
+                            volume.absolutePath,
+                        )
+                    } else {
+                        secondary++
+                        getString(
+                            R.string.opencode_storage_sd_path,
+                            secondary,
+                            volume.absolutePath,
+                        )
+                    }
+                    val row = TextView(this)
+                    row.text = text
+                    row.setTextColor(getColor(R.color.oc_text_faint))
+                    row.textSize = 11f
+                    row.setPadding(0, dp(2), 0, dp(2))
+                    storagePaths.addView(row)
+                }
+                if (secondary == 0) {
+                    storagePaths.addView(listMessage(getString(R.string.opencode_storage_no_sd)))
+                }
+            }
+        }
+    }
+
+    private fun pickProjectDirectory() {
+        val start = OpenCodeSettings.lastProjectDir(this)?.let { File(it) }
+        DirectoryPickerDialog.show(this, start) { directory ->
+            OpenCodeSettings.setLastProjectDir(this, directory.absolutePath)
+            openProject(directory)
+        }
+    }
+
+    /** Create a session in [directory] so the project appears in the web UI, then show it. */
+    private fun openProject(directory: File) {
+        Toast.makeText(
+            this,
+            getString(R.string.opencode_picker_opening, directory.absolutePath),
+            Toast.LENGTH_SHORT,
+        ).show()
+        val secret = OpenCodeBootstrap.getServerPassword(this)
+        backgroundExecutor.execute {
+            val status = OpenCodeApi.createSession(PORT, secret, directory.absolutePath)
+            handler.post {
+                if (destroyed) return@post
+                if (status in 200..299) {
+                    closeSettings()
+                    if (pageLoaded) {
+                        webView.loadUrl("$baseUrl/")
+                    } else {
+                        pendingSessionId = null
+                    }
+                } else {
+                    copyPath(directory.absolutePath)
+                    Toast.makeText(
+                        this,
+                        getString(R.string.opencode_picker_open_failed, directory.absolutePath),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun copyPath(path: String) {
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            clipboard?.setPrimaryClip(ClipData.newPlainText("path", path))
+        } catch (e: Exception) {
+            // The clipboard may be unavailable, the toast below is the important part.
+        }
+    }
+
+    /* ------------------------------------------------------------------ GitHub */
+
+    private fun refreshGitHub() {
+        if (githubRefreshing) return
+        githubRefreshing = true
+        githubProgress.visibility = View.VISIBLE
+        backgroundExecutor.execute {
+            val installed = OpenCodeGitHub.bothAvailable()
+            val loggedIn = installed && OpenCodeGitHub.isLoggedIn()
+            val user = if (loggedIn) OpenCodeGitHub.currentUser() else null
+            handler.post {
+                if (destroyed) return@post
+                githubRefreshing = false
+                githubProgress.visibility = View.GONE
+                applyGithubState(installed, loggedIn, user)
+            }
+        }
+    }
+
+    private fun applyGithubState(installed: Boolean, loggedIn: Boolean, user: String?) {
+        githubInstall.visibility = if (installed) View.GONE else View.VISIBLE
+        githubInstallStatus.visibility = if (githubInstalling) View.VISIBLE else View.GONE
+
+        if (!installed) {
+            githubChip.text = getString(R.string.opencode_settings_github_not_connected)
+            githubStatus.text = getString(R.string.opencode_settings_github_missing)
+            githubLogin.visibility = View.GONE
+            githubLogout.visibility = View.GONE
+            githubUser.visibility = View.GONE
+            githubCloneSection.visibility = View.GONE
+            githubRepoSection.visibility = View.GONE
+            return
+        }
+
+        githubStatus.text = getString(R.string.opencode_settings_github_ready)
+        if (!loggedIn) {
+            githubChip.text = getString(R.string.opencode_settings_github_not_connected)
+            githubUser.visibility = View.GONE
+            githubLogin.visibility = View.VISIBLE
+            githubLogout.visibility = View.GONE
+            githubCloneSection.visibility = View.VISIBLE
+            githubRepoSection.visibility = View.GONE
+            githubReposLoaded = false
+            githubRepoList.removeAllViews()
+            return
+        }
+
+        val login = user ?: "GitHub"
+        githubChip.text = getString(R.string.opencode_settings_github_connected, login)
+        githubUser.text = getString(R.string.opencode_settings_github_account, login)
+        githubUser.visibility = View.VISIBLE
+        githubLogin.visibility = View.GONE
+        githubLogout.visibility = View.VISIBLE
+        githubCloneSection.visibility = View.VISIBLE
+        githubRepoSection.visibility = View.VISIBLE
+        if (!githubReposLoaded) refreshGithubRepos(force = false)
+    }
+
+    private fun startGithubInstall() {
+        if (githubInstalling) return
+        if (OpenCodeGitHub.bothAvailable()) {
+            refreshGitHub()
+            return
+        }
+        githubInstalling = true
+        githubProgress.visibility = View.VISIBLE
+        githubInstall.visibility = View.GONE
+        githubInstallStatus.visibility = View.VISIBLE
+        githubInstallStatus.text = getString(R.string.opencode_settings_github_installing)
+        backgroundExecutor.execute {
+            val result = OpenCodeGitHub.install(this) { message ->
+                handler.post {
+                    if (destroyed) return@post
+                    githubInstallStatus.visibility = View.VISIBLE
+                    githubInstallStatus.text = message
+                }
+            }
+            handler.post {
+                if (destroyed) return@post
+                githubInstalling = false
+                githubProgress.visibility = View.GONE
+                if (result.ok) {
+                    githubInstallStatus.text = getString(R.string.opencode_settings_github_installed)
+                    githubInstallStatus.visibility = View.VISIBLE
+                    refreshGitHub()
+                } else {
+                    githubInstallStatus.text = getString(
+                        R.string.opencode_settings_github_install_failed,
+                        result.output.trim().ifBlank { "exit ${result.exitCode}" },
+                    )
+                    githubInstallStatus.visibility = View.VISIBLE
+                    githubInstall.visibility = View.VISIBLE
+                }
+            }
+        }
+    }
+
+    private fun startGithubLogin() {
+        if (githubLoginInFlight) return
+        if (!OpenCodeGitHub.bothAvailable()) {
+            githubStatus.text = getString(R.string.opencode_settings_github_missing)
+            return
+        }
+        githubLoginInFlight = true
+        githubProgress.visibility = View.VISIBLE
+        githubStatus.text = getString(R.string.opencode_settings_github_logging_in)
+        githubCode.visibility = View.GONE
+        githubCopy.visibility = View.GONE
+        githubLink.visibility = View.GONE
+        githubHint.visibility = View.GONE
+        githubUserCode = ""
+        githubVerificationUrl = ""
+        backgroundExecutor.execute {
+            try {
+                val device = OpenCodeGitHub.requestDeviceCode()
+                handler.post {
+                    if (destroyed) return@post
+                    githubUserCode = device.userCode
+                    githubVerificationUrl = device.verificationUri
+                    githubCode.text = device.userCode
+                    githubCode.visibility = View.VISIBLE
+                    githubCopy.visibility = View.VISIBLE
+                    githubLink.visibility = View.VISIBLE
+                    githubHint.visibility = View.VISIBLE
+                    githubStatus.text = getString(R.string.opencode_settings_github_waiting)
+                }
+                OpenCodeGitHub.completeLogin(device)
+                handler.post {
+                    if (destroyed) return@post
+                    githubLoginInFlight = false
+                    githubProgress.visibility = View.GONE
+                    githubCode.visibility = View.GONE
+                    githubCopy.visibility = View.GONE
+                    githubLink.visibility = View.GONE
+                    githubHint.visibility = View.GONE
+                    githubStatus.text = getString(R.string.opencode_settings_github_login_ok)
+                    githubUserCode = ""
+                    githubVerificationUrl = ""
+                    githubReposLoaded = false
+                    refreshGitHub()
+                    restartServerForGitHub()
+                }
+            } catch (e: Exception) {
+                handler.post {
+                    if (destroyed) return@post
+                    githubLoginInFlight = false
+                    githubProgress.visibility = View.GONE
+                    githubStatus.text = getString(
+                        R.string.opencode_settings_github_login_failed,
+                        e.message ?: e.toString(),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun startGithubLogout() {
+        if (githubLoggingOut) return
+        githubLoggingOut = true
+        githubProgress.visibility = View.VISIBLE
+        backgroundExecutor.execute {
+            OpenCodeGitHub.logout()
+            handler.post {
+                if (destroyed) return@post
+                githubLoggingOut = false
+                githubProgress.visibility = View.GONE
+                githubUserCode = ""
+                githubVerificationUrl = ""
+                githubReposLoaded = false
+                githubRepoList.removeAllViews()
+                githubRepoStatus.text = ""
+                refreshGitHub()
+                restartServerForGitHub()
+            }
+        }
+    }
+
+    private fun copyGithubCode() {
+        if (githubUserCode.isEmpty()) return
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            clipboard?.setPrimaryClip(ClipData.newPlainText("code", githubUserCode))
+            Toast.makeText(this, R.string.opencode_settings_github_copy_done, Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not copy the GitHub code", e)
+        }
+    }
+
+    private fun openGithubVerification() {
+        if (githubVerificationUrl.isEmpty()) return
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(githubVerificationUrl)))
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.opencode_storage_permission_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun refreshGithubRepos(force: Boolean) {
+        if (!OpenCodeGitHub.bothAvailable() || githubReposLoading) return
+        if (!force && githubReposLoaded) return
+        githubReposLoading = true
+        githubRepoStatus.text = getString(R.string.opencode_settings_github_repos_loading)
+        githubRepoRefresh.isEnabled = false
+        backgroundExecutor.execute {
+            val result = OpenCodeGitHub.listRepos()
+            val repos = if (result.ok) OpenCodeGitHub.parseRepos(result.output) else emptyList()
+            handler.post {
+                if (destroyed) return@post
+                githubReposLoading = false
+                githubRepoRefresh.isEnabled = true
+                if (!result.ok) {
+                    githubRepoStatus.text = getString(
+                        R.string.opencode_settings_github_repos_failed,
+                        result.output.trim().take(180).ifEmpty { "exit ${result.exitCode}" },
+                    )
+                    return@post
+                }
+                githubReposLoaded = true
+                githubRepoStatus.text =
+                    getString(R.string.opencode_settings_github_repos_count, repos.size)
+                githubRepoList.removeAllViews()
+                if (repos.isEmpty()) {
+                    githubRepoList.addView(
+                        listMessage(getString(R.string.opencode_settings_github_repos_empty)),
+                    )
+                    return@post
+                }
+                for (repo in repos) githubRepoList.addView(repoRow(repo))
+            }
+        }
+    }
+
+    private fun repoRow(repo: OpenCodeGitHub.Repo): View {
+        val row = TextView(this)
+        val privacy = getString(
+            if (repo.privateRepo) R.string.opencode_settings_github_private
+            else R.string.opencode_settings_github_public,
+        )
+        row.text = repo.name + " · " + privacy +
+            if (repo.description.isEmpty()) "" else "\n" + repo.description
+        row.setTextColor(getColor(R.color.oc_text_muted))
+        row.textSize = 12f
+        row.setLineSpacing(dp(2).toFloat(), 1f)
+        row.setPadding(dp(10), dp(8), dp(10), dp(8))
+        row.background = getDrawable(R.drawable.bg_input)
+        row.isClickable = true
+        row.setOnClickListener {
+            githubCloneUrl.setText(repo.url)
+            githubCloneUrl.setSelection(githubCloneUrl.text.length)
+            githubCloneStatus.visibility = View.GONE
+        }
+        val params = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        params.topMargin = dp(6)
+        row.layoutParams = params
+        return row
+    }
+
+    private fun startGithubClone() {
+        if (githubCloning) return
+        val raw = githubCloneUrl.text.toString().trim()
+        if (raw.isEmpty()) {
+            githubCloneStatus.visibility = View.VISIBLE
+            githubCloneStatus.text = getString(R.string.opencode_settings_github_clone_need_url)
+            return
+        }
+        githubCloning = true
+        githubCloneLog.setLength(0)
+        githubProgress.visibility = View.VISIBLE
+        githubClone.isEnabled = false
+        githubCloneStatus.visibility = View.VISIBLE
+        githubCloneStatus.text = getString(R.string.opencode_settings_github_cloning)
+        backgroundExecutor.execute {
+            val result = OpenCodeGitHub.clone(raw) { line ->
+                handler.post {
+                    if (!destroyed) appendCloneLog(line)
+                }
+            }
+            handler.post {
+                if (destroyed) return@post
+                githubCloning = false
+                githubProgress.visibility = View.GONE
+                githubClone.isEnabled = true
+                if (result.ok) {
+                    appendCloneLog(getString(R.string.opencode_settings_github_clone_ok))
+                    registerClonedProject(raw)
+                } else {
+                    val detail = result.output.trim().takeLast(600)
+                    appendCloneLog(getString(R.string.opencode_settings_github_clone_failed))
+                    if (detail.isNotEmpty()) appendCloneLog(detail)
+                }
+            }
+        }
+    }
+
+    private fun appendCloneLog(line: String) {
+        if (githubCloneStatus.text.toString() == getString(R.string.opencode_settings_github_cloning)) {
+            githubCloneLog.setLength(0)
+        }
+        githubCloneLog.append(line).append('\n')
+        val lines = githubCloneLog.toString().trimEnd('\n').lines()
+        if (lines.size > 12) {
+            githubCloneLog.setLength(0)
+            githubCloneLog.append(lines.takeLast(12).joinToString("\n")).append('\n')
+        }
+        githubCloneStatus.visibility = View.VISIBLE
+        githubCloneStatus.text = githubCloneLog.toString().trimEnd('\n')
+    }
+
+    /** Make the directory of a fresh clone known to the server as a project and refresh the UI. */
+    private fun registerClonedProject(rawUrl: String) {
+        val name = rawUrl.trimEnd('/').substringAfterLast('/').removeSuffix(".git")
+        if (name.isEmpty()) return
+        val directory = File(OpenCodeBootstrap.HOME, name)
+        val secret = OpenCodeBootstrap.getServerPassword(this)
+        backgroundExecutor.execute {
+            val status = OpenCodeApi.createSession(PORT, secret, directory.absolutePath)
+            handler.post {
+                if (destroyed) return@post
+                if (status in 200..299) {
+                    if (settingsPanel.visibility == View.VISIBLE) refreshSessionCard()
+                }
+            }
+        }
+    }
+
+    private fun restartServerForGitHub() {
+        githubStatus.text = getString(R.string.opencode_settings_github_syncing)
+        try {
+            val intent = Intent(this, OpenCodeService::class.java)
+                .putExtra("action", OpenCodeService.ACTION_RESTART)
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not restart the server after the GitHub login", e)
+        }
+    }
+
+    /* ------------------------------------------------------------------ web view */
 
     /**
      * The forced update of 'oc-install' (and of `opencode upgrade`) arrives as an extra of the
@@ -229,11 +1130,23 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         super.onStart()
         // JavaScript dialogs of the web app are shown by the activity of the moment.
         viewModel.ui = this
+        OpenCodeSessionTracker.addListener(sessionListener)
+        renderTopBarSubtitle()
     }
 
     override fun onStop() {
+        OpenCodeSessionTracker.removeListener(sessionListener)
         viewModel.ui = null
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
+            renderBatteryOptimization()
+            renderStorage()
+            refreshSessionCard()
+        }
     }
 
     override fun onJsAlert(view: WebView, message: String?, result: JsResult) {
@@ -274,6 +1187,24 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             override fun onPageFinished(view: WebView?, url: String?) {
                 // The page rendered, so the counter of failed loads starts again.
                 if (pageLoaded) loadFailures = 0
+                if (url != null && url.startsWith(baseUrl)) {
+                    viewModel.reportSessionFromUrl(url)
+                    viewModel.installSessionWatcher()
+                    renderTopBarSubtitle()
+                    val pending = pendingSessionId
+                    if (pending != null && pageLoaded) {
+                        pendingSessionId = null
+                        view?.loadUrl(sessionUrl(pending))
+                    }
+                }
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                super.doUpdateVisitedHistory(view, url, isReload)
+                if (url != null && url.startsWith(baseUrl)) {
+                    viewModel.reportSessionFromUrl(url)
+                    renderTopBarSubtitle()
+                }
             }
 
             override fun onReceivedError(
@@ -436,7 +1367,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         statusPanel.visibility = View.GONE
         webView.visibility = View.VISIBLE
 
-        var target = "http://127.0.0.1:$PORT/"
+        var target = "$baseUrl/"
         // Prefer the session token of the pairing code. The real password is an acceptable
         // fallback, it is the same credential 'opencode pair' puts into its links.
         val paired = !sessionToken.isNullOrEmpty()
@@ -478,6 +1409,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         }
         Log.i(TAG, "Loading the paired OpenCode web UI")
         webView.loadUrl(target)
+        // The page routes to the session in onPageFinished, once the start page is ready.
     }
 
     /**
@@ -487,7 +1419,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private fun requestSessionToken(): String? {
         val code = requestPairCode() ?: return null
         val body = try {
-            request("http://127.0.0.1:$PORT$PAIR_PATH$code", "application/json")
+            request("$baseUrl$PAIR_PATH$code", "application/json")
         } catch (e: Exception) {
             Log.w(TAG, "Could not redeem the pairing code", e)
             return null
@@ -508,7 +1440,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     /** A short-lived pairing code, or null when the server does not answer. */
     private fun requestPairCode(): String? {
         val body = try {
-            request("http://127.0.0.1:$PORT/api/pair", accept = null, post = true)
+            request("$baseUrl/api/pair", accept = null, post = true)
         } catch (e: Exception) {
             Log.w(TAG, "Could not create a pairing code", e)
             return null
@@ -568,7 +1500,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private fun serverAccepts(secret: String): Boolean {
         if (secret.isEmpty()) return false
         val connection = try {
-            URL("http://127.0.0.1:$PORT/api/info").openConnection() as HttpURLConnection
+            URL("$baseUrl/api/info").openConnection() as HttpURLConnection
         } catch (e: Exception) {
             return false
         }
@@ -593,8 +1525,10 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     override fun onDestroy() {
         destroyed = true
         probeExecutor.shutdownNow()
+        backgroundExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)
         OpenCodeBootstrap.removeInstallListener(this)
+        OpenCodeSessionTracker.removeListener(sessionListener)
         viewModel.ui = null
         // The WebView is owned by the ViewModel: here it is only detached from the hierarchy of
         // this activity, and only when it is really attached to it (a configuration change can
@@ -603,6 +1537,11 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         if (webView.parent === webContainer) webContainer.removeView(webView)
         super.onDestroy()
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    private val baseUrl: String
+        get() = "http://127.0.0.1:$PORT"
 
     companion object {
         private const val TAG = "OpenCodeWebActivity"

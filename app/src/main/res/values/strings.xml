@@ -20,4 +20,183 @@
     <!-- Notification -->
     <string name="opencode_server_channel">OpenCode server</string>
     <string name="opencode_pkg_channel">OpenCode packages</string>
+    <string name="opencode_notification_title">OpenCode đang chạy</string>
+    <string name="opencode_notification_session">Phiên: %1$s</string>
+    <string name="opencode_notification_no_session">Chưa mở phiên chat nào</string>
+    <string name="opencode_notification_action_open">Mở</string>
+    <string name="opencode_notification_action_stop">Dừng</string>
+    <string name="opencode_notification_stopped">OpenCode đã dừng</string>
+    <string name="opencode_notification_stopped_text">Server đang tắt, mở ứng dụng để khởi động lại.</string>
+
+    <!-- Top bar and settings -->
+    <string name="opencode_web_title">OpenCode</string>
+    <string name="opencode_web_subtitle">Web UI · 127.0.0.1:49374</string>
+    <string name="opencode_settings">Cài đặt</string>
+    <string name="opencode_settings_close">Đóng</string>
+    <string name="opencode_settings_subtitle">Phiên chat, pin, bộ nhớ, cập nhật và GitHub</string>
+    <string name="opencode_settings_open">Mở cài đặt</string>
+
+    <!-- Current session -->
+    <string name="opencode_session_title">Phiên chat</string>
+    <string name="opencode_session_desc">Phiên đang mở trong Web UI và các phiên gần đây của server.</string>
+    <string name="opencode_session_current">Đang mở</string>
+    <string name="opencode_session_none">Chưa có phiên nào đang mở</string>
+    <string name="opencode_session_unknown">Không đọc được thông tin phiên</string>
+    <string name="opencode_session_refresh">Làm mới phiên</string>
+    <string name="opencode_session_refreshing">Đang tải danh sách phiên…</string>
+    <string name="opencode_session_recent">Phiên gần đây</string>
+    <string name="opencode_session_empty">Server chưa có phiên chat nào.</string>
+    <string name="opencode_session_failed">Không tải được danh sách phiên. Kiểm tra server rồi thử lại.</string>
+    <string name="opencode_session_open_failed">Không mở được phiên này.</string>
+    <string name="opencode_session_directory">%1$s</string>
+    <string name="opencode_session_meta">%1$s · %2$s</string>
+    <string name="opencode_session_just_now">vừa xong</string>
+    <string name="opencode_session_minutes">%1$d phút trước</string>
+    <string name="opencode_session_hours">%1$d giờ trước</string>
+    <string name="opencode_session_days">%1$d ngày trước</string>
+
+    <!-- Updates -->
+    <string name="opencode_updates">Cập nhật</string>
+    <string name="opencode_updates_subtitle">Kiểm tra và cập nhật OpenCode</string>
+    <string name="opencode_updates_current">Phiên bản hiện tại: %1$s</string>
+    <string name="opencode_updates_check">Kiểm tra cập nhật</string>
+    <string name="opencode_updates_checking">Đang kiểm tra…</string>
+    <string name="opencode_updates_available">Có phiên bản mới: %1$s</string>
+    <string name="opencode_updates_uptodate">Đã là phiên bản mới nhất</string>
+    <string name="opencode_updates_update_now">Cập nhật ngay</string>
+    <string name="opencode_updates_failed">Không kiểm tra được cập nhật</string>
+    <string name="opencode_updates_installing">Đang cập nhật…</string>
+    <string name="opencode_updates_auto">Tự động kiểm tra cập nhật</string>
+    <string name="opencode_updates_auto_desc">Kiểm tra khi mở ứng dụng</string>
+
+    <!-- Battery / wake lock -->
+    <string name="opencode_battery_title">Pin &amp; hiệu năng</string>
+    <string name="opencode_battery_wakelock">Giữ CPU hoạt động</string>
+    <string name="opencode_battery_wakelock_desc">Dùng PARTIAL_WAKE_LOCK để Android không ngủ và không giới hạn server khi màn hình tắt.</string>
+    <string name="opencode_battery_wakelock_on">Đang bật wake lock</string>
+    <string name="opencode_battery_wakelock_off">Đang tắt wake lock</string>
+    <string name="opencode_battery_optimization">Bỏ tối ưu pin</string>
+    <string name="opencode_battery_optimization_desc">Cho phép OpenCode chạy ổn định khi ứng dụng ở nền.</string>
+    <string name="opencode_battery_optimization_ok">Đã bỏ tối ưu pin</string>
+    <string name="opencode_battery_optimization_ask">Chưa bỏ tối ưu pin</string>
+
+    <!-- Shared storage / SD card -->
+    <string name="opencode_storage_title">Bộ nhớ &amp; SD card</string>
+    <string name="opencode_storage_desc">Mở dự án trong bộ nhớ máy hoặc thẻ SD.</string>
+    <string name="opencode_storage_grant">Cấp quyền</string>
+    <string name="opencode_storage_refresh">Làm mới</string>
+    <string name="opencode_storage_not_granted">Chưa cấp quyền. OpenCode chỉ mở được dự án trong thư mục ứng dụng.</string>
+    <string name="opencode_storage_primary_only">Đã cấp quyền bộ nhớ máy. Thẻ SD cần quyền “Truy cập tất cả tệp”.</string>
+    <string name="opencode_storage_granted">Đã cấp quyền truy cập bộ nhớ ngoài.</string>
+    <string name="opencode_storage_setting_up">Đang tạo liên kết ~/storage…</string>
+    <string name="opencode_storage_shared_path">~/storage/shared → %1$s</string>
+    <string name="opencode_storage_sd_path">~/storage/sdcard%1$d → %2$s</string>
+    <string name="opencode_storage_no_sd">Chưa phát hiện thẻ SD. Cắm thẻ rồi bấm Làm mới.</string>
+    <string name="opencode_storage_links_missing">Chưa tạo được liên kết ~/storage. Hãy kiểm tra quyền truy cập.</string>
+    <string name="opencode_storage_pick">Chọn thư mục</string>
+    <string name="opencode_storage_hint">Bấm “Chọn thư mục” để mở dự án, hoặc nhập đường dẫn trong OpenCode (ví dụ ~/storage/shared).</string>
+    <string name="opencode_storage_granted_toast">Đã cấp quyền truy cập bộ nhớ.</string>
+    <string name="opencode_storage_denied">Chưa cấp quyền truy cập bộ nhớ.</string>
+    <string name="opencode_storage_permission_failed">Không mở được màn hình cấp quyền. Hãy bật quyền bộ nhớ cho OpenCode trong Cài đặt.</string>
+
+    <!-- Downloaded files in the app HOME -->
+    <string name="opencode_files_title">Tệp đã tải</string>
+    <string name="opencode_files_desc">Xem dung lượng, mở hoặc xoá repo đã clone và tệp đã tải trong thư mục ứng dụng.</string>
+    <string name="opencode_files_manage">Quản lý</string>
+    <string name="opencode_files_dialog_title">Tệp đã tải</string>
+    <string name="opencode_files_scanning">Đang quét thư mục…</string>
+    <string name="opencode_files_empty">Chưa có tệp nào.</string>
+    <string name="opencode_files_unreadable">Không đọc được thư mục.</string>
+    <string name="opencode_files_summary">%1$d mục · %2$s · còn trống %3$s</string>
+    <string name="opencode_files_summary_no_free">%1$d mục · %2$s</string>
+    <string name="opencode_files_kind_dir">Thư mục</string>
+    <string name="opencode_files_kind_file">Tệp</string>
+    <string name="opencode_files_kind_repo">Git repo</string>
+    <string name="opencode_files_meta">%1$s · %2$s · %3$s</string>
+    <string name="opencode_files_size_unknown">không rõ dung lượng</string>
+    <string name="opencode_files_open">Mở dự án</string>
+    <string name="opencode_files_copy_path">Sao chép đường dẫn</string>
+    <string name="opencode_files_copied">Đã sao chép đường dẫn</string>
+    <string name="opencode_files_delete">Xoá</string>
+    <string name="opencode_files_cancel">Huỷ</string>
+    <string name="opencode_files_delete_title">Xoá “%1$s”?</string>
+    <string name="opencode_files_delete_message_dir">Toàn bộ %1$s trong thư mục này sẽ bị xoá vĩnh viễn.</string>
+    <string name="opencode_files_delete_message_file">Tệp %1$s sẽ bị xoá vĩnh viễn.</string>
+    <string name="opencode_files_deleting">Đang xoá %1$s…</string>
+    <string name="opencode_files_deleted">Đã xoá %1$s</string>
+    <string name="opencode_files_delete_failed">Không xoá được %1$s</string>
+    <string name="opencode_files_delete_unsafe">Không thể xoá mục này vì lý do an toàn.</string>
+    <string name="opencode_files_refresh">Làm mới</string>
+    <string name="opencode_files_time_now">vừa xong</string>
+    <string name="opencode_files_time_unknown">không rõ thời gian</string>
+    <string name="opencode_files_time_minutes">%1$d phút trước</string>
+    <string name="opencode_files_time_hours">%1$d giờ trước</string>
+    <string name="opencode_files_time_days">%1$d ngày trước</string>
+    <string name="opencode_files_hint">Chỉ hiển thị tệp và thư mục ở cấp đầu tiên của thư mục ứng dụng. Các mục ẩn và tệp hệ thống được giữ nguyên.</string>
+
+    <!-- Folder picker -->
+    <string name="opencode_picker_title">Chọn thư mục dự án</string>
+    <string name="opencode_picker_up">Lên thư mục cha</string>
+    <string name="opencode_picker_path_hint">Đường dẫn thư mục</string>
+    <string name="opencode_picker_go">Đi</string>
+    <string name="opencode_picker_cancel">Huỷ</string>
+    <string name="opencode_picker_choose">Chọn thư mục này</string>
+    <string name="opencode_picker_internal">Bộ nhớ trong</string>
+    <string name="opencode_picker_sd">Thẻ SD %1$s</string>
+    <string name="opencode_picker_home">Thư mục ứng dụng</string>
+    <string name="opencode_picker_empty">Thư mục trống</string>
+    <string name="opencode_picker_unreadable">Android không cho phép đọc thư mục này.</string>
+    <string name="opencode_picker_not_directory">Đường dẫn không phải thư mục.</string>
+    <string name="opencode_picker_permission_title">Cần quyền truy cập bộ nhớ</string>
+    <string name="opencode_picker_permission_message">Cấp quyền bộ nhớ để chọn thư mục trong bộ nhớ máy hoặc thẻ SD.</string>
+    <string name="opencode_picker_copied">Đã sao chép đường dẫn: %1$s</string>
+    <string name="opencode_picker_opening">Đang mở dự án %1$s…</string>
+    <string name="opencode_picker_open_failed">Không mở được dự án. Đường dẫn đã được sao chép: %1$s</string>
+
+    <!-- GitHub extension -->
+    <string name="opencode_settings_extensions">Tiện ích mở rộng</string>
+    <string name="opencode_settings_github">GitHub</string>
+    <string name="opencode_settings_github_desc">Đăng nhập GitHub để xem repository, clone dự án trực tiếp.</string>
+    <string name="opencode_settings_github_connect">Đăng nhập GitHub</string>
+    <string name="opencode_settings_github_disconnect">Đăng xuất</string>
+    <string name="opencode_settings_github_connected">Đã kết nối: %1$s</string>
+    <string name="opencode_settings_github_not_connected">Chưa kết nối</string>
+    <string name="opencode_settings_github_code">Mã xác minh</string>
+    <string name="opencode_settings_github_link">Mở liên kết</string>
+    <string name="opencode_settings_github_copy">Sao chép mã</string>
+    <string name="opencode_settings_github_copy_done">Đã sao chép mã</string>
+    <string name="opencode_settings_github_hint">Truy cập liên kết trên thiết bị khác hoặc trình duyệt, nhập mã để đăng nhập.</string>
+    <string name="opencode_settings_github_install">Cài đặt git &amp; gh</string>
+    <string name="opencode_settings_github_installing">Đang cài đặt git &amp; gh…</string>
+    <string name="opencode_settings_github_installed">Đã cài đặt</string>
+    <string name="opencode_settings_github_install_failed">Cài đặt thất bại: %1$s</string>
+    <string name="opencode_settings_github_not_installed">Chưa cài đặt</string>
+    <string name="opencode_settings_github_clone">Clone repo</string>
+    <string name="opencode_settings_github_clone_hint">Repo sẽ được clone vào thư mục HOME của OpenCode.</string>
+    <string name="opencode_settings_github_url">Link repo (https://github.com/owner/repo)</string>
+    <string name="opencode_settings_github_ready">Đã có git &amp; gh. Đăng nhập GitHub để xem và clone repository.</string>
+    <string name="opencode_settings_github_missing">Chưa có git/gh. Bấm nút bên dưới để cài đặt.</string>
+    <string name="opencode_settings_github_checking">Đang kiểm tra GitHub…</string>
+    <string name="opencode_settings_github_waiting">Đang chờ bạn xác thực trên GitHub…</string>
+    <string name="opencode_settings_github_logging_in">Đang lấy mã đăng nhập từ GitHub…</string>
+    <string name="opencode_settings_github_login_ok">Đăng nhập thành công</string>
+    <string name="opencode_settings_github_login_failed">Đăng nhập thất bại: %1$s</string>
+    <string name="opencode_settings_github_account">Tài khoản: %1$s</string>
+    <string name="opencode_settings_github_repos_loading">Đang tải danh sách repository…</string>
+    <string name="opencode_settings_github_repos_empty">Tài khoản chưa có repository nào.</string>
+    <string name="opencode_settings_github_repos_count">%1$d repository</string>
+    <string name="opencode_settings_github_repos_failed">Không tải được repository: %1$s</string>
+    <string name="opencode_settings_github_cloning">Đang clone…</string>
+    <string name="opencode_settings_github_clone_ok">Clone hoàn tất</string>
+    <string name="opencode_settings_github_clone_failed">Clone thất bại</string>
+    <string name="opencode_settings_github_clone_need_url">Nhập URL hoặc user/repo trước khi clone.</string>
+    <string name="opencode_settings_github_private">Riêng tư</string>
+    <string name="opencode_settings_github_public">Công khai</string>
+    <string name="opencode_settings_github_syncing">Đang đồng bộ GitHub với OpenCode…</string>
+
+    <!-- Misc -->
+    <string name="opencode_ok">OK</string>
+    <string name="opencode_cancel">Huỷ</string>
+    <string name="opencode_copy">Sao chép</string>
+    <string name="opencode_close">Đóng</string>
 </resources>

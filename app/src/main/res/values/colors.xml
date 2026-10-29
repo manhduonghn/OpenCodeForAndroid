@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="oc_background">#FF101014</color>
+    <color name="oc_surface">#FF18181F</color>
+    <color name="oc_card">#FF1B1B23</color>
+    <color name="oc_card_border">#FF2A2A35</color>
+    <color name="oc_input">#FF24242E</color>
+    <color name="oc_text">#FFF4F4F7</color>
+    <color name="oc_text_muted">#FFA5A5B4</color>
+    <color name="oc_text_faint">#FF77778A</color>
+    <color name="oc_accent">#FFFF7A45</color>
+    <color name="oc_accent_soft">#33FF7A45</color>
+    <color name="oc_ok">#FF4CD48A</color>
+    <color name="oc_ok_soft">#334CD48A</color>
+    <color name="oc_warn">#FFF0B44C</color>
+    <color name="oc_error">#FFFF6B6B</color>
+    <color name="oc_divider">#FF2A2A35</color>
+</resources>

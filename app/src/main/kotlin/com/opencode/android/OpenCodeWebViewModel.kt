@@ -2,6 +2,7 @@ package com.opencode.android
 
 import android.content.Context
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -18,6 +19,10 @@ import androidx.lifecycle.ViewModel
  *
  * The view is created with the *application* context, so this object can never keep a destroyed
  * activity alive; JavaScript dialogs are forwarded to whichever activity currently shows it.
+ *
+ * The view also owns the JavaScript bridge that reports the `/session/<id>` route of the single
+ * page app, see [OpenCodeSessionTracker]. That is how the foreground notification knows which
+ * chat is on screen without guessing from the most recently updated session.
  */
 class OpenCodeWebViewModel : ViewModel() {
 
@@ -53,6 +58,8 @@ class OpenCodeWebViewModel : ViewModel() {
             allowFileAccess = false
             allowContentAccess = false
         }
+        // The page is served by our own loopback server. The bridge only reports the route.
+        view.addJavascriptInterface(SessionBridge(), "OpenCodeAndroidSession")
         // The default handler needs a window of an activity, which an application context cannot
         // provide, so the dialogs of the web app are shown by the activity that is on screen.
         view.webChromeClient = object : WebChromeClient() {
@@ -94,12 +101,88 @@ class OpenCodeWebViewModel : ViewModel() {
         return view
     }
 
+    /**
+     * Install the route watcher of the single page app. Safe to call after every page load: the
+     * script guards itself against double installation.
+     */
+    fun installSessionWatcher() {
+        val view = webViewInstance ?: return
+        view.evaluateJavascript(WATCHER_SCRIPT, null)
+    }
+
+    /** Report a session from a native URL callback, before the injected script runs. */
+    fun reportSessionFromUrl(url: String?) {
+        OpenCodeSessionTracker.setActiveSession(sessionIdOf(url))
+    }
+
+    private class SessionBridge {
+        @JavascriptInterface
+        fun setSession(id: String?) {
+            OpenCodeSessionTracker.setActiveSession(id)
+        }
+    }
+
     override fun onCleared() {
         ui = null
+        OpenCodeSessionTracker.setActiveSession(null)
         val view = webViewInstance
         webViewInstance = null
         if (view == null) return
         (view.parent as? ViewGroup)?.removeView(view)
         view.destroy()
+    }
+
+    companion object {
+        /** Extract `ses_…` from a URL such as `http://127.0.0.1:49374/session/ses_abc`. */
+        fun sessionIdOf(url: String?): String? {
+            if (url == null) return null
+            val marker = "/session/"
+            val index = url.indexOf(marker)
+            if (index < 0) return null
+            var id = url.substring(index + marker.length)
+            val cut = id.indexOfFirst { it == '/' || it == '?' || it == '#' }
+            if (cut >= 0) id = id.substring(0, cut)
+            return id.takeIf { it.startsWith("ses_") }
+        }
+
+        /**
+         * Watches the history API of the single page app and reports `/session/<id>` whenever the
+         * route changes: a session is opened, a new one is created, the user goes back or the
+         * web app replaces the address without a full page load.
+         */
+        private val WATCHER_SCRIPT = """
+            (function () {
+              if (window.__ocAndroidSessionWatcher) { window.__ocAndroidSessionWatcher(); return; }
+              function report() {
+                try {
+                  var match = location.pathname.match(/\/session\/([^\/?#]+)/);
+                  var id = match ? decodeURIComponent(match[1]) : '';
+                  if (window.OpenCodeAndroidSession && window.OpenCodeAndroidSession.setSession) {
+                    window.OpenCodeAndroidSession.setSession(id);
+                  }
+                } catch (e) {}
+              }
+              window.__ocAndroidSessionWatcher = report;
+              try {
+                var push = history.pushState;
+                history.pushState = function () {
+                  var result = push.apply(this, arguments);
+                  setTimeout(report, 0);
+                  return result;
+                };
+                var replace = history.replaceState;
+                history.replaceState = function () {
+                  var result = replace.apply(this, arguments);
+                  setTimeout(report, 0);
+                  return result;
+                };
+              } catch (e) {}
+              window.addEventListener('popstate', report);
+              window.addEventListener('hashchange', report);
+              document.addEventListener('click', function () { setTimeout(report, 40); }, true);
+              setInterval(report, 2500);
+              report();
+            })();
+        """.trimIndent()
     }
 }
