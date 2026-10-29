@@ -21,7 +21,8 @@ The app combines the two techniques that make this possible:
    No `apt`/`dpkg` is involved, they would write into the real Termux prefix.
 
 2. **Running OpenCode** (the opencode-termux technique). The official npm
-   platform package is downloaded, the binary is extracted and its `PT_INTERP`
+   platform package is downloaded **once** (its `sha512` integrity value from
+   the registry is checked), the binary is extracted and its `PT_INTERP`
    is pointed at the glibc loader of the toolchain:
 
    ```
@@ -50,9 +51,12 @@ The app combines the two techniques that make this possible:
    asks for a server address and password. The app therefore mints a one-time
    code with `POST /api/pair` (Basic auth), redeems it at
    `GET /auth/connect/<code>` (`Accept: application/json`) for a session token
-   and loads `/?auth_token=<base64("opencode:<token>")>` — the same link format
-   `opencode pair` prints. The token is also written as the
-   `opencode_session_<port>` cookie, so reloads stay authenticated.
+   and loads `/?auth_token=<base64url("opencode:<token>")>` — the same link
+   format `opencode pair` prints. The token is checked against `/api/info`
+   before the UI is loaded and is also written as the
+   `opencode_session_<port>` cookie, so reloads stay authenticated. Console
+   errors and failed page loads are written to
+   `Android/data/com.opencode.android/files/OpenCodeForAndroid/`.
 
 ### What gets installed
 

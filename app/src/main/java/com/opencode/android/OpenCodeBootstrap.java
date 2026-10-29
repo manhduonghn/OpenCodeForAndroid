@@ -1122,6 +1122,7 @@ public final class OpenCodeBootstrap {
 
         /** One published platform build of OpenCode, as described by the npm registry. */
         private static final class NpmRelease {
+            String name = "";
             String version = "";
             String tarball = "";
             String integrity = "";
@@ -1143,6 +1144,7 @@ public final class OpenCodeBootstrap {
                     JSONObject dist = json.optJSONObject("dist");
                     if (dist == null) continue;
                     NpmRelease release = new NpmRelease();
+                    release.name = name;
                     release.version = json.optString("version", "");
                     release.tarball = dist.optString("tarball", "");
                     release.integrity = dist.optString("integrity", "");
@@ -1161,6 +1163,7 @@ public final class OpenCodeBootstrap {
                 throw new InstallException("Could not create the temporary directory " + TMP_DIR);
 
             NpmRelease release = resolveNpmRelease(arch);
+            String primaryError = null;
             if (release != null) {
                 File target = new File(tmpDir, "cli-linux-" + arch + "-" + release.version + ".tgz");
                 setStage(OpenCodeInstallState.STAGE_DOWNLOAD, "Downloading OpenCode " + release.version + "...");
@@ -1168,7 +1171,12 @@ public final class OpenCodeBootstrap {
                     downloadTarballTo(release.tarball, target, release.integrity);
                     return target;
                 } catch (IOException e) {
+                    primaryError = e.getMessage();
                     Log.w(LOG_TAG, "Download of " + release.tarball + " failed: " + e.getMessage());
+                    // The fallback below would build exactly the same URL again, which means a
+                    // second (and very likely equally broken) ~130 MB transfer. Only the other
+                    // package name is worth trying. The partial file is kept, the next run
+                    // resumes it.
                 }
             }
 
@@ -1176,8 +1184,14 @@ public final class OpenCodeBootstrap {
             String fileName = "cli-linux-" + arch + "-" + version + ".tgz";
             IOException lastError = null;
             for (String prefix : PLATFORM_PACKAGE_PREFIXES) {
+                // Never download the same file twice: the metadata already pointed at this
+                // package and it failed (eg. wrong checksum or an interrupted transfer).
+                if (release != null && release.name.equals(prefix + arch)) continue;
+
                 String url = NPM_REGISTRY_URL + "/" + prefix + arch + "/-/" + fileName;
-                File target = new File(tmpDir, fileName);
+                // One file per package, so a partial file of one mirror can never be resumed
+                // with the content of another one.
+                File target = new File(tmpDir, prefix.replaceAll("[^A-Za-z0-9_.-]", "_") + fileName);
                 try {
                     setStage(OpenCodeInstallState.STAGE_DOWNLOAD, "Downloading OpenCode " + version + "...");
                     downloadTarballTo(url, target, null);
@@ -1185,10 +1199,13 @@ public final class OpenCodeBootstrap {
                 } catch (IOException e) {
                     lastError = e;
                     Log.w(LOG_TAG, "Download of " + url + " failed: " + e.getMessage());
+                    deleteQuietly(target);
                 }
             }
 
-            throw new InstallException("Could not download the OpenCode package: " + (lastError == null ? "unknown error" : lastError.getMessage()));
+            throw new InstallException("Could not download the OpenCode package: "
+                + (lastError == null ? (primaryError == null ? "unknown error" : primaryError)
+                    : lastError.getMessage()));
         }
 
         /**
@@ -1197,8 +1214,11 @@ public final class OpenCodeBootstrap {
          * download.
          */
         private void downloadTarballTo(String url, File target, String expectedIntegrity) throws IOException {
+            // An empty value means that the registry did not publish a checksum.
+            String integrity = expectedIntegrity == null || expectedIntegrity.trim().isEmpty()
+                ? null : expectedIntegrity;
             // The file may have been downloaded completely before the app was closed.
-            if (expectedIntegrity != null && target.isFile() && verifySha512(target, expectedIntegrity))
+            if (integrity != null && target.isFile() && verifyIntegrity(target, integrity))
                 return;
 
             try {
@@ -1210,29 +1230,52 @@ public final class OpenCodeBootstrap {
                 downloadFile(url, target, false, this::reportDownloadProgress);
             }
 
-            if (expectedIntegrity != null && !verifySha512(target, expectedIntegrity)) {
+            if (integrity != null && !verifyIntegrity(target, integrity)) {
                 deleteQuietly(target);
                 downloadFile(url, target, false, this::reportDownloadProgress);
-                if (!verifySha512(target, expectedIntegrity))
+                if (!verifyIntegrity(target, integrity))
                     throw new IOException("The checksum of the downloaded file does not match the one of the npm registry.");
             }
         }
 
-        private static boolean verifySha512(File file, String expectedBase64) {
-            try {
-                MessageDigest digest = MessageDigest.getInstance("SHA-512");
-                byte[] buffer = new byte[64 * 1024];
-                try (InputStream in = new FileInputStream(file)) {
-                    int read;
-                    while ((read = in.read(buffer)) != -1)
-                        digest.update(buffer, 0, read);
+        /**
+         * Verify a downloaded file against the Subresource Integrity value of the npm registry.
+         *
+         * <p>npm stores the digest as {@code sha512-<base64>} (sometimes several space separated
+         * values). The algorithm prefix must be removed before the comparison, otherwise the
+         * digest never matches, the file is thrown away and the whole archive is downloaded
+         * again.</p>
+         */
+        private static boolean verifyIntegrity(File file, String integrity) {
+            if (integrity == null) return false;
+            for (String entry : integrity.trim().split("\\s+")) {
+                int dash = entry.indexOf('-');
+                if (dash <= 0) continue;
+                String expectedBase64 = entry.substring(dash + 1);
+                String javaName;
+                switch (entry.substring(0, dash).toLowerCase(Locale.US)) {
+                    case "sha512": javaName = "SHA-512"; break;
+                    case "sha384": javaName = "SHA-384"; break;
+                    case "sha256": javaName = "SHA-256"; break;
+                    case "sha1": javaName = "SHA-1"; break;
+                    default: continue;
                 }
-                String actual = Base64.encodeToString(digest.digest(), Base64.NO_WRAP);
-                return actual.equals(expectedBase64);
-            } catch (Exception e) {
-                Log.e(LOG_TAG, "Could not verify the checksum of " + file, e);
-                return false;
+                try {
+                    MessageDigest digest = MessageDigest.getInstance(javaName);
+                    byte[] buffer = new byte[64 * 1024];
+                    try (InputStream in = new FileInputStream(file)) {
+                        int read;
+                        while ((read = in.read(buffer)) != -1)
+                            digest.update(buffer, 0, read);
+                    }
+                    String actual = Base64.encodeToString(digest.digest(), Base64.NO_WRAP);
+                    if (actual.equals(expectedBase64)) return true;
+                } catch (Exception e) {
+                    Log.e(LOG_TAG, "Could not verify the checksum of " + file, e);
+                    return false;
+                }
             }
+            return false;
         }
 
         /**

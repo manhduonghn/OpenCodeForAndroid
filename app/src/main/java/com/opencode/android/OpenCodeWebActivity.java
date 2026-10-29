@@ -11,7 +11,11 @@ import android.util.Base64;
 import android.util.Log;
 import android.view.View;
 import android.webkit.CookieManager;
+import android.webkit.ConsoleMessage;
 import android.webkit.HttpAuthHandler;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebViewDatabase;
@@ -80,6 +84,10 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
     private int pairAttempts;
     /** HTTP Basic password of the local OpenCode server, see {@link OpenCodeBootstrap#getServerPassword}. */
     private String serverPassword = "";
+    /** Console reports are capped, a broken UI can log the same error on every request. */
+    private int consoleReports;
+    /** Number of failed loads of the web UI, the automatic retry stops after a few of them. */
+    private int loadFailures;
 
     private final Runnable poll = new Runnable() {
         @Override
@@ -131,6 +139,48 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
                                                   String host, String realm) {
                 // The OpenCode 2.x server protects its API with HTTP Basic auth.
                 handler.proceed(OpenCodeBootstrap.SERVER_USER, serverPassword);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                // The page rendered, so the counter of failed loads starts again.
+                if (pageLoaded) loadFailures = 0;
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        WebResourceError error) {
+                if (!request.isForMainFrame()) return;
+                // The page itself could not be loaded. The server may have died or the port is
+                // not answerable any more: drop back to the progress screen and let the poll
+                // restart the service and pair again.
+                Log.w(TAG, "The OpenCode web UI could not be loaded: " + error.getErrorCode()
+                    + " " + error.getDescription());
+                OpenCodeCrashLog.writeReport(OpenCodeWebActivity.this, "webview-load",
+                    "url: " + request.getUrl() + "\ncode: " + error.getErrorCode()
+                        + "\ndescription: " + error.getDescription());
+                failUi("Không tải được giao diện OpenCode",
+                    "Mã " + error.getErrorCode() + ": " + error.getDescription()
+                        + ". Ứng dụng sẽ thử lại.");
+            }
+        });
+        // JS errors of the UI are otherwise invisible: without a chrome client the WebView
+        // silently drops console.error() and an API call that fails with 401 only shows a spinner.
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                String text = message.message() + " (" + message.sourceId() + ":"
+                    + message.lineNumber() + ")";
+                if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    Log.w(TAG, "webview console: " + text);
+                    if (consoleReports < 5) {
+                        consoleReports++;
+                        OpenCodeCrashLog.writeReport(OpenCodeWebActivity.this, "webview-console", text);
+                    }
+                } else {
+                    Log.i(TAG, "webview console: " + text);
+                }
+                return true;
             }
         });
         webView.getSettings().setJavaScriptEnabled(true);
@@ -241,6 +291,33 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         }
     }
 
+    /**
+     * The UI could not be loaded: show the reason and let {@link #poll} try again. The service is
+     * restarted by that loop when it is no longer reachable, and the page is paired again.
+     */
+    private void failUi(String title, String detail) {
+        if (destroyed) return;
+        pageLoaded = false;
+        waitingForInstall = false;
+        pairAttempts = 0;
+        webView.setVisibility(View.GONE);
+        statusPanel.setVisibility(View.VISIBLE);
+        statusProgress.setIndeterminate(true);
+        statusTitle.setText(title);
+        statusDetail.setText(detail);
+        statusRetry.setVisibility(View.GONE);
+        handler.removeCallbacks(poll);
+        loadFailures++;
+        if (loadFailures > 3) {
+            // Stop the automatic loop: the user can retry by hand, otherwise a broken server
+            // would reload the page every two seconds forever.
+            statusDetail.setText(detail + "\nNhấn \"Thử lại\" để thử lại.");
+            statusRetry.setVisibility(View.VISIBLE);
+            return;
+        }
+        handler.postDelayed(poll, 1500);
+    }
+
     /** Start the foreground service that hosts the server, ignoring background restrictions. */
     private void startServerService() {
         try {
@@ -265,6 +342,7 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
         waitingForInstall = true;
         OpenCodeBootstrap.setupIfNeeded(this, null);
         pairAttempts = 0;
+        loadFailures = 0;
         handler.removeCallbacks(poll);
         handler.post(poll);
     }
@@ -286,24 +364,31 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
             // 'opencode pair' prints links of the form /?auth_token=<base64(user:password)>,
             // the web app reads it, strips it from the address bar and authenticates its API
             // calls with it.
+            //
+            // The web app decodes the parameter with a base64url decoder (it replaces '-' and
+            // '_' back to '+' and '/'), so the URL-safe alphabet is the format it expects. A
+            // standard '+' would additionally be turned into a space by URLSearchParams.
             String credentials = Base64.encodeToString(
                 (OpenCodeBootstrap.SERVER_USER + ":" + secret)
-                    .getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+                    .getBytes(StandardCharsets.UTF_8),
+                Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
             target = target + "?auth_token=" + credentials;
 
             // The session token is also the value of the session cookie, so a reload of the
             // WebView keeps working after the app removed the token from the URL.
-            if (paired) {
-                try {
-                    CookieManager cookies = CookieManager.getInstance();
-                    cookies.setAcceptCookie(true);
-                    cookies.setCookie("http://127.0.0.1:" + PORT,
-                        "opencode_session_" + PORT + "=" + secret
-                            + "; Path=/; Max-Age=2592000");
-                    cookies.flush();
-                } catch (Exception e) {
-                    Log.w(TAG, "Could not store the session cookie", e);
-                }
+            try {
+                CookieManager cookies = CookieManager.getInstance();
+                cookies.setAcceptCookie(true);
+                cookies.setCookie("http://127.0.0.1:" + PORT,
+                    paired
+                        ? "opencode_session_" + PORT + "=" + secret
+                            + "; Path=/; Max-Age=2592000"
+                        // A token of an earlier server must not survive: the API calls of the UI
+                        // would carry a cookie that the current server rejects with 401.
+                        : "opencode_session_" + PORT + "=; Path=/; Max-Age=0");
+                cookies.flush();
+            } catch (Exception e) {
+                Log.w(TAG, "Could not store the session cookie", e);
             }
         }
         Log.i(TAG, "Loading the paired OpenCode web UI: " + target);
@@ -341,7 +426,15 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
                 while ((line = reader.readLine()) != null) body.append(line);
             }
             String token = new JSONObject(body.toString()).optString("token", "");
-            return token.isEmpty() ? null : token;
+            if (token.isEmpty()) return null;
+            // Make sure the token is actually accepted before the UI starts with it. A token of
+            // a server that has been replaced in the meantime only produces 401s and the UI then
+            // shows its "server unreachable" panel.
+            if (!serverAccepts(token)) {
+                Log.w(TAG, "The server rejected the freshly minted pairing token, using the password.");
+                return null;
+            }
+            return token;
         } catch (Exception e) {
             Log.w(TAG, "Could not redeem the pairing code", e);
             return null;
@@ -391,6 +484,31 @@ public final class OpenCodeWebActivity extends Activity implements OpenCodeBoots
             return true;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * Check that the server answers {@code /api/info} with the given secret (a session token or
+     * the server password) as HTTP Basic credentials, exactly like the web UI does.
+     */
+    private boolean serverAccepts(String secret) {
+        if (secret == null || secret.isEmpty()) return false;
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL("http://127.0.0.1:" + PORT + "/api/info");
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(2000);
+            connection.setReadTimeout(3000);
+            connection.setUseCaches(false);
+            String credentials = OpenCodeBootstrap.SERVER_USER + ":" + secret;
+            connection.setRequestProperty("Authorization", "Basic " + Base64.encodeToString(
+                credentials.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+            return connection.getResponseCode() == HttpURLConnection.HTTP_OK;
+        } catch (Exception e) {
+            Log.w(TAG, "Could not verify the server credentials", e);
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
         }
     }
 
