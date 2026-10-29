@@ -87,7 +87,7 @@ class OpenCodeInstallState {
     }
 
     /** The last steps of the installation, the newest ones last. */
-    fun getSteps(): List<String> = synchronized(steps) { ArrayList(steps) }
+    fun stepsSnapshot(): List<String> = synchronized(steps) { ArrayList(steps) }
 
     /** The state as a JSON object. */
     fun toJson(): JSONObject = JSONObject().apply {
@@ -103,7 +103,7 @@ class OpenCodeInstallState {
         put("done", done)
         put("failed", failed)
         put("updatedAt", updatedAt)
-        put("steps", JSONArray(getSteps()))
+        put("steps", JSONArray(stepsSnapshot()))
     }
 
     companion object {
