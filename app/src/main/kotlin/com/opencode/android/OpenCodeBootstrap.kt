@@ -295,7 +295,7 @@ object OpenCodeBootstrap {
         if (!isInstallRunning() && runtimeProblems().isEmpty()) {
             clearFinishedState()
             maintainInBackground(context)
-            runOnUiThread(onReady)
+            runOnUiThread(context, onReady)
             return
         }
 

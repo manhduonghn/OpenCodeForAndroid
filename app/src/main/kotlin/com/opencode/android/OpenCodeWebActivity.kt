@@ -76,7 +76,7 @@ class OpenCodeWebActivity : Activity(), OpenCodeBootstrap.InstallListener {
     /** Number of failed loads of the web UI, the automatic retry stops after a few of them. */
     private var loadFailures = 0
 
-    private val poll = object : Runnable {
+    private val poll: Runnable = object : Runnable {
         override fun run() {
             if (destroyed || probeInFlight || probeExecutor.isShutdown) return
             probeInFlight = true

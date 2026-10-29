@@ -4,13 +4,17 @@
 natively on Android — no root, no proot, no chroot — inside its **own package id**
 (`com.opencode.android`) and its **own Linux prefix**, without the `com.termux` app.
 
+The app is written **entirely in Kotlin** (no Java sources, no AndroidX: plain
+framework widgets and `HttpURLConnection`), and it keeps no crash log or
+diagnostics files of its own — see [Logging](#logging).
+
 ## How it works
 
 The app combines the two techniques that make this possible:
 
 1. **Installing Termux packages without Termux** (the AndroidHarness technique).
    The Termux repository indexes are downloaded, the `.deb` archives are verified
-   (SHA-256) and extracted **in Java** (`commons-compress` + `xz`). While
+   (SHA-256) and extracted in Kotlin (`commons-compress` + `xz`). While
    extracting, the absolute `/data/data/com.termux/files/usr` paths that are
    baked into the packages are rewritten:
 
@@ -64,9 +68,7 @@ The app combines the two techniques that make this possible:
    and loads `/?auth_token=<base64url("opencode:<token>")>` — the same link
    format `opencode pair` prints. The token is checked against `/api/info`
    before the UI is loaded and is also written as the
-   `opencode_session_<port>` cookie, so reloads stay authenticated. Console
-   errors and failed page loads are written to
-   `Android/data/com.opencode.android/files/OpenCodeForAndroid/`.
+   `opencode_session_<port>` cookie, so reloads stay authenticated.
 
 ### What gets installed
 
@@ -166,6 +168,11 @@ $PREFIX/bin/opencode upgrade    # asks the app to re-download the runtime
 with `PREFIX=/data/data/com.opencode.android/files/usr` and
 `HOME=/data/data/com.opencode.android/files/home`.
 
+The three launchers (`opencode`, `oc-install`, `pkg`) are shell scripts kept as
+plain files in `app/src/main/res/raw/` and written to the prefix at install and
+maintenance time (`@PREFIX@`/`@HOME@`/`@USER_ID@` are substituted), so they can
+be read and edited as ordinary shell instead of living inside a Kotlin string.
+
 ### Server lifecycle
 
 The server is a child of the app process, and Android does not always kill it
@@ -175,15 +182,40 @@ it runs the current binary, instead of starting a second `serve` that would
 fail with `EADDRINUSE`. A server of an older binary is stopped first, and the
 service waits until the port is free before spawning.
 
-## Diagnostics
+## Security notes
 
-Crash reports and server errors stay inside the app sandbox:
+* **Cleartext HTTP is limited to loopback.** `res/xml/network_security_config.xml`
+  permits cleartext only for `127.0.0.1`/`localhost` (the local OpenCode
+  server); the base configuration still requires TLS, and the manifest no longer
+  sets `android:usesCleartextTraffic="true"`.
+* **No broad file access in the WebView.** `allowFileAccess` and
+  `allowContentAccess` are off; only the loopback origin is loaded.
+* **No exported services.** Both foreground services are `exported="false"`;
+  the `pkg` launcher talks to them from the same UID.
+* **Secrets stay in the sandbox.** The server password is generated once, kept in
+  the app's private preferences and written to `$HOME/.opencode/server-password`
+  with mode `0600` for the launcher.
+* **No analytics, no crash reporting, no diagnostics directory.** Nothing is
+  written outside the app's private data directory.
 
-* `Android/data/com.opencode.android/files/OpenCodeForAndroid/`
+`targetSdk` stays at **28** because Android 10+ denies `execve()` of files in
+the app data directory for apps that target API 29 or newer — this is a
+requirement of the runtime, not a leftover.
 
-Nothing is written into the public `Download` folder, the app does not request
-storage permissions. `opencode-install-*.log`, `opencode-server-*.log` and
-`opencode-port-*.log` are the files to look at when something fails.
+## Logging
+
+The app deliberately ships **without** a crash log or a diagnostics dump: the
+removed `OpenCodeCrashLog` wrote `opencode-install-*.log`,
+`opencode-server-*.log` and `last-error.txt` into the app files directory, which
+mostly duplicated what the platform already provides. Progress and errors are
+shown in the app UI, in the notification, and on stderr of the `pkg`/`oc-install`
+launchers.
+
+When something goes wrong, use logcat:
+
+```sh
+adb logcat -s OpenCodeBootstrap OpenCodeService OpenCodeWebActivity OpenCodePackages
+```
 
 ## Building
 
