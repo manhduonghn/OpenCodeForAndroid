@@ -242,20 +242,7 @@ When the server is replaced (a restart, or a new app process adopting an
 orphan), the page that the retained WebView shows is paired with the old
 server: its cookie and pairing token are stale. A generation counter on the
 service lets the UI notice the replacement on resume, mint a new token and
-reopen the same chat instead of leaving a page that only receives 401s. While
-the activity is open the counter is checked every few seconds, so a server that
-is restarted by the service (crash, phantom kill, manual Restart) is paired
-again without waiting for the next resume.
-
-Returning to the app probes the loopback port off the main thread. If the server
-is healthy, the page is not reloaded: the activity dispatches the
-`visibilitychange`/`focus`/`online` events so the single page app reconnects its
-event streams and refetches what it missed while it was in the background. If
-the port is closed, the page is paired again once the service has restarted the
-server. An unexpected exit of the server process now also restarts it with a
-backoff instead of leaving the port dead until the 15 minute watchdog. If
-Android killed the WebView renderer itself, `onRenderProcessGone` builds a new
-WebView and reopens the session the user was reading instead of crashing.
+reopen the same chat instead of leaving a page that only receives 401s.
 
 ### Screen off and background
 
