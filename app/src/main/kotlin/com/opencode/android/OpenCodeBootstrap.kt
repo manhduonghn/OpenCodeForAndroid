@@ -458,7 +458,8 @@ object OpenCodeBootstrap {
      * glibc cannot use the resolver of Android (bionic hands DNS over to netd); it reads its
      * nameservers from `$PREFIX/glibc/etc/resolv.conf`. The servers of the active network are
      * used, because they change with Wi-Fi, mobile data and VPN, so the file is rewritten every
-     * time the network changes and the server starts. Public resolvers are appended as a fallback.
+     * time the network changes and the server starts. Public resolvers are only used when the
+     * active network reports no resolver of its own.
      *
      * The order matters. Android reports the IPv6 DNS server first on many carriers, and glibc
      * tries the servers in the order they are listed. When the device has no IPv6 connectivity,
@@ -504,13 +505,6 @@ object OpenCodeBootstrap {
     private const val MAX_RESOLV_SERVERS = 3
 
     /**
-     * At most two servers of the network are kept, which leaves one slot for a public fallback and
-     * keeps a lookup from spending its whole budget on resolvers that an OEM router silently
-     * drops.
-     */
-    private const val MAX_NETWORK_SERVERS = 2
-
-    /**
      * Build the content of `resolv.conf` for the current network, or null when the prefix itself is
      * not unpacked yet.
      */
@@ -530,7 +524,12 @@ object OpenCodeBootstrap {
 
     /**
      * Pick the nameservers for `resolv.conf`: the IPv4 servers of the active network first, then
-     * an IPv6 server only when the device has a global IPv6 address, then public IPv4 resolvers.
+     * an IPv6 server only when the device has a global IPv6 address.
+     *
+     * The network is authoritative. A resolver handed out by Wi-Fi, mobile data or a VPN can be
+     * split-horizon (captive portal, corporate or VPN-only names) or enforce the filtering of the
+     * provider; replacing it with a public resolver would bypass that. Public resolvers are
+     * therefore used only when the active network reports no resolver at all.
      */
     private fun selectResolvServers(context: Context?): List<String> {
         val network4 = ArrayList<String>()
@@ -557,12 +556,15 @@ object OpenCodeBootstrap {
         val servers = ArrayList<String>()
         // IPv4 first: it is reachable on every network and answers without waiting for an IPv6
         // route that this device may not have.
-        network4.take(MAX_NETWORK_SERVERS).forEach { if (servers.size < MAX_RESOLV_SERVERS) servers.add(it) }
-        if (network6.isNotEmpty() && hasGlobalIpv6Address()) {
-            network6.take(1).forEach { if (servers.size < MAX_RESOLV_SERVERS) servers.add(it) }
+        network4.take(MAX_RESOLV_SERVERS).forEach { if (servers.size < MAX_RESOLV_SERVERS) servers.add(it) }
+        if (servers.size < MAX_RESOLV_SERVERS && network6.isNotEmpty() && hasGlobalIpv6Address()) {
+            network6.take(MAX_RESOLV_SERVERS - servers.size).forEach { servers.add(it) }
         }
-        PUBLIC_DNS_SERVERS.forEach {
-            if (servers.size < MAX_RESOLV_SERVERS && it !in servers) servers.add(it)
+        // Only a network without any resolver of its own gets the public fallback.
+        if (servers.isEmpty()) {
+            PUBLIC_DNS_SERVERS.forEach {
+                if (servers.size < MAX_RESOLV_SERVERS && it !in servers) servers.add(it)
+            }
         }
         return servers
     }

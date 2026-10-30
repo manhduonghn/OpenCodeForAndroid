@@ -74,9 +74,12 @@ The app combines the two techniques that make this possible:
    for that server to time out on **every** lookup and, on networks whose only
    resolver is IPv6, fails with `EAI_AGAIN` while the IPv4 side of the
    connection is fine. `resolv.conf` therefore lists IPv4 servers first, keeps
-   an IPv6 server only when the device owns a global IPv6 address, and appends
-   `1.1.1.1`/`8.8.8.8` as a fallback (`timeout:1 attempts:1`, at most three
-   servers, which is glibc's `MAXNS`). The file is only rewritten when its
+   an IPv6 server only when the device owns a global IPv6 address, and uses
+   `1.1.1.1`/`8.8.8.8` only when the active network reports no resolver at all
+   (`timeout:1 attempts:1`, at most three servers, which is glibc's `MAXNS`).
+   The network is authoritative: a Wi-Fi, mobile or VPN resolver can be
+   split-horizon or enforce the filtering of the provider, so it is never
+   replaced by a public resolver. The file is only rewritten when its
    content changes, so a Wi-Fi/mobile handover does not wake the server for
    nothing.
 

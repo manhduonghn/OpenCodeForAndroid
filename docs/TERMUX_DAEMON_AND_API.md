@@ -300,8 +300,11 @@ và nếu mạng chỉ có DNS IPv6 thì mọi lookup trả `EAI_AGAIN` dù IPv4
 Internet bình thường. Vì vậy app hiện tại:
 
 1. Ghi **IPv4 trước**, IPv6 chỉ khi máy thật sự có địa chỉ global.
-2. Thêm `1.1.1.1`, `8.8.8.8` làm fallback, tối đa 3 nameserver (giới hạn
-   `MAXNS` của glibc), `options timeout:1 attempts:1`.
+2. Dùng DNS của mạng đang hoạt động làm nguồn chính; chỉ thêm `1.1.1.1`,
+   `8.8.8.8` khi mạng **không trả về resolver nào**, tối đa 3 nameserver
+   (giới hạn `MAXNS` của glibc), `options timeout:1 attempts:1`. Không thay
+   resolver của mạng bằng DNS công cộng, vì resolver của Wi-Fi/4G/VPN có thể
+   là split-horizon hoặc có lọc riêng.
 3. Ghi file reset lại mỗi khi **default network đổi** (Wi-Fi ↔ 4G, bật/tắt VPN)
    qua `ConnectivityManager.registerDefaultNetworkCallback`, nhưng bỏ qua nếu
    nội dung không đổi để không đánh thức server vô ích.
