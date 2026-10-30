@@ -21,6 +21,7 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.JsResult
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -134,6 +135,13 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private var probeInFlight = false
+
+    /** True while the health probe of a return from the background is running. */
+    private var resumeProbeInFlight = false
+
+    /** True once the activity was stopped, so the next resume is a real return to the app. */
+    private var wasStopped = false
+
     private var destroyed = false
     private var waitingForInstall = false
     private var lastServiceStart = 0L
@@ -217,6 +225,27 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                     handler.postDelayed(poll, 700)
                 }
             }
+        }
+    }
+
+    /**
+     * Cheap check that the page is still paired with the server that is listening right now.
+     *
+     * A server can be replaced while the activity is visible (phantom-kill restart, a second
+     * start, a manual Restart). The page then keeps a token the new server rejects, so it has to
+     * be paired again instead of showing a dead UI until the next manual refresh.
+     */
+    private val generationWatch: Runnable = object : Runnable {
+        override fun run() {
+            if (destroyed) return
+            if (pageLoaded && !OpenCodeSettings.stoppedByUser(this@OpenCodeWebActivity)) {
+                val generation = OpenCodeService.serverGeneration()
+                if (generation != 0 && generation != viewModel.pairedServerGeneration) {
+                    Log.i(TAG, "The server was replaced while the UI was open, pairing again")
+                    reconnectToRestartedServer()
+                }
+            }
+            handler.postDelayed(this, GENERATION_CHECK_MS)
         }
     }
 
@@ -1023,6 +1052,11 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     override fun onStop() {
         viewModel.ui = null
+        // The next resume is a real return from the background: the page has to be checked
+        // against the server and woken up. A rotation recreates the activity, so this instance
+        // never sees the resume of that transition.
+        wasStopped = true
+        handler.removeCallbacks(generationWatch)
         super.onStop()
     }
 
@@ -1031,13 +1065,12 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         // The screen was off: the WebView of the ViewModel is the same instance, the system (or a
         // long stop) can leave its timers paused, which makes the web UI look frozen.
         viewModel.resumeWebView()
-        // A server that was replaced while the app was in the background invalidated the cookie
-        // and the pairing token of the page. Pair again instead of showing a page that only gets
-        // 401s from the API.
-        val generation = OpenCodeService.serverGeneration()
-        if (pageLoaded && generation != 0 && generation != viewModel.pairedServerGeneration) {
-            reconnectToRestartedServer()
+        if (wasStopped) {
+            wasStopped = false
+            resumeAfterBackground()
         }
+        handler.removeCallbacks(generationWatch)
+        handler.postDelayed(generationWatch, GENERATION_CHECK_MS)
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
             renderStorage()
@@ -1046,12 +1079,61 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     }
 
     /**
+     * Make the retained WebView usable again after the app was in the background.
+     *
+     * Android may have killed the server (Doze, the phantom process killer) or replaced it with a
+     * new process. If the page is loaded the cookie and the pairing token of the old server are
+     * stale, and the event streams of the web UI may have died without the page noticing. A
+     * reachability probe tells the three cases apart: a new server or no server means pair again,
+     * a healthy server only needs the lifecycle events that make the UI reconnect its streams.
+     */
+    private fun resumeAfterBackground() {
+        if (OpenCodeSettings.stoppedByUser(this)) {
+            // The user pressed Stop in the notification while the app was away.
+            showStoppedScreen()
+            return
+        }
+        if (!pageLoaded) {
+            // The page was never loaded or the last attempt failed: let the poll pair it again.
+            loadFailures = 0
+            startServerService()
+            handler.removeCallbacks(poll)
+            handler.post(poll)
+            return
+        }
+        startServerService()
+        if (resumeProbeInFlight || probeExecutor.isShutdown) return
+        resumeProbeInFlight = true
+        probeExecutor.execute {
+            val reachable = serverReachable()
+            handler.post {
+                resumeProbeInFlight = false
+                if (destroyed || !pageLoaded) return@post
+                val generation = OpenCodeService.serverGeneration()
+                when {
+                    generation != 0 && generation != viewModel.pairedServerGeneration -> {
+                        reconnectToRestartedServer()
+                    }
+                    !reachable -> {
+                        Log.i(TAG, "The server does not answer after the background, reconnecting")
+                        reconnectToRestartedServer()
+                    }
+                    else -> {
+                        // The server is fine, only the streams of the page may be stale.
+                        viewModel.nudgeWebApp()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Pair the retained WebView with the server that replaced the old one, keeping the session
      * the user had open. The cookie of the previous server is dropped, a new token is minted.
      */
     private fun reconnectToRestartedServer() {
         if (destroyed) return
-        Log.i(TAG, "The server was replaced while the app was away, pairing again")
+        Log.i(TAG, "The page is not paired with the current server, pairing again")
         val sessionId = OpenCodeWebViewModel.sessionIdOf(webView.url)
             ?: OpenCodeSettings.lastSessionId(this)
         pageLoaded = false
@@ -1176,6 +1258,18 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                     ),
                 )
             }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?,
+            ): Boolean {
+                // Android can kill the renderer of a backgrounded WebView under memory pressure.
+                // The old view only shows an empty surface, so build a new one and load the UI
+                // again instead of letting the system crash the app.
+                if (view !== webView) return true
+                recoverWebView()
+                return true
+            }
         }
 
         webView.settings.apply {
@@ -1187,6 +1281,43 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         }
         // The Pairing redirect stores the session cookie of the server here.
         CookieManager.getInstance().setAcceptCookie(true)
+    }
+
+    /**
+     * Build a new WebView after the renderer of the old one was killed, keep the session the user
+     * was reading and pair the page with the running server again.
+     */
+    private fun recoverWebView() {
+        if (destroyed) return
+        Log.w(TAG, "The WebView renderer was killed, creating a new WebView")
+        val sessionId = OpenCodeWebViewModel.sessionIdOf(webView.url)
+            ?: OpenCodeSettings.lastSessionId(this)
+        webView = viewModel.replaceWebView(this)
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        webContainer.removeAllViews()
+        webContainer.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        configureWebView()
+        pageLoaded = false
+        waitingForInstall = false
+        pairAttempts = 0
+        loadFailures = 0
+        pendingSessionId = sessionId
+        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        statusTitle.setText(R.string.opencode_status_starting)
+        statusDetail.setText(R.string.opencode_reconnecting)
+        statusProgress.visibility = View.VISIBLE
+        statusProgress.isIndeterminate = true
+        statusRetry.visibility = View.GONE
+        handler.removeCallbacks(poll)
+        handler.post(poll)
     }
 
     /** Report the route to the notification tracker and remember it across a process death. */
@@ -1237,19 +1368,25 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         }
     }
 
+    /** Replace the web UI with the "stopped" panel of an explicit Stop in the notification. */
+    private fun showStoppedScreen() {
+        pageLoaded = false
+        waitingForInstall = false
+        handler.removeCallbacks(poll)
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        statusProgress.isIndeterminate = false
+        statusTitle.setText(R.string.opencode_notification_stopped)
+        statusDetail.setText(R.string.opencode_notification_stopped_text)
+        statusRetry.visibility = View.VISIBLE
+    }
+
     /** Show the last known progress, it is useful before the first listener callback arrives. */
     private fun updateProgress() {
         if (pageLoaded || waitingForInstall) return
         if (OpenCodeSettings.stoppedByUser(this)) {
             // The user pressed Stop in the notification while the activity was still alive.
-            handler.removeCallbacks(poll)
-            waitingForInstall = false
-            webView.visibility = View.GONE
-            statusPanel.visibility = View.VISIBLE
-            statusProgress.isIndeterminate = false
-            statusTitle.text = getString(R.string.opencode_notification_stopped)
-            statusDetail.text = getString(R.string.opencode_notification_stopped_text)
-            statusRetry.visibility = View.VISIBLE
+            showStoppedScreen()
             return
         }
         val state = OpenCodeBootstrap.getInstallState()
@@ -1571,5 +1708,8 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
         /** Endpoint that redeems a pairing code for a session token. */
         private const val PAIR_PATH = "/auth/connect/"
+
+        /** How often the activity checks that the page is paired with the current server. */
+        private const val GENERATION_CHECK_MS = 3000L
     }
 }

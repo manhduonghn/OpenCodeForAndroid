@@ -495,6 +495,21 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     Stop chủ động: đặt `user_stopped`, huỷ watchdog, xoá `service.json` và `stopSelf()`, nên
     watchdog không bật lại server sau vài phút.
 
+### P1.5b — Background/foreground (đã làm)
+
+- **Kiểm tra khi quay lại app:** `onResume` (sau khi activity đã `onStop`) probe port
+  49374 trên thread nền. Server còn sống → không reload trang, chỉ bắn
+  `visibilitychange`/`focus`/`online`/`pageshow` để SPA nối lại event stream và lấy state
+  mới; port chết → pair lại sau khi service start server.
+- **Theo dõi generation khi đang mở:** activity kiểm tra `serverGeneration()` mỗi 3 giây;
+  server bị restart (crash, phantom kill, Restart tay) → pair lại, giữ session đang đọc.
+- **Server thoát bất thường:** mọi exit không chủ động (không chỉ `9`/`137`) được start lại
+  với backoff 5s → 300s, thay vì chờ watchdog 15 phút.
+- **Renderer WebView bị kill:** `onRenderProcessGone` tạo WebView mới, giữ session cuối và
+  pair lại thay vì để app crash.
+- **Stop khi đang nền:** quay lại app thấy panel "đã dừng" kèm nút Thử lại, không tự start
+  server (tôn trọng thao tác Stop).
+
 ### P1.6 — `pkg` dùng được trên Android 13+ (đã làm)
 
 15. **Broadcast thay cho `am start-service`:** `OpenCodePkgReceiver` (signature permission

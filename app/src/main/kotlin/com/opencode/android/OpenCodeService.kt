@@ -535,7 +535,29 @@ class OpenCodeService : Service() {
                 // The service may have been destroyed in the meantime.
                 if (sInstance === this) startServer()
             }, 1500)
+            return
         }
+        // Any other unexpected exit (a crash, an OOM, a signal that is not the phantom killer)
+        // leaves the port dead. Restart it with the same backoff as a phantom kill instead of
+        // waiting for the 15 minute watchdog, so the WebView finds a server when it comes back.
+        if (!intentional) {
+            Log.w(TAG, "The OpenCode server exited unexpectedly, starting it again")
+            restartAfterCrash(exitCode)
+        }
+    }
+
+    /** Start the server again after an unexpected exit, with the backoff of a phantom kill. */
+    private fun restartAfterCrash(exitCode: Int) {
+        if (sInstance !== this || stopping) return
+        val attempt = restartAttempts.coerceAtMost(6)
+        val delay = (5_000L shl attempt).coerceAtMost(5 * 60_000L)
+        restartAttempts++
+        Log.i(TAG, "Restarting the server after exit $exitCode in ${delay}ms (attempt $restartAttempts).")
+        handler.postDelayed({
+            if (sInstance !== this || stopping) return@postDelayed
+            if (process?.isAlive == true) return@postDelayed
+            startServer()
+        }, delay)
     }
 
     /**
