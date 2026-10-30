@@ -504,6 +504,23 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     Stop chủ động: đặt `user_stopped`, huỷ watchdog, xoá `service.json` và `stopSelf()`, nên
     watchdog không bật lại server sau vài phút.
 
+**Helper `opencode-pty` cho terminal trên web:** OpenCode tự extract helper vào
+`~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty`, nhưng file đó là ELF glibc với
+`PT_INTERP=/lib/ld-linux-aarch64.so.1` — đường dẫn không tồn tại trên Android — nên `posix_spawn`
+trả `ENOENT` và panel terminal báo "Couldn't create a terminal". Sửa file trong cache không có tác
+dụng: mỗi lần server khởi động lại so checksum với sha256 nhúng sẵn rồi ghi đè. App cắt chính asset
+đó từ CLI đã cài (Bun giữ nguyên, không nén), đối chiếu sha256 ghi cạnh asset,
+`patchelf --set-interpreter` trỏ về loader glibc của prefix, cài vào
+`$HOME/.opencode/bin/opencode-pty` và export `OPENCODE_PTY_BIN` cho server (đồng thời ghi vào
+`etc/opencode-env.sh` cho terminal). OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước
+validate cache. `$HOME/.opencode/.terminal-runtime` lưu fingerprint của CLI + version + sha256, nên
+helper chỉ được build lại khi binary đổi.
+
+**Thời gian khởi động đo trên máy (runtime đã cài):** `opencode --version` ≈0.24 s; `serve` mở TCP
+sau ≈0.5 s và `/api/info` trả 200 sau ≈0.7 s; `POST /api/pair` ≈40 ms và `/auth/connect/<code>`
+≈47 ms. Activity khởi động server và probe pairing song song (poll 700 ms), nên WebUI hiện sau
+khoảng 1 s. Lần chạy đầu chậm là do tải runtime (~248 MB), không phải server.
+
 ### P1.6 — `pkg` dùng được trên Android 13+ (đã làm)
 
 15. **Broadcast thay cho `am start-service`:** `OpenCodePkgReceiver` (signature permission

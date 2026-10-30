@@ -195,6 +195,24 @@ pairing link. The environment exports the same password from
 `$HOME/.opencode/server-password`, so the terminal and the app can talk to the
 same server.
 
+### Web terminal helper
+
+The terminal panel of the web UI does not use the `opencode-pty` copy that OpenCode extracts for
+itself. OpenCode writes that helper to
+`~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty`, but the file is a plain glibc
+executable whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android; the
+`posix_spawn` then fails with `ENOENT` and the panel reports "Couldn't create a terminal".
+Patching the cached file does not stick, because every new server process checks it against the
+embedded sha256 and rewrites it.
+
+The app therefore carves the same asset out of the installed CLI once (Bun keeps it uncompressed
+in the snapshot), verifies it against the sha256 that is stored next to the asset, points its
+`PT_INTERP` at the glibc loader of the prefix with `patchelf` and installs it as
+`$HOME/.opencode/bin/opencode-pty`. The server is started with `OPENCODE_PTY_BIN` pointing at that
+file (the shell profile exports it as well), which makes OpenCode skip both the extraction and the
+checksum validation of its cache copy. `$HOME/.opencode/.terminal-runtime` records the fingerprint
+of the CLI, so the helper is rebuilt only when the binary changes.
+
 ### Installation progress
 
 The first start downloads ≈20 MB of toolchain and ≈114 MB of OpenCode, so the
@@ -264,6 +282,14 @@ orphan), the page that the retained WebView shows is paired with the old
 server: its cookie and pairing token are stale. A generation counter on the
 service lets the UI notice the replacement on resume, mint a new token and
 reopen the same chat instead of leaving a page that only receives 401s.
+
+Once the runtime is installed, a start is cheap: `opencode --version` needs
+≈0.25 s, `serve` accepts a TCP connection in ≈0.5 s and answers `/api/info` in
+≈0.7 s. Minting a pairing code (`POST /api/pair`) and redeeming it
+(`/auth/connect/<code>`) takes ≈50 ms each. The activity spawns the server and
+runs the first pairing probe in parallel, so the web UI is on screen about a
+second after launch. The slow first start is the download of the runtime, not
+the server.
 
 ### Screen off and background
 

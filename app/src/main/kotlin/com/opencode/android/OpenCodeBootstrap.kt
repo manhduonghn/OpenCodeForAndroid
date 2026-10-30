@@ -30,6 +30,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -124,6 +125,28 @@ object OpenCodeBootstrap {
 
     /** Remembers a failed attempt, so a 240 MB copy is not retried on every app start. */
     private const val NATIVE_REPAIR_MARKER_PATH = "$OC_HOME/.native-repair-tried"
+
+    /**
+     * The `opencode-pty` helper that the web terminal spawns. OpenCode normally extracts its own
+     * copy into `~/.cache/opencode/bin`, but that build is a plain glibc executable whose
+     * interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android, so `posix_spawn`
+     * fails with `ENOENT`. The app extracts the same asset from the installed CLI, points it at
+     * the glibc loader and hands it to the server through `OPENCODE_PTY_BIN`, which makes
+     * OpenCode skip its own extraction.
+     */
+    const val PTY_BIN_PATH = "$OC_HOME/bin/opencode-pty"
+
+    /** Fingerprint of the CLI build that [PTY_BIN_PATH] was produced from, plus its version. */
+    private const val PTY_MARKER_PATH = "$OC_HOME/.terminal-runtime"
+
+    /** Path prefix that bun uses for the embedded `opencode-pty` asset. */
+    private const val PTY_BUNFS_MARKER = "/\$bunfs/root/opencode-pty"
+
+    /** Timeout for the interpreter patch of the terminal helper. */
+    private const val PTY_PATCH_TIMEOUT_MS = 30_000L
+
+    /** Timeout for `opencode-pty --version`, also the sanity check of the patch. */
+    private const val PTY_VERIFY_TIMEOUT_MS = 20_000L
 
     /** Directory used while downloading and patching. */
     const val TMP_DIR = "$OC_HOME/tmp"
@@ -241,6 +264,16 @@ object OpenCodeBootstrap {
 
     private val VERSION_PATTERN = Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"")
     private val VERSION_OUTPUT_PATTERN = Pattern.compile("(?s).*\\d+\\.\\d+.*")
+
+    /** sha256 of the terminal helper, printed next to its bunfs marker in the CLI snapshot. */
+    private val SHA256_HEX = Regex("[0-9a-f]{64}")
+
+    /** Version of the `@opencode/pty` package next to the marker. */
+    private val VERSION_IN_TEXT = Regex("\\d+\\.\\d+\\.\\d+")
+
+    /** Sanity limits for the size of the embedded terminal helper. */
+    private const val MIN_PTY_SIZE = 256L * 1024
+    private const val MAX_PTY_SIZE = 64L * 1024 * 1024
 
     /** Notification channel used for the progress and the result of an installation. */
     const val NOTIFICATION_CHANNEL_ID = "opencode_notification_channel"
@@ -832,6 +865,11 @@ object OpenCodeBootstrap {
         append("\" 2>/dev/null\n")
         append("  if [ -n \"\$OPENCODE_SERVER_PASSWORD\" ]; then export OPENCODE_SERVER_PASSWORD; fi\n")
         append("fi\n")
+        // The terminal helper is a glibc binary with a patched interpreter; without it OpenCode
+        // would extract a copy that cannot be spawned on Android.
+        terminalRuntimePath()?.let { pty ->
+            append("OPENCODE_PTY_BIN=\"\${OPENCODE_PTY_BIN:-").append(pty).append("}\"; export OPENCODE_PTY_BIN\n")
+        }
         append(":\n")
     }
 
@@ -1050,6 +1088,11 @@ object OpenCodeBootstrap {
                         throw InstallException("Could not write the installation markers: ${e.message}")
                     }
                 }
+                // The web terminal needs the same interpreter patch as the CLI; prepare it before
+                // the shell profile is written so that it is exported there too.
+                if (ensureTerminalRuntime() == null) {
+                    status("WARNING: the terminal helper could not be prepared, the terminal may not start.")
+                }
                 installEntrypoints()
             } finally {
                 deleteQuietly(tarball)
@@ -1092,6 +1135,7 @@ object OpenCodeBootstrap {
             // for resolv.conf in the unreadable prefix of the Termux app and every host name
             // lookup of the server fails with "getaddrinfo".
             if (loader != null) relocateGlibc(loader)
+            ensureTerminalRuntime()
             refreshResolvConf(context)
             patchLoginShellPaths()
             repairNativeInterp()
@@ -2312,6 +2356,409 @@ object OpenCodeBootstrap {
         if (binary == null || !binary.isFile) return false
         val stamp = readTrimmed(File(NATIVE_INTERP_MARKER_PATH))
         return stamp.isNotEmpty() && stamp == binaryFingerprint(binary)
+    }
+
+    /* -------------------------------------------------------------- terminal helper */
+
+    private val sPtyLock = Any()
+
+    /** The prepared terminal helper, without doing any work, or null when it is missing. */
+    fun terminalRuntimePath(): String? {
+        val binary = File(PTY_BIN_PATH)
+        return if (binary.isFile && binary.canExecute()) binary.absolutePath else null
+    }
+
+    /**
+     * Make sure the `opencode-pty` helper exists and can be spawned on Android.
+     *
+     * The OpenCode CLI embeds `@opencode/pty-linux-*` and writes it to
+     * `~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty` the first time a terminal
+     * is opened. That file is a glibc executable whose `PT_INTERP` is
+     * `/lib/ld-linux-aarch64.so.1`, a path that does not exist on Android, so `posix_spawn` fails
+     * with `ENOENT: no such file or directory` and the web UI reports "Couldn't create a
+     * terminal". Patching the cached file does not stick either: every new server process
+     * validates it against the embedded sha256 and rewrites it.
+     *
+     * The asset is therefore copied out of the installed CLI once, pointed at the glibc loader
+     * (exactly like the CLI itself) and exported as `OPENCODE_PTY_BIN`, which makes OpenCode use
+     * it instead of extracting its own copy.
+     *
+     * @return the absolute path of the helper, or null when it could not be prepared.
+     */
+    fun ensureTerminalRuntime(): String? = synchronized(sPtyLock) { prepareTerminalRuntime() }
+
+    private fun prepareTerminalRuntime(): String? {
+        val cli = resolveLink(File(LINK_PATH))
+        val installed = terminalRuntimePath()
+        if (!cli.isFile) return installed
+        val fingerprint = binaryFingerprint(cli)
+        if (fingerprint.isEmpty()) return installed
+
+        val marker = readTrimmed(File(PTY_MARKER_PATH))
+        if (installed != null && marker.isNotEmpty() && marker.lineSequence().first() == fingerprint) {
+            return installed
+        }
+
+        val binDir = File(LINK_DIR)
+        if (!binDir.isDirectory && !binDir.mkdirs()) {
+            Log.w(LOG_TAG, "Could not create the directory $binDir")
+            return installed
+        }
+
+        val loader = findGlibcLoader()
+        val patchelf = File("$PREFIX/bin/patchelf")
+        if (loader == null || !isExecutable(patchelf)) {
+            Log.w(LOG_TAG, "Cannot prepare the terminal helper: glibc or patchelf is missing.")
+            return installed
+        }
+
+        val started = SystemClock.uptimeMillis()
+        val asset = findPtyAsset(cli)
+        if (asset == null) {
+            Log.w(LOG_TAG, "The embedded opencode-pty asset was not found in $cli")
+            return installed
+        }
+
+        val target = File(PTY_BIN_PATH)
+        val staged = File("$OC_HOME/bin/.opencode-pty.new")
+        deleteQuietly(staged)
+        try {
+            if (!copyRange(cli, asset.offset, asset.length, staged)) {
+                Log.w(LOG_TAG, "Could not copy the embedded opencode-pty asset")
+                return installed
+            }
+            try {
+                Os.chmod(staged.absolutePath, MODE_755)
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not make the terminal helper executable", e)
+            }
+
+            val patch = runCommand(
+                listOf(patchelf.absolutePath, "--set-interpreter", loader, staged.absolutePath),
+                PTY_PATCH_TIMEOUT_MS,
+            )
+            if (patch.first != 0) {
+                Log.w(
+                    LOG_TAG,
+                    "Could not point opencode-pty at the glibc loader: ${patch.second.takeLast(300)}",
+                )
+                return installed
+            }
+            // patchelf rewrites the file, which can drop the execute bit of the staging copy.
+            try {
+                Os.chmod(staged.absolutePath, MODE_755)
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not make the patched terminal helper executable", e)
+            }
+
+            val verify = runCommand(listOf(staged.absolutePath, "--version"), PTY_VERIFY_TIMEOUT_MS)
+            if (verify.first != 0 || !verify.second.contains("opencode-pty")) {
+                Log.w(LOG_TAG, "The patched opencode-pty does not start: ${verify.second.takeLast(300)}")
+                return installed
+            }
+
+            if (!staged.renameTo(target)) {
+                deleteQuietly(target)
+                if (!staged.renameTo(target)) {
+                    Log.w(LOG_TAG, "Could not install $PTY_BIN_PATH")
+                    return installed
+                }
+            }
+            writeTextFileQuietly(
+                File(PTY_MARKER_PATH),
+                "$fingerprint\n${asset.version}\n${asset.sha256}\n",
+            )
+            Log.i(
+                LOG_TAG,
+                "Prepared opencode-pty ${asset.version} in ${SystemClock.uptimeMillis() - started} ms",
+            )
+            return target.absolutePath
+        } finally {
+            deleteQuietly(staged)
+        }
+    }
+
+    /** An ELF image found inside the installed CLI, with the metadata of the npm package. */
+    private class PtyAsset(
+        val offset: Long,
+        val length: Long,
+        val version: String,
+        val sha256: String,
+    )
+
+    /**
+     * Locate the `opencode-pty` binary that is embedded in the installed CLI.
+     *
+     * The bun snapshot keeps the asset uncompressed next to its metadata: the marker
+     * `/$bunfs/root/opencode-pty-…`, the package version and the sha256 of the file. Every ELF
+     * image of the snapshot is checked against that sha256 (the section table gives its exact
+     * length), so a changed layout of the snapshot cannot make this install the wrong file.
+     */
+    private fun findPtyAsset(cli: File): PtyAsset? {
+        val elf = byteArrayOf(0x7f, 0x45, 0x4c, 0x46)
+        val marker = PTY_BUNFS_MARKER.toByteArray(StandardCharsets.US_ASCII)
+        val candidates = ArrayList<Long>()
+        var expected = ""
+        var version = ""
+
+        var tail = ByteArray(0)
+        var tailStart = 0L
+        try {
+            FileInputStream(cli).use { input ->
+                val chunk = ByteArray(1 shl 20)
+                while (true) {
+                    val read = input.read(chunk)
+                    if (read <= 0) break
+                    val data = if (tail.isEmpty()) {
+                        chunk.copyOf(read)
+                    } else {
+                        ByteArray(tail.size + read).also {
+                            System.arraycopy(tail, 0, it, 0, tail.size)
+                            System.arraycopy(chunk, 0, it, tail.size, read)
+                        }
+                    }
+                    val start = tailStart
+                    val end = data.size
+
+                    var i = 0
+                    while (i <= end - elf.size) {
+                        if (data[i] == elf[0] && data[i + 1] == elf[1] &&
+                            data[i + 2] == elf[2] && data[i + 3] == elf[3]
+                        ) {
+                            val offset = start + i
+                            if (candidates.isEmpty() || candidates[candidates.size - 1] != offset) {
+                                candidates.add(offset)
+                            }
+                        }
+                        i++
+                    }
+
+                    // The metadata sits right behind the marker: the package version and the
+                    // sha256 of the asset. Reading it here avoids a second pass over the file,
+                    // and the scan stops looking for markers as soon as one of them is readable.
+                    if (expected.isEmpty() && end >= marker.size) {
+                        var m = 0
+                        while (m <= end - marker.size) {
+                            if (data[m] != marker[0] || !matchesAt(data, m, marker)) {
+                                m++
+                                continue
+                            }
+                            val window = ByteArray(1024)
+                            val readWindow = RandomAccessFile(cli, "r").use { file ->
+                                file.seek(start + m)
+                                file.read(window)
+                            }
+                            val text = if (readWindow > 0) {
+                                String(window, 0, readWindow, StandardCharsets.ISO_8859_1)
+                            } else {
+                                ""
+                            }
+                            val sha = SHA256_HEX.find(text)?.value
+                            if (!sha.isNullOrEmpty()) {
+                                expected = sha
+                                version = VERSION_IN_TEXT.find(text)?.value ?: ""
+                                break
+                            }
+                            m++
+                        }
+                    }
+
+                    val keep = minOf(marker.size - 1, end)
+                    tail = data.copyOfRange(end - keep, end)
+                    tailStart = start + end - keep
+                }
+            }
+
+            // An older installation may already have extracted the asset into the cache; its
+            // sha256 is the same and lets this work even when the metadata layout changed.
+            if (expected.isEmpty()) {
+                val cached = findCachedPty()
+                if (cached != null) {
+                    expected = hashRange(cached, 0, cached.length()) ?: ""
+                    version = cached.parentFile?.name?.substringBefore('-') ?: ""
+                }
+            }
+            if (expected.isEmpty()) return null
+
+            for (offset in candidates) {
+                val length = elfLength(cli, offset) ?: continue
+                if (length < MIN_PTY_SIZE || length > MAX_PTY_SIZE) continue
+                if (hashRange(cli, offset, length) == expected) {
+                    Log.i(LOG_TAG, "Found opencode-pty $version at $offset ($length bytes)")
+                    return PtyAsset(offset, length, version, expected)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not search $cli for the embedded opencode-pty asset", e)
+        }
+        return null
+    }
+
+    /** @return the newest `opencode-pty` file that OpenCode extracted into its cache, or null. */
+    private fun findCachedPty(): File? {
+        val root = File("$HOME/.cache/opencode/bin/opencode-pty")
+        val dirs = root.listFiles() ?: return null
+        return dirs.asSequence()
+            .mapNotNull { dir -> File(dir, "opencode-pty").takeIf { it.isFile } }
+            .maxByOrNull { it.lastModified() }
+    }
+
+    /** Read the length of the ELF image that starts at [offset], from its section table. */
+    private fun elfLength(cli: File, offset: Long): Long? {
+        return try {
+            RandomAccessFile(cli, "r").use { file ->
+                if (offset + 64 > file.length()) return null
+                val header = ByteArray(64)
+                file.seek(offset)
+                file.readFully(header)
+                // ELF64, little endian.
+                if (header[4].toInt() != 2 || header[5].toInt() != 1) return null
+                val sectionOffset = readLongLE(header, 40)
+                val sectionSize = readShortLE(header, 58)
+                val sectionCount = readShortLE(header, 60)
+                if (sectionOffset <= 0 || sectionSize <= 0 || sectionCount <= 0) return null
+                val length = sectionOffset + sectionSize.toLong() * sectionCount
+                if (length <= 64 || offset + length > file.length()) null else length
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun hashRange(file: File, offset: Long, length: Long): String? {
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            RandomAccessFile(file, "r").use { raf ->
+                raf.seek(offset)
+                val buffer = ByteArray(64 * 1024)
+                var remaining = length
+                while (remaining > 0) {
+                    val read = raf.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                    if (read <= 0) return null
+                    digest.update(buffer, 0, read)
+                    remaining -= read
+                }
+            }
+            toHex(digest.digest())
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not hash $file", e)
+            null
+        }
+    }
+
+    private fun copyRange(file: File, offset: Long, length: Long, target: File): Boolean {
+        return try {
+            RandomAccessFile(file, "r").use { raf ->
+                raf.seek(offset)
+                FileOutputStream(target).use { out ->
+                    val buffer = ByteArray(64 * 1024)
+                    var remaining = length
+                    while (remaining > 0) {
+                        val read = raf.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                        if (read <= 0) return false
+                        out.write(buffer, 0, read)
+                        remaining -= read
+                    }
+                    out.fd.sync()
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not extract the opencode-pty asset", e)
+            false
+        }
+    }
+
+    private fun matchesAt(data: ByteArray, offset: Int, pattern: ByteArray): Boolean {
+        for (i in pattern.indices) {
+            if (data[offset + i] != pattern[i]) return false
+        }
+        return true
+    }
+
+    private fun readLongLE(data: ByteArray, offset: Int): Long {
+        var value = 0L
+        for (i in 0 until 8) {
+            value = value or ((data[offset + i].toLong() and 0xff) shl (8 * i))
+        }
+        return value
+    }
+
+    private fun readShortLE(data: ByteArray, offset: Int): Int =
+        (data[offset].toInt() and 0xff) or ((data[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun toHex(bytes: ByteArray): String {
+        val hex = CharArray(bytes.size * 2)
+        val digits = "0123456789abcdef"
+        for (i in bytes.indices) {
+            val value = bytes[i].toInt() and 0xff
+            hex[i * 2] = digits[value ushr 4]
+            hex[i * 2 + 1] = digits[value and 0x0f]
+        }
+        return String(hex)
+    }
+
+    /**
+     * Run a short command with a timeout and return its exit code and combined output. The
+     * environment is minimal on purpose: the glibc tools must not inherit the bionic
+     * `LD_LIBRARY_PATH` of the OpenCode server.
+     */
+    private fun runCommand(cmd: List<String>, timeoutMs: Long): Pair<Int, String> {
+        val output = StringBuilder()
+        var process: Process? = null
+        try {
+            val builder = ProcessBuilder(cmd)
+            builder.directory(File(HOME))
+            builder.redirectErrorStream(true)
+            builder.environment().apply {
+                clear()
+                put("HOME", HOME)
+                put("PATH", "$PREFIX/bin:/system/bin")
+                put("TMPDIR", TMP_DIR)
+            }
+            val started = builder.start()
+            process = started
+            val reader = Thread({
+                try {
+                    BufferedReader(InputStreamReader(started.inputStream)).use { input ->
+                        while (true) {
+                            val line = input.readLine() ?: break
+                            synchronized(output) {
+                                if (output.length < MAX_OUTPUT_CHARS) output.append(line).append('\n')
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // The process was killed, ignore.
+                }
+            }, "opencode-pty-command")
+            reader.isDaemon = true
+            reader.start()
+
+            val deadline = SystemClock.uptimeMillis() + timeoutMs
+            while (true) {
+                try {
+                    val exit = started.exitValue()
+                    return Pair(exit, synchronized(output) { output.toString() })
+                } catch (e: IllegalThreadStateException) {
+                    if (SystemClock.uptimeMillis() > deadline) {
+                        started.destroy()
+                        return Pair(-1, synchronized(output) { output.toString() })
+                    }
+                    try {
+                        Thread.sleep(PROCESS_POLL_INTERVAL_MS)
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return Pair(-1, synchronized(output) { output.toString() })
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not run $cmd", e)
+            return Pair(-1, synchronized(output) { output.toString() })
+        } finally {
+            process?.let { if (it.isAlive) it.destroy() }
+        }
     }
 
     /**

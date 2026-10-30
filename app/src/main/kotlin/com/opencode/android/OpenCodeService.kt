@@ -413,6 +413,11 @@ class OpenCodeService : Service() {
             put("SHELL", "${OpenCodeBootstrap.PREFIX}/bin/bash")
             put("DEBIAN_FRONTEND", "noninteractive")
             put("OPENCODE_DISABLE_AUTOUPDATE", "1")
+            // The web terminal spawns `opencode-pty`. The copy that OpenCode extracts for itself
+            // is a glibc binary whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on
+            // Android, so `posix_spawn` fails with ENOENT; point it at the patched helper of the
+            // app instead, which also saves the extraction on every server start.
+            OpenCodeBootstrap.ensureTerminalRuntime()?.let { put("OPENCODE_PTY_BIN", it) }
             // The 2.x server protects its API (/api, /api/session, …) with HTTP Basic auth. A
             // fixed password from the app preferences is used instead of the random one the
             // server would print, so the WebView can answer the authentication challenge itself.
