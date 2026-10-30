@@ -9,6 +9,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.lifecycle.ViewModel
 import androidx.webkit.ScriptHandler
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 
@@ -80,11 +81,15 @@ class OpenCodeWebViewModel : ViewModel() {
             // Local files and content URIs are not needed, the UI is served over loopback.
             allowFileAccess = false
             allowContentAccess = false
-            // The Material You stylesheet decides every color; algorithmic darkening would
-            // process those colors a second time and tint them unpredictably.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                isForceDarkAllowed = false
-            }
+        }
+        // The Material You stylesheet decides every color. The WebView's own algorithmic
+        // darkening (API 33+) and the View-level force dark (API 29+) would process those colors
+        // a second time and tint them unpredictably, so both are turned off.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, false)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            view.isForceDarkAllowed = false
         }
         // The page is served by our own loopback server. The bridge only reports the route.
         view.addJavascriptInterface(SessionBridge(), "OpenCodeAndroidSession")

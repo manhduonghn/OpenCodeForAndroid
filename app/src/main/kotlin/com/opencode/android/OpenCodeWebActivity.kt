@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +37,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
@@ -226,6 +228,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         setContentView(R.layout.activity_main)
         bindViews()
         bindSettings()
+        applySystemBarAppearance()
 
         // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
         // the same page: it only has to be moved from the view hierarchy of the previous activity
@@ -1122,6 +1125,22 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             builder.setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
         }
         builder.show()
+    }
+
+    /**
+     * Light or dark icons on the system bars, matching the Material You surfaces.
+     *
+     * `android:windowLightNavigationBar` only exists from API 27 while minSdk is 26, but the
+     * flag behind it is already available there, so the appearance is applied through the insets
+     * controller instead of relying on the theme attribute alone.
+     */
+    private fun applySystemBarAppearance() {
+        val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        val light = mode != Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = light
+            isAppearanceLightNavigationBars = light
+        }
     }
 
     /**

@@ -140,7 +140,7 @@ object OpenCodeWebTheme {
             MaterialColors.getColor(context, attr, ContextCompat.getColor(context, fallback))
 
         return Palette(
-            primary = color(com.google.android.material.R.attr.colorPrimary, R.color.oc_primary),
+            primary = color(androidx.appcompat.R.attr.colorPrimary, R.color.oc_primary),
             onPrimary = color(com.google.android.material.R.attr.colorOnPrimary, R.color.oc_on_primary),
             primaryContainer = color(
                 com.google.android.material.R.attr.colorPrimaryContainer,
@@ -170,7 +170,7 @@ object OpenCodeWebTheme {
                 com.google.android.material.R.attr.colorOnTertiaryContainer,
                 R.color.oc_on_tertiary_container,
             ),
-            error = color(com.google.android.material.R.attr.colorError, R.color.oc_error),
+            error = color(androidx.appcompat.R.attr.colorError, R.color.oc_error),
             onError = color(com.google.android.material.R.attr.colorOnError, R.color.oc_on_error),
             errorContainer = color(
                 com.google.android.material.R.attr.colorErrorContainer,
