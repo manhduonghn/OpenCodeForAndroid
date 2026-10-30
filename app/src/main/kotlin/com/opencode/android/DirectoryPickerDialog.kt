@@ -1,19 +1,19 @@
 package com.opencode.android
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.text.InputType
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 
 /**
@@ -59,7 +59,7 @@ object DirectoryPickerDialog {
             setText(initial.absolutePath)
             setSelection(text.length)
         }
-        val go = Button(activity).apply {
+        val go = MaterialButton(activity).apply {
             text = activity.getString(R.string.opencode_picker_go)
             textSize = 12f
             minWidth = 0
@@ -71,7 +71,7 @@ object DirectoryPickerDialog {
         )
         pathRow.addView(go)
 
-        val up = Button(activity).apply {
+        val up = MaterialButton(activity).apply {
             text = activity.getString(R.string.opencode_picker_up)
             textSize = 12f
             minWidth = 0
@@ -140,7 +140,7 @@ object DirectoryPickerDialog {
 
         load(initial)
 
-        AlertDialog.Builder(activity)
+        MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.opencode_picker_title)
             .setView(content)
             .setPositiveButton(R.string.opencode_picker_choose) { _, _ ->

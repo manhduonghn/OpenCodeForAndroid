@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Material You: Theme.Material3.DayNight follows the system light/dark setting, and
+      DynamicColors replaces the seed values below with the wallpaper palette on Android 12+.
+    -->
+    <style name="Theme.OpenCode" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/oc_primary</item>
+        <item name="colorOnPrimary">@color/oc_on_primary</item>
+        <item name="colorPrimaryContainer">@color/oc_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/oc_on_primary_container</item>
+        <item name="colorSecondary">@color/oc_secondary</item>
+        <item name="colorOnSecondary">@color/oc_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/oc_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/oc_on_secondary_container</item>
+        <item name="colorTertiary">@color/oc_tertiary</item>
+        <item name="colorOnTertiary">@color/oc_on_tertiary</item>
+        <item name="colorTertiaryContainer">@color/oc_tertiary_container</item>
+        <item name="colorOnTertiaryContainer">@color/oc_on_tertiary_container</item>
+        <item name="colorError">@color/oc_error</item>
+        <item name="colorOnError">@color/oc_on_error</item>
+        <item name="colorErrorContainer">@color/oc_error_container</item>
+        <item name="colorOnErrorContainer">@color/oc_on_error_container</item>
+
+        <item name="android:colorBackground">@color/oc_background</item>
+        <item name="colorOnBackground">@color/oc_on_background</item>
+        <item name="colorSurface">@color/oc_surface</item>
+        <item name="colorOnSurface">@color/oc_on_surface</item>
+        <item name="colorSurfaceVariant">@color/oc_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/oc_on_surface_variant</item>
+        <item name="colorOutline">@color/oc_outline</item>
+        <item name="colorOutlineVariant">@color/oc_outline_variant</item>
+        <item name="colorSurfaceInverse">@color/oc_surface_inverse</item>
+        <item name="colorOnSurfaceInverse">@color/oc_on_surface_inverse</item>
+        <item name="colorPrimaryInverse">@color/oc_primary_inverse</item>
+        <item name="colorSurfaceContainerLowest">@color/oc_surface_container_lowest</item>
+        <item name="colorSurfaceContainerLow">@color/oc_surface_container_low</item>
+        <item name="colorSurfaceContainer">@color/oc_surface_container</item>
+        <item name="colorSurfaceContainerHigh">@color/oc_surface_container_high</item>
+        <item name="colorSurfaceContainerHighest">@color/oc_surface_container_highest</item>
+
+        <item name="android:windowBackground">?attr/colorSurface</item>
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">@bool/oc_light_system_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/oc_light_system_bars</item>
+        <item name="android:windowActionModeOverlay">true</item>
+
+        <item name="materialCardViewStyle">@style/Widget.Material3.CardView.Filled</item>
+    </style>
+</resources>

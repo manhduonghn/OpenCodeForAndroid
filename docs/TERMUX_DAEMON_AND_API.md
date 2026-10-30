@@ -523,16 +523,33 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     SDK và máy chưa cài APK mới. Sau khi cài APK: mở app một lần, chạy
     `pkg install openjdk`, rồi `java -version`.
 
+### P1.7 — Giao diện Material You cho app và WebUI (đã làm)
+
+19. **Native:** `Theme.Material3.DayNight.NoActionBar`, `OpenCodeApplication` gọi
+    `DynamicColors.applyToActivitiesIfAvailable` nên Android 12+ lấy bảng màu từ hình nền; bản
+    cũ dùng bảng seed cam trong `values/colors.xml` + `values-night/colors.xml`. Layout dùng
+    `MaterialButton`, `MaterialSwitch`, `LinearProgressIndicator`, card bo tròn và màu theo
+    theme attribute thay vì màu hard-code.
+20. **WebUI:** `OpenCodeWebTheme` đọc các role Material 3 từ theme của activity rồi sinh CSS
+    ghi đè token của OpenCode: các token ngữ nghĩa `--v2-*` (background, text, icon, border,
+    overlay, state, agent), ramp `--v2-blue-*`, toàn bộ bộ tên cũ mà component OC-2 vẫn đọc
+    (`--background-*`, `--text-*`, `--icon-*`, `--border-*`, `--surface-*`, màu diff) và màu
+    syntax/markdown. CSS được đăng ký bằng `WebViewCompat.addDocumentStartJavaScript`, nên
+    trang có màu đúng ngay lần paint đầu; sau `onPageFinished` và mỗi lần activity gắn lại
+    WebView (xoay máy, đổi dark mode) script được eval lại trên document đang sống. Script cũng
+    ghim `data-color-scheme` theo chế độ sáng/tối native để web app không tự chọn bảng màu
+    khác, và nền WebView đặt bằng màu surface của app.
+
 ### P2 — Nâng cao
 
-19. **Shizuku/root detached server** (như AndroidHarness `spawnDetached`):
+21. **Shizuku/root detached server** (như AndroidHarness `spawnDetached`):
     - chạy `opencode serve` trong Shizuku user service → sống sót khi app chết;
     - app chỉ là client HTTP tới `127.0.0.1`;
     - chỉ bật khi user có Shizuku/root, kèm cảnh báo bảo mật.
-20. **runit/termux-services** như tiện ích: cho user chạy sshd/cron; tài liệu ghi rõ
+22. **runit/termux-services** như tiện ích: cho user chạy sshd/cron; tài liệu ghi rõ
     "chết cùng app", không quảng cáo là daemon thật.
-21. **Live Updates** (Android 16) cho notification khi agent đang chạy (tùy chọn).
-22. **Health check** định kỳ bằng `GET /api/info` thay vì chỉ `Socket.connect`, để phân
+23. **Live Updates** (Android 16) cho notification khi agent đang chạy (tùy chọn).
+24. **Health check** định kỳ bằng `GET /api/info` thay vì chỉ `Socket.connect`, để phân
     biệt "port mở" và "server thật sự khoẻ".
 
 ---

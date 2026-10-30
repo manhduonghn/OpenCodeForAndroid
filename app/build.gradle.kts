@@ -122,7 +122,12 @@ android {
 
 dependencies {
     implementation("androidx.activity:activity-ktx:1.12.4")
+    implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
+    // Material 3 (Material You) for the native screens, including dynamic color on Android 12+.
+    implementation("com.google.android.material:material:1.14.0")
+    // Document-start script: themes the OpenCode web UI before it paints, not after.
+    implementation("androidx.webkit:webkit:1.18.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
 }

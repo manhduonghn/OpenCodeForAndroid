@@ -1,7 +1,6 @@
 package com.opencode.android
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -31,13 +30,15 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.materialswitch.MaterialSwitch
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -68,7 +69,7 @@ import java.util.concurrent.Executors
  * The settings panel groups everything that does not belong to the chat itself: the session that
  * is open, updates, the wake lock, shared storage, the downloaded files and GitHub.
  */
-class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListener,
+class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListener,
     OpenCodeWebViewModel.Ui {
 
     private val viewModel: OpenCodeWebViewModel by viewModels()
@@ -86,12 +87,12 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var updatesStatus: TextView
     private lateinit var updatesCheck: Button
     private lateinit var updatesUpdate: Button
-    private lateinit var updatesAuto: Switch
-    private lateinit var wakeLockSwitch: Switch
+    private lateinit var updatesAuto: MaterialSwitch
+    private lateinit var wakeLockSwitch: MaterialSwitch
     private lateinit var wakeLockStatus: TextView
     private lateinit var batteryOptimizationButton: Button
-    private lateinit var bootStartSwitch: Switch
-    private lateinit var watchdogSwitch: Switch
+    private lateinit var bootStartSwitch: MaterialSwitch
+    private lateinit var watchdogSwitch: MaterialSwitch
     private lateinit var keepAliveHelpButton: Button
     private lateinit var storageStatus: TextView
     private lateinit var storageGrant: Button
@@ -240,6 +241,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         )
 
         configureWebView()
+        applyWebTheme()
 
         // Pre-populate the credentials of the realm the server announces
         // (WWW-Authenticate: Basic realm="Secure Area"), so the WebView answers the very first
@@ -421,7 +423,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private fun listMessage(message: String): View {
         val view = TextView(this)
         view.text = message
-        view.setTextColor(getColor(R.color.oc_text_faint))
+        view.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutline, getColor(R.color.oc_text_faint)))
         view.textSize = 12f
         view.setPadding(dp(2), dp(8), dp(2), dp(4))
         return view
@@ -509,7 +511,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     /** Explain the OEM settings and the phantom process killer that a foreground service cannot beat. */
     private fun showKeepAliveHelp() {
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.opencode_keepalive_help_title)
             .setMessage(R.string.opencode_keepalive_help_message)
             .setPositiveButton(R.string.opencode_ok, null)
@@ -606,7 +608,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                     }
                     val row = TextView(this)
                     row.text = text
-                    row.setTextColor(getColor(R.color.oc_text_faint))
+                    row.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutline, getColor(R.color.oc_text_faint)))
                     row.textSize = 11f
                     row.setPadding(0, dp(2), 0, dp(2))
                     storagePaths.addView(row)
@@ -904,7 +906,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         )
         row.text = repo.name + " · " + privacy +
             if (repo.description.isEmpty()) "" else "\n" + repo.description
-        row.setTextColor(getColor(R.color.oc_text_muted))
+        row.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant, getColor(R.color.oc_text_muted)))
         row.textSize = 12f
         row.setLineSpacing(dp(2).toFloat(), 1f)
         row.setPadding(dp(10), dp(8), dp(10), dp(8))
@@ -1089,7 +1091,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         if (OpenCodeSettings.batteryPromptShown(this)) return
         OpenCodeSettings.setBatteryPromptShown(this, true)
         if (isIgnoringBatteryOptimizations()) return
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.opencode_battery_prompt_title)
             .setMessage(R.string.opencode_battery_prompt_message)
             .setPositiveButton(R.string.opencode_battery_prompt_allow) { _, _ ->
@@ -1112,7 +1114,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             result.cancel()
             return
         }
-        val builder = AlertDialog.Builder(this)
+        val builder = MaterialAlertDialogBuilder(this)
             .setMessage(message)
             .setOnCancelListener { result.cancel() }
             .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
@@ -1120,6 +1122,19 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             builder.setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
         }
         builder.show()
+    }
+
+    /**
+     * Paint the WebView and the web UI with the Material You palette of this activity.
+     *
+     * The same stylesheet is registered as a document-start script (first paint) and evaluated on
+     * the retained document (rotation, dark-mode change). The native surface color is set behind
+     * the WebView as well, so the area that is not painted yet matches instead of flashing white.
+     */
+    private fun applyWebTheme() {
+        val theme = OpenCodeWebTheme.resolve(this)
+        webView.setBackgroundColor(theme.surface)
+        viewModel.installWebTheme(theme.script)
     }
 
     private fun configureWebView() {
@@ -1140,6 +1155,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                 if (url != null && url.startsWith(baseUrl)) {
                     reportSession(url)
                     viewModel.installSessionWatcher()
+                    // A page that started loading before the stylesheet was registered would
+                    // keep the stock colors; make sure the live document is themed.
+                    viewModel.applyWebTheme()
                     // A re-pair after a server restart keeps the chat the user was reading: the
                     // start page was loaded with the fresh token, open the session on top of it.
                     val pending = pendingSessionId

@@ -1,18 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Material 3 color roles of the light scheme, seeded with the OpenCode orange.
+  On Android 12+ DynamicColors (see OpenCodeApplication) replaces these values with the tones
+  derived from the user's wallpaper, so the app follows Material You.
+-->
 <resources>
-    <color name="oc_background">#FF101014</color>
-    <color name="oc_surface">#FF18181F</color>
-    <color name="oc_card">#FF1B1B23</color>
-    <color name="oc_card_border">#FF2A2A35</color>
-    <color name="oc_input">#FF24242E</color>
-    <color name="oc_text">#FFF4F4F7</color>
-    <color name="oc_text_muted">#FFA5A5B4</color>
-    <color name="oc_text_faint">#FF77778A</color>
-    <color name="oc_accent">#FFFF7A45</color>
-    <color name="oc_accent_soft">#33FF7A45</color>
-    <color name="oc_ok">#FF4CD48A</color>
-    <color name="oc_ok_soft">#334CD48A</color>
-    <color name="oc_warn">#FFF0B44C</color>
-    <color name="oc_error">#FFFF6B6B</color>
-    <color name="oc_divider">#FF2A2A35</color>
+    <color name="oc_primary">#FFA63F12</color>
+    <color name="oc_on_primary">#FFFFFFFF</color>
+    <color name="oc_primary_container">#FFFFDBCB</color>
+    <color name="oc_on_primary_container">#FF3A0B00</color>
+    <color name="oc_secondary">#FF77574A</color>
+    <color name="oc_on_secondary">#FFFFFFFF</color>
+    <color name="oc_secondary_container">#FFFFDBCB</color>
+    <color name="oc_on_secondary_container">#FF2C160B</color>
+    <color name="oc_tertiary">#FF6C5D2F</color>
+    <color name="oc_on_tertiary">#FFFFFFFF</color>
+    <color name="oc_tertiary_container">#FFF5E1A7</color>
+    <color name="oc_on_tertiary_container">#FF231B00</color>
+    <color name="oc_error">#FFBA1A1A</color>
+    <color name="oc_on_error">#FFFFFFFF</color>
+    <color name="oc_error_container">#FFFFDAD6</color>
+    <color name="oc_on_error_container">#FF410002</color>
+
+    <color name="oc_background">#FFFFF8F6</color>
+    <color name="oc_on_background">#FF221A17</color>
+    <color name="oc_surface">#FFFFF8F6</color>
+    <color name="oc_on_surface">#FF221A17</color>
+    <color name="oc_surface_variant">#FFF4DED5</color>
+    <color name="oc_on_surface_variant">#FF53433D</color>
+    <color name="oc_outline">#FF85736C</color>
+    <color name="oc_outline_variant">#FFD8C2B9</color>
+    <color name="oc_surface_inverse">#FF382E2B</color>
+    <color name="oc_on_surface_inverse">#FFFFEDE6</color>
+    <color name="oc_primary_inverse">#FFFFB596</color>
+
+    <color name="oc_surface_container_lowest">#FFFFFFFF</color>
+    <color name="oc_surface_container_low">#FFFFF1EC</color>
+    <color name="oc_surface_container">#FFFCEAE3</color>
+    <color name="oc_surface_container_high">#FFF6E4DD</color>
+    <color name="oc_surface_container_highest">#FFF0DED7</color>
+    <color name="oc_scrim">#FF000000</color>
+
+    <!-- Aliases kept for the programmatic views of OpenCodeWebActivity. -->
+    <color name="oc_text">@color/oc_on_surface</color>
+    <color name="oc_text_muted">@color/oc_on_surface_variant</color>
+    <color name="oc_text_faint">@color/oc_outline</color>
+    <color name="oc_card">@color/oc_surface_container_low</color>
+    <color name="oc_card_border">@color/oc_outline_variant</color>
+    <color name="oc_input">@color/oc_surface_container_highest</color>
+    <color name="oc_accent">@color/oc_primary</color>
+    <color name="oc_accent_soft">#33A63F12</color>
+    <color name="oc_ok">#FF146C2E</color>
+    <color name="oc_ok_soft">#33146C2E</color>
+    <color name="oc_warn">#FF7A5900</color>
+    <color name="oc_divider">@color/oc_outline_variant</color>
 </resources>

@@ -1,62 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/oc_background">
+    android:background="?attr/colorSurface">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical">
 
+        <!-- Material 3 top app bar: surface container, medium title and tonal icon buttons. -->
         <LinearLayout
             android:id="@+id/top_bar"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:background="@color/oc_surface"
-            android:elevation="4dp"
+            android:layout_height="64dp"
+            android:background="?attr/colorSurfaceContainer"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="14dp"
-            android:paddingEnd="6dp">
+            android:paddingStart="20dp"
+            android:paddingEnd="8dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/opencode_web_title"
-                android:textColor="@color/oc_text"
-                android:textSize="17sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/top_bar_subtitle"
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
                 android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="@string/opencode_web_subtitle"
-                android:textColor="@color/oc_text_muted"
-                android:textSize="11sp" />
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="@string/opencode_web_title"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:id="@+id/top_bar_subtitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="@string/opencode_web_subtitle"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="12sp" />
+            </LinearLayout>
 
             <ImageButton
                 android:id="@+id/refresh_button"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
-                android:background="@drawable/bg_button_ghost"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_icon_button"
                 android:contentDescription="@string/opencode_webui_refresh"
-                android:padding="9dp"
-                android:src="@drawable/ic_refresh" />
+                android:padding="10dp"
+                android:src="@drawable/ic_refresh"
+                android:tint="?attr/colorOnSurfaceVariant" />
 
             <ImageButton
                 android:id="@+id/settings_button"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
-                android:background="@drawable/bg_button_ghost"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_icon_button"
                 android:contentDescription="@string/opencode_settings_open"
-                android:padding="9dp"
-                android:src="@drawable/ic_settings" />
+                android:padding="10dp"
+                android:src="@drawable/ic_settings"
+                android:tint="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
 
         <FrameLayout
@@ -75,55 +84,61 @@
                 android:id="@+id/status_panel"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
+                android:background="?attr/colorSurface"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:padding="28dp">
+                android:padding="32dp">
 
                 <TextView
                     android:id="@+id/status_title"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
                     android:gravity="center"
                     android:text="@string/opencode_preparing"
-                    android:textColor="@color/oc_text"
-                    android:textSize="18sp"
-                    android:textStyle="bold" />
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="22sp" />
 
-                <ProgressBar
+                <com.google.android.material.progressindicator.LinearProgressIndicator
                     android:id="@+id/status_progress"
-                    style="?android:attr/progressBarStyleHorizontal"
+                    style="@style/Widget.Material3.LinearProgressIndicator"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="20dp"
+                    android:layout_marginTop="24dp"
                     android:max="100"
-                    android:progress="0" />
+                    android:progress="0"
+                    app:indicatorColor="?attr/colorPrimary"
+                    app:trackColor="?attr/colorSurfaceContainerHighest" />
 
                 <TextView
                     android:id="@+id/status_detail"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
+                    android:layout_marginTop="16dp"
                     android:gravity="center"
+                    android:lineSpacingExtra="2dp"
                     android:text="@string/opencode_first_start"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="13sp" />
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="14sp" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/status_retry"
+                    style="@style/Widget.Material3.Button"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="22dp"
+                    android:layout_marginTop="24dp"
+                    android:minHeight="40dp"
                     android:text="@string/opencode_retry"
                     android:visibility="gone" />
             </LinearLayout>
         </FrameLayout>
     </LinearLayout>
 
-    <ScrollView
+    <androidx.core.widget.NestedScrollView
         android:id="@+id/settings_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/oc_background"
+        android:background="?attr/colorSurface"
         android:fillViewport="true"
         android:visibility="gone">
 
@@ -131,10 +146,10 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingStart="16dp"
-            android:paddingTop="14dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="28dp">
+            android:paddingStart="20dp"
+            android:paddingTop="20dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="32dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -151,40 +166,39 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
                         android:text="@string/opencode_settings"
-                        android:textColor="@color/oc_text"
-                        android:textSize="23sp"
-                        android:textStyle="bold" />
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="26sp" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:text="@string/opencode_settings_subtitle"
-                        android:textColor="@color/oc_text_muted"
-                        android:textSize="12sp" />
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textSize="13sp" />
                 </LinearLayout>
 
                 <ImageButton
                     android:id="@+id/settings_close"
-                    android:layout_width="42dp"
-                    android:layout_height="42dp"
-                    android:background="@drawable/bg_button_ghost"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/bg_icon_button"
                     android:contentDescription="@string/opencode_settings_close"
-                    android:padding="9dp"
-                    android:src="@drawable/ic_close" />
+                    android:padding="10dp"
+                    android:src="@drawable/ic_close"
+                    android:tint="?attr/colorOnSurfaceVariant" />
             </LinearLayout>
-
-
 
             <!-- Updates -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="16dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -193,91 +207,85 @@
                     android:orientation="horizontal">
 
                     <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
                         android:contentDescription="@null"
-                        android:src="@drawable/ic_update" />
+                        android:src="@drawable/ic_update"
+                        android:tint="?attr/colorPrimary" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
+                        android:layout_marginStart="12dp"
                         android:layout_weight="1"
+                        android:fontFamily="sans-serif-medium"
                         android:text="@string/opencode_updates"
-                        android:textColor="@color/oc_text"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="17sp" />
                 </LinearLayout>
 
                 <TextView
                     android:id="@+id/updates_current"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="12sp" />
+                    android:layout_marginTop="12dp"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="13sp" />
 
                 <TextView
                     android:id="@+id/updates_status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:textColor="@color/oc_text"
-                    android:textSize="12sp" />
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="13sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="12dp"
                     android:orientation="horizontal">
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/updates_check"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
                         android:layout_width="wrap_content"
-                        android:layout_height="40dp"
-                        android:background="@drawable/bg_button_outline"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="14dp"
-                        android:text="@string/opencode_updates_check"
-                        android:textAllCaps="false"
-                        android:textColor="@color/oc_text"
-                        android:textSize="13sp" />
+                        android:text="@string/opencode_updates_check" />
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/updates_update"
+                        style="@style/Widget.Material3.Button"
                         android:layout_width="wrap_content"
-                        android:layout_height="40dp"
+                        android:layout_height="wrap_content"
                         android:layout_marginStart="8dp"
-                        android:background="@drawable/bg_button_accent"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="14dp"
                         android:text="@string/opencode_updates_update_now"
-                        android:textAllCaps="false"
-                        android:textColor="#FF1A1A20"
-                        android:textSize="13sp"
                         android:visibility="gone" />
                 </LinearLayout>
 
-                <Switch
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/updates_auto"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
+                    android:minHeight="48dp"
                     android:text="@string/opencode_updates_auto"
-                    android:textColor="@color/oc_text"
-                    android:textSize="13sp" />
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="14sp" />
             </LinearLayout>
 
             <!-- Battery / wake lock -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -286,29 +294,31 @@
                     android:orientation="horizontal">
 
                     <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
                         android:contentDescription="@null"
-                        android:src="@drawable/ic_update" />
+                        android:src="@drawable/ic_battery"
+                        android:tint="?attr/colorPrimary" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
+                        android:layout_marginStart="12dp"
                         android:layout_weight="1"
+                        android:fontFamily="sans-serif-medium"
                         android:text="@string/opencode_battery_title"
-                        android:textColor="@color/oc_text"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="17sp" />
                 </LinearLayout>
 
-                <Switch
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/wakelock_switch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
+                    android:minHeight="48dp"
                     android:text="@string/opencode_battery_wakelock"
-                    android:textColor="@color/oc_text"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="14sp" />
 
                 <TextView
@@ -316,7 +326,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:textColor="@color/oc_text_muted"
+                    android:textColor="?attr/colorOnSurfaceVariant"
                     android:textSize="12sp" />
 
                 <TextView
@@ -324,30 +334,27 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="@string/opencode_battery_wakelock_desc"
-                    android:textColor="@color/oc_text_faint"
-                    android:textSize="11sp" />
+                    android:textColor="?attr/colorOutline"
+                    android:textSize="12sp" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/battery_optimization_button"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
-                    android:layout_marginTop="10dp"
-                    android:background="@drawable/bg_button_outline"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:minHeight="40dp"
                     android:minWidth="0dp"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="@string/opencode_battery_optimization"
-                    android:textAllCaps="false"
-                    android:textColor="@color/oc_text"
-                    android:textSize="13sp" />
+                    android:text="@string/opencode_battery_optimization" />
 
-                <Switch
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/boot_start_switch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
+                    android:minHeight="48dp"
                     android:text="@string/opencode_battery_boot"
-                    android:textColor="@color/oc_text"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="14sp" />
 
                 <TextView
@@ -355,16 +362,17 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
                     android:text="@string/opencode_battery_boot_desc"
-                    android:textColor="@color/oc_text_faint"
-                    android:textSize="11sp" />
+                    android:textColor="?attr/colorOutline"
+                    android:textSize="12sp" />
 
-                <Switch
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/watchdog_switch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
+                    android:minHeight="48dp"
                     android:text="@string/opencode_battery_watchdog"
-                    android:textColor="@color/oc_text"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="14sp" />
 
                 <TextView
@@ -372,40 +380,36 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
                     android:text="@string/opencode_battery_watchdog_desc"
-                    android:textColor="@color/oc_text_faint"
-                    android:textSize="11sp" />
+                    android:textColor="?attr/colorOutline"
+                    android:textSize="12sp" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:text="@string/opencode_battery_keepalive_summary"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="11sp" />
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="12sp" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/keepalive_help_button"
+                    style="@style/Widget.Material3.Button.TextButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_button_outline"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:minHeight="40dp"
                     android:minWidth="0dp"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="@string/opencode_battery_keepalive_help"
-                    android:textAllCaps="false"
-                    android:textColor="@color/oc_text"
-                    android:textSize="13sp" />
+                    android:text="@string/opencode_battery_keepalive_help" />
             </LinearLayout>
 
             <!-- Shared storage / SD card -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -414,37 +418,38 @@
                     android:orientation="horizontal">
 
                     <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
                         android:contentDescription="@null"
-                        android:src="@drawable/ic_storage" />
+                        android:src="@drawable/ic_storage"
+                        android:tint="?attr/colorPrimary" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
+                        android:layout_marginStart="12dp"
                         android:layout_weight="1"
+                        android:fontFamily="sans-serif-medium"
                         android:text="@string/opencode_storage_title"
-                        android:textColor="@color/oc_text"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="17sp" />
                 </LinearLayout>
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
                     android:text="@string/opencode_storage_desc"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="12sp" />
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="13sp" />
 
                 <TextView
                     android:id="@+id/storage_status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:textColor="@color/oc_text"
-                    android:textSize="12sp" />
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="13sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -452,32 +457,24 @@
                     android:layout_marginTop="10dp"
                     android:orientation="horizontal">
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/storage_grant"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
                         android:layout_width="wrap_content"
-                        android:layout_height="40dp"
-                        android:background="@drawable/bg_button_outline"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="14dp"
-                        android:text="@string/opencode_storage_grant"
-                        android:textAllCaps="false"
-                        android:textColor="@color/oc_text"
-                        android:textSize="13sp" />
+                        android:text="@string/opencode_storage_grant" />
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/storage_pick"
+                        style="@style/Widget.Material3.Button"
                         android:layout_width="wrap_content"
-                        android:layout_height="40dp"
+                        android:layout_height="wrap_content"
                         android:layout_marginStart="8dp"
-                        android:background="@drawable/bg_button_accent"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="14dp"
-                        android:text="@string/opencode_storage_pick"
-                        android:textAllCaps="false"
-                        android:textColor="#FF1A1A20"
-                        android:textSize="13sp" />
+                        android:text="@string/opencode_storage_pick" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -492,18 +489,18 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
                     android:text="@string/opencode_storage_hint"
-                    android:textColor="@color/oc_text_faint"
-                    android:textSize="11sp" />
+                    android:textColor="?attr/colorOutline"
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <!-- Downloaded files -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -512,33 +509,30 @@
                     android:orientation="horizontal">
 
                     <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
                         android:contentDescription="@null"
-                        android:src="@drawable/ic_download" />
+                        android:src="@drawable/ic_download"
+                        android:tint="?attr/colorPrimary" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
+                        android:layout_marginStart="12dp"
                         android:layout_weight="1"
+                        android:fontFamily="sans-serif-medium"
                         android:text="@string/opencode_files_title"
-                        android:textColor="@color/oc_text"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="17sp" />
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/files_manage"
+                        style="@style/Widget.Material3.Button.TextButton"
                         android:layout_width="wrap_content"
-                        android:layout_height="36dp"
-                        android:background="@drawable/bg_button_outline"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:text="@string/opencode_files_manage"
-                        android:textAllCaps="false"
-                        android:textColor="@color/oc_text"
-                        android:textSize="12sp" />
+                        android:text="@string/opencode_files_manage" />
                 </LinearLayout>
 
                 <TextView
@@ -546,18 +540,18 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:text="@string/opencode_files_desc"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="12sp" />
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <!-- GitHub -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -566,20 +560,21 @@
                     android:orientation="horizontal">
 
                     <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
                         android:contentDescription="@null"
-                        android:src="@drawable/ic_github" />
+                        android:src="@drawable/ic_github"
+                        android:tint="?attr/colorPrimary" />
 
                     <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
+                        android:layout_marginStart="12dp"
                         android:layout_weight="1"
+                        android:fontFamily="sans-serif-medium"
                         android:text="@string/opencode_settings_github"
-                        android:textColor="@color/oc_text"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="17sp" />
 
                     <ProgressBar
                         android:id="@+id/github_progress"
@@ -587,6 +582,7 @@
                         android:layout_width="20dp"
                         android:layout_height="20dp"
                         android:layout_marginEnd="8dp"
+                        android:indeterminateTint="?attr/colorPrimary"
                         android:visibility="gone" />
 
                     <TextView
@@ -594,86 +590,74 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:background="@drawable/bg_chip"
-                        android:paddingStart="8dp"
-                        android:paddingTop="3dp"
-                        android:paddingEnd="8dp"
-                        android:paddingBottom="3dp"
+                        android:paddingStart="10dp"
+                        android:paddingTop="4dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="4dp"
                         android:text="@string/opencode_settings_github_not_connected"
-                        android:textColor="@color/oc_accent"
-                        android:textSize="10sp" />
+                        android:textColor="?attr/colorOnSecondaryContainer"
+                        android:textSize="11sp" />
                 </LinearLayout>
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
                     android:text="@string/opencode_settings_github_desc"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="12sp" />
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="13sp" />
 
                 <TextView
                     android:id="@+id/github_status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:textColor="@color/oc_text"
-                    android:textSize="12sp" />
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="13sp" />
 
                 <TextView
                     android:id="@+id/github_install_status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
+                    android:layout_marginTop="8dp"
                     android:background="@drawable/bg_input"
                     android:fontFamily="monospace"
                     android:maxLines="8"
-                    android:padding="8dp"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="10sp"
+                    android:padding="12dp"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="11sp"
                     android:visibility="gone" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/github_install"
+                    style="@style/Widget.Material3.Button"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_button_accent"
+                    android:minHeight="40dp"
                     android:minWidth="0dp"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
                     android:text="@string/opencode_settings_github_install"
-                    android:textAllCaps="false"
-                    android:textColor="#FF1A1A20"
-                    android:textSize="13sp"
                     android:visibility="gone" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/github_login"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_button_outline"
+                    android:minHeight="40dp"
                     android:minWidth="0dp"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="@string/opencode_settings_github_connect"
-                    android:textAllCaps="false"
-                    android:textColor="@color/oc_text"
-                    android:textSize="13sp" />
+                    android:text="@string/opencode_settings_github_connect" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/github_logout"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_button_outline"
+                    android:minHeight="40dp"
                     android:minWidth="0dp"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
                     android:text="@string/opencode_settings_github_disconnect"
-                    android:textAllCaps="false"
-                    android:textColor="@color/oc_text"
-                    android:textSize="13sp"
                     android:visibility="gone" />
 
                 <TextView
@@ -681,20 +665,22 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="12sp"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="13sp"
                     android:visibility="gone" />
 
                 <TextView
                     android:id="@+id/github_code"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:background="@drawable/bg_input"
                     android:fontFamily="monospace"
-                    android:padding="10dp"
-                    android:textColor="@color/oc_accent"
-                    android:textSize="16sp"
+                    android:gravity="center"
+                    android:letterSpacing="0.12"
+                    android:padding="14dp"
+                    android:textColor="?attr/colorPrimary"
+                    android:textSize="18sp"
                     android:textStyle="bold"
                     android:visibility="gone" />
 
@@ -704,33 +690,25 @@
                     android:layout_marginTop="6dp"
                     android:orientation="horizontal">
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/github_copy"
+                        style="@style/Widget.Material3.Button.TextButton"
                         android:layout_width="wrap_content"
-                        android:layout_height="36dp"
-                        android:background="@drawable/bg_button_outline"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
                         android:text="@string/opencode_settings_github_copy"
-                        android:textAllCaps="false"
-                        android:textColor="@color/oc_text"
-                        android:textSize="12sp"
                         android:visibility="gone" />
 
-                    <Button
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/github_link"
+                        style="@style/Widget.Material3.Button.TextButton"
                         android:layout_width="wrap_content"
-                        android:layout_height="36dp"
+                        android:layout_height="wrap_content"
                         android:layout_marginStart="8dp"
-                        android:background="@drawable/bg_button_outline"
+                        android:minHeight="40dp"
                         android:minWidth="0dp"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
                         android:text="@string/opencode_settings_github_link"
-                        android:textAllCaps="false"
-                        android:textColor="@color/oc_text"
-                        android:textSize="12sp"
                         android:visibility="gone" />
                 </LinearLayout>
 
@@ -739,8 +717,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
-                    android:textColor="@color/oc_text_faint"
-                    android:textSize="11sp"
+                    android:textColor="?attr/colorOutline"
+                    android:textSize="12sp"
                     android:visibility="gone" />
 
                 <LinearLayout
@@ -754,30 +732,26 @@
                     <EditText
                         android:id="@+id/github_clone_url"
                         android:layout_width="match_parent"
-                        android:layout_height="44dp"
+                        android:layout_height="52dp"
                         android:background="@drawable/bg_input"
                         android:hint="@string/opencode_settings_github_url"
                         android:inputType="textUri"
                         android:maxLines="1"
-                        android:paddingStart="10dp"
-                        android:paddingEnd="10dp"
-                        android:textColor="@color/oc_text"
-                        android:textColorHint="@color/oc_text_faint"
-                        android:textSize="12sp" />
-
-                    <Button
-                        android:id="@+id/github_clone"
-                        android:layout_width="wrap_content"
-                        android:layout_height="40dp"
-                        android:layout_marginTop="8dp"
-                        android:background="@drawable/bg_button_outline"
-                        android:minWidth="0dp"
                         android:paddingStart="14dp"
                         android:paddingEnd="14dp"
-                        android:text="@string/opencode_settings_github_clone"
-                        android:textAllCaps="false"
-                        android:textColor="@color/oc_text"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textColorHint="?attr/colorOutline"
                         android:textSize="13sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/github_clone"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:minHeight="40dp"
+                        android:minWidth="0dp"
+                        android:text="@string/opencode_settings_github_clone" />
 
                     <TextView
                         android:id="@+id/github_clone_status"
@@ -787,9 +761,9 @@
                         android:background="@drawable/bg_input"
                         android:fontFamily="monospace"
                         android:maxLines="10"
-                        android:padding="8dp"
-                        android:textColor="@color/oc_text_muted"
-                        android:textSize="10sp"
+                        android:padding="12dp"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textSize="11sp"
                         android:visibility="gone" />
                 </LinearLayout>
 
@@ -801,29 +775,21 @@
                     android:orientation="vertical"
                     android:visibility="gone">
 
-                    <LinearLayout
+                    <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Repository"
-                            android:textColor="@color/oc_text_faint"
-                            android:textSize="11sp"
-                            android:textStyle="bold" />
-                    </LinearLayout>
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Repository"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textSize="12sp" />
 
                     <TextView
                         android:id="@+id/github_repo_status"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:textColor="@color/oc_text_muted"
-                        android:textSize="11sp" />
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textSize="12sp" />
 
                     <LinearLayout
                         android:id="@+id/github_repo_list"
@@ -833,5 +799,5 @@
                 </LinearLayout>
             </LinearLayout>
         </LinearLayout>
-    </ScrollView>
+    </androidx.core.widget.NestedScrollView>
 </FrameLayout>

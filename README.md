@@ -4,10 +4,12 @@
 natively on Android — no root, no proot, no chroot — inside its **own package id**
 (`com.opencode.android`) and its **own Linux prefix**, without the `com.termux` app.
 
-The app is written **entirely in Kotlin** (no Java sources; the only AndroidX
-dependency is `activity`/`lifecycle-viewmodel` for the `ComponentActivity` and
-the `ViewModel` that owns the WebView — everything else uses the framework), and
-it keeps no crash log or diagnostics files of its own — see [Logging](#logging).
+The app is written **entirely in Kotlin** (no Java sources). Its AndroidX
+dependencies are `activity`/`lifecycle-viewmodel` for the `AppCompatActivity`
+and the `ViewModel` that owns the WebView, `appcompat` + Material 3 for the
+Material You theme and dialogs, and `webkit` for the document-start script that
+themes the web UI — everything else uses the framework, and the app keeps no
+crash log or diagnostics files of its own — see [Logging](#logging).
 
 ## How it works
 
@@ -200,15 +202,34 @@ app shows a progress screen instead of a blank WebView. The WebView only loads
 the web UI once the server really accepts connections, which avoids
 `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.
 
-The activity is a `ComponentActivity` and the WebView lives in a `ViewModel`
-(`OpenCodeWebViewModel`). Rotating the phone, switching apps or changing the dark
-mode / font size recreates the activity, but not the WebView: the new instance
-re-attaches the very same view, so the UI, the scroll position, the open session
-and a half written message are kept and nothing is fetched again. The WebView is
-created with the application context, so the ViewModel cannot keep a destroyed
-activity alive; its `alert()`/`confirm()` dialogs are forwarded to the activity
-that is on screen. The view is destroyed only when the activity is finished for
+The activity is an `AppCompatActivity` themed with Material 3 and the WebView lives in a
+`ViewModel` (`OpenCodeWebViewModel`). Rotating the phone, switching apps or changing the dark
+mode / font size recreates the activity, but not the WebView: the new instance re-attaches the
+very same view, so the UI, the scroll position, the open session and a half written message are
+kept and nothing is fetched again. The WebView is created with the application context, so the
+ViewModel cannot keep a destroyed activity alive; its `alert()`/`confirm()` dialogs are forwarded
+to the activity that is on screen. The view is destroyed only when the activity is finished for
 good (`ViewModel.onCleared`).
+
+### Material You
+
+The native screens use `Theme.Material3.DayNight.NoActionBar`. On Android 12+ the app applies
+`DynamicColors.applyToActivitiesIfAvailable`, so buttons, switches, cards, dialogs and the system
+bars take the tones derived from the user's wallpaper. Older releases keep the orange seed palette
+from `app/src/main/res/values/colors.xml` (dark variant in `values-night/`).
+
+The web UI is painted with the same palette. `OpenCodeWebTheme` reads the resolved Material 3
+roles from the activity theme and turns them into the CSS custom properties of the OpenCode web
+app: the semantic `--v2-*` tokens (backgrounds, text, icons, borders, overlays, state and agent
+colors), the `--v2-blue-*` accent ramp, the legacy `--background-*` / `--text-*` / `--icon-*` /
+`--border-*` / `--surface-*` names the OC-2 components still read, and the syntax / markdown
+colors. The stylesheet is registered with `androidx.webkit` as a document-start script, so the
+first paint already matches; it is evaluated again on `onPageFinished` and whenever the retained
+WebView is re-attached (rotation, dark-mode change), because the page itself was never reloaded.
+The script also pins `data-color-scheme` to the native light/dark mode, so the web app cannot
+pick a palette that disagrees with the system. The WebView background is set to the native
+surface color so the transparent gap before the page renders does not flash white.
+
 
 ### Terminal usage
 

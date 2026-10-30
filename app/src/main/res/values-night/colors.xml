@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material 3 color roles of the dark scheme, seeded with the OpenCode orange. -->
+<resources>
+    <color name="oc_primary">#FFFFB596</color>
+    <color name="oc_on_primary">#FF5B1A00</color>
+    <color name="oc_primary_container">#FF7D2E0A</color>
+    <color name="oc_on_primary_container">#FFFFDBCB</color>
+    <color name="oc_secondary">#FFE7BEAC</color>
+    <color name="oc_on_secondary">#FF442A1F</color>
+    <color name="oc_secondary_container">#FF5D4033</color>
+    <color name="oc_on_secondary_container">#FFFFDBCB</color>
+    <color name="oc_tertiary">#FFD8C58D</color>
+    <color name="oc_on_tertiary">#FF3A2F05</color>
+    <color name="oc_tertiary_container">#FF524619</color>
+    <color name="oc_on_tertiary_container">#FFF5E1A7</color>
+    <color name="oc_error">#FFFFB4AB</color>
+    <color name="oc_on_error">#FF690005</color>
+    <color name="oc_error_container">#FF93000A</color>
+    <color name="oc_on_error_container">#FFFFDAD6</color>
+
+    <color name="oc_background">#FF1A110E</color>
+    <color name="oc_on_background">#FFF0DED7</color>
+    <color name="oc_surface">#FF1A110E</color>
+    <color name="oc_on_surface">#FFF0DED7</color>
+    <color name="oc_surface_variant">#FF53433D</color>
+    <color name="oc_on_surface_variant">#FFD8C2B9</color>
+    <color name="oc_outline">#FFA08C84</color>
+    <color name="oc_outline_variant">#FF53433D</color>
+    <color name="oc_surface_inverse">#FFF0DED7</color>
+    <color name="oc_on_surface_inverse">#FF382E2B</color>
+    <color name="oc_primary_inverse">#FFA63F12</color>
+
+    <color name="oc_surface_container_lowest">#FF140C09</color>
+    <color name="oc_surface_container_low">#FF221A17</color>
+    <color name="oc_surface_container">#FF271E1B</color>
+    <color name="oc_surface_container_high">#FF322925</color>
+    <color name="oc_surface_container_highest">#FF3D332F</color>
+    <color name="oc_scrim">#FF000000</color>
+
+    <!-- Aliases kept for the programmatic views of OpenCodeWebActivity. -->
+    <color name="oc_text">@color/oc_on_surface</color>
+    <color name="oc_text_muted">@color/oc_on_surface_variant</color>
+    <color name="oc_text_faint">@color/oc_outline</color>
+    <color name="oc_card">@color/oc_surface_container_low</color>
+    <color name="oc_card_border">@color/oc_outline_variant</color>
+    <color name="oc_input">@color/oc_surface_container_highest</color>
+    <color name="oc_accent">@color/oc_primary</color>
+    <color name="oc_accent_soft">#33FFB596</color>
+    <color name="oc_ok">#FF6BD586</color>
+    <color name="oc_ok_soft">#336BD586</color>
+    <color name="oc_warn">#FFF2CF76</color>
+    <color name="oc_divider">@color/oc_outline_variant</color>
+</resources>

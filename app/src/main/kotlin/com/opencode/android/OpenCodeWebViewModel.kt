@@ -1,12 +1,16 @@
 package com.opencode.android
 
 import android.content.Context
+import android.os.Build
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.lifecycle.ViewModel
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 /**
  * Holds the WebView of the OpenCode UI across the recreation of [OpenCodeWebActivity].
@@ -59,6 +63,12 @@ class OpenCodeWebViewModel : ViewModel() {
 
     private var webViewInstance: WebView? = null
 
+    /** Registered document-start script of the Material You stylesheet, replaced on each attach. */
+    private var themeHandler: ScriptHandler? = null
+
+    /** Last stylesheet built by [OpenCodeWebTheme], kept for the live document fallback. */
+    private var themeScript: String? = null
+
     /** @return the single WebView of this state, created on the first call. */
     fun webView(context: Context): WebView {
         webViewInstance?.let { return it }
@@ -70,6 +80,11 @@ class OpenCodeWebViewModel : ViewModel() {
             // Local files and content URIs are not needed, the UI is served over loopback.
             allowFileAccess = false
             allowContentAccess = false
+            // The Material You stylesheet decides every color; algorithmic darkening would
+            // process those colors a second time and tint them unpredictably.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                isForceDarkAllowed = false
+            }
         }
         // The page is served by our own loopback server. The bridge only reports the route.
         view.addJavascriptInterface(SessionBridge(), "OpenCodeAndroidSession")
@@ -115,6 +130,49 @@ class OpenCodeWebViewModel : ViewModel() {
     }
 
     /**
+     * Install the Material You stylesheet on the retained WebView.
+     *
+     * It is registered as a document-start script so the first paint already has the right
+     * colors, and evaluated on the current document so a rotation (or a dark-mode change while the
+     * ViewModel keeps the page) restyles the UI that is already loaded. The previous registration
+     * is removed first: otherwise every attach would add another copy to the same WebView.
+     */
+    fun installWebTheme(script: String) {
+        themeScript = script
+        val view = webViewInstance ?: return
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            themeHandler?.let { handler ->
+                try {
+                    handler.remove()
+                } catch (e: Exception) {
+                    // The old handler belongs to a WebView that is going away.
+                }
+            }
+            themeHandler = try {
+                WebViewCompat.addDocumentStartJavaScript(view, script, setOf("*"))
+            } catch (e: Exception) {
+                null
+            }
+        }
+        applyWebTheme()
+    }
+
+    /**
+     * Re-apply the last stylesheet to the live document. [WebViewClient.onPageFinished] calls
+     * this as a fallback: a page that started loading before the registration was replaced would
+     * otherwise keep the colors of its first paint.
+     */
+    fun applyWebTheme() {
+        val view = webViewInstance ?: return
+        val script = themeScript ?: return
+        try {
+            view.evaluateJavascript(script, null)
+        } catch (e: Exception) {
+            // The view is being destroyed; nothing to restyle.
+        }
+    }
+
+    /**
      * Install the route watcher of the single page app. Safe to call after every page load: the
      * script guards itself against double installation.
      */
@@ -155,6 +213,8 @@ class OpenCodeWebViewModel : ViewModel() {
         OpenCodeSessionTracker.setActiveSession(null)
         val view = webViewInstance
         webViewInstance = null
+        themeHandler = null
+        themeScript = null
         if (view == null) return
         (view.parent as? ViewGroup)?.removeView(view)
         view.destroy()

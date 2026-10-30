@@ -1,7 +1,6 @@
 package com.opencode.android
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -10,12 +9,14 @@ import android.graphics.drawable.ColorDrawable
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 
 /**
@@ -47,9 +48,15 @@ object FileManagerDialog {
         val summary = TextView(activity).apply {
             textSize = 12f
             setText(R.string.opencode_files_scanning)
-            setTextColor(Color.parseColor("#FFA5A5B4"))
+            setTextColor(
+                MaterialColors.getColor(
+                    activity,
+                    com.google.android.material.R.attr.colorOnSurfaceVariant,
+                    Color.GRAY,
+                ),
+            )
         }
-        val refresh = Button(activity).apply {
+        val refresh = MaterialButton(activity).apply {
             text = activity.getString(R.string.opencode_files_refresh)
             textSize = 11f
             minWidth = 0
@@ -74,7 +81,7 @@ object FileManagerDialog {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
         )
 
-        val dialog = AlertDialog.Builder(activity)
+        val dialog = MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.opencode_files_dialog_title)
             .setView(content)
             .setNegativeButton(R.string.opencode_files_cancel, null)
@@ -167,7 +174,7 @@ object FileManagerDialog {
                     OpenCodeStorage.formatBytes(file.length()),
                 )
             }
-            AlertDialog.Builder(activity)
+            MaterialAlertDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.opencode_files_delete_title, file.name))
                 .setMessage(message)
                 .setPositiveButton(R.string.opencode_files_delete) { _, _ ->
@@ -207,7 +214,7 @@ object FileManagerDialog {
             ids.add(ACTION_COPY)
             actions.add(activity.getString(R.string.opencode_files_delete))
             ids.add(ACTION_DELETE)
-            AlertDialog.Builder(activity)
+            MaterialAlertDialogBuilder(activity)
                 .setTitle(file.name)
                 .setItems(actions.toTypedArray()) { _, which ->
                     when (ids[which]) {
