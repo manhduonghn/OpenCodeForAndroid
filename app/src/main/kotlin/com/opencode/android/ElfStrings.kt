@@ -104,7 +104,7 @@ internal object ElfStrings {
             val found = string.indexOf(from, at)
             if (found < 0) break
             count++
-            at = found + from.size
+            at = found + from.length
         }
         val replaced = string.replace(from, to).toByteArray(StandardCharsets.ISO_8859_1)
         replaced.copyInto(data, start)
