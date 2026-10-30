@@ -577,9 +577,12 @@ object OpenCodeBootstrap {
     private fun hasGlobalIpv6Address(): Boolean {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return false
-            for (nic in interfaces) {
+            while (interfaces.hasMoreElements()) {
+                val nic = interfaces.nextElement()
                 if (!nic.isUp) continue
-                for (address in nic.inetAddresses) {
+                val addresses = nic.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val address = addresses.nextElement()
                     if (address is Inet6Address && address.isGlobalIpv6Address()) return true
                 }
             }
