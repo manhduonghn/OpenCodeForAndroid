@@ -54,12 +54,18 @@ The app combines the two techniques that make this possible:
    The Termux glibc loader has `/data/data/com.termux/files/usr/glibc/...`
    compiled into its rodata. That prefix and the sandbox root
    (`/data/data/com.opencode.android`) are both 31 characters, so the loader is
-   relocated with an in-place, same-length byte replacement and two symlinks
-   (`<dataDir>/glibc -> $PREFIX/glibc`, `<dataDir>/etc -> $PREFIX/etc`) make the
-   relocated paths resolve. If the patch fails, the app falls back to the
-   explicit `ld-linux --library-path …` invocation for its managed server; the
-   terminal entry point is a direct symlink, so it needs a successfully patched
-   binary.
+   relocated by rewriting those C strings in place. The directory part of every
+   rewritten path then lands at the sandbox root (`…/files/usr/bin/bash` becomes
+   `<dataDir>/bin/bash`), and since the 31 bytes are already spent on the sandbox
+   root itself, a single alias for the prefix is impossible: **every top level
+   directory of the prefix** gets a symlink there (`<dataDir>/glibc -> $PREFIX/glibc`,
+   `<dataDir>/etc -> $PREFIX/etc`, `bin`, `lib`, `share`, …). `app/build.gradle.kts`
+   fails the build when the applicationId or a build type suffix makes that path a
+   different length, and a replacement that would be longer than the string it
+   replaces is refused instead of moving every ELF offset. If the patch fails, the
+   app falls back to the explicit `ld-linux --library-path …` invocation for its
+   managed server; the terminal entry point is a direct symlink, so it needs a
+   successfully patched binary.
 
    The same replacement is applied to **every runtime object of the glibc
    directory**, not only to the loader. `libc.so.6` carries 21 compiled-in

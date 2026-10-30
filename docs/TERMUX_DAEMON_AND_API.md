@@ -280,11 +280,15 @@ Luồng trong `LinuxEnvironment`:
 
 - Cùng kỹ thuật extract `.deb` + rewrite (`OpenCodePackages.kt`), thêm:
   - `pkg` CLI + `OpenCodePkgService` (FGS) để user cài package từ terminal;
-  - **relocation glibc bằng byte-replacement cùng độ dài**:
+  - **relocation glibc bằng cách thay chuỗi C tại chỗ**:
     `/data/data/com.termux/files/usr` (31 ký tự) → `/data/data/com.opencode.android`
-    (31 ký tự), kèm symlink `<dataDir>/glibc → $PREFIX/glibc`, `<dataDir>/etc → $PREFIX/etc`.
-    Nhờ vậy loader và `libc.so.6` tìm đúng `resolv.conf`, CA, v.v. mà không cần patchelf
-    vào rodata.
+    (31 ký tự). 31 byte đã dùng hết cho gốc sandbox nên không thể có một symlink cho cả prefix:
+    mỗi thư mục cấp 1 của `$PREFIX` được symlink vào `<dataDir>` (`glibc`, `etc`, `bin`, `lib`,
+    `share`, …). Nhờ vậy loader và `libc.so.6` tìm đúng `resolv.conf`, CA, v.v. mà không cần
+    patchelf vào rodata. Chuỗi thay thế được phép **ngắn hơn** (phần đuôi của chuỗi cũ được
+    NUL hoá), nên git `SHELL_PATH` dùng chung một bộ vá (`ElfStrings`); chuỗi dài hơn bị từ chối
+    vì không được đổi offset của ELF. `app/build.gradle.kts` chặn build nếu `applicationId` (hoặc
+    `applicationIdSuffix` của một build type) làm đường dẫn sandbox khác 31 ký tự.
   - patch `PT_INTERP` của binary OpenCode để nó tự chạy trực tiếp (quan trọng cho
     `opencode serve` self-spawn qua `/proc/self/exe`);
   - `targetSdk 28` nên **không cần** termux-exec/linker shim.

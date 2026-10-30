@@ -899,10 +899,10 @@ object OpenCodePackages {
     /**
      * Termux's git embeds its SHELL_PATH in the ELF: git runs hooks, aliases and `!` credential
      * helpers through that literal, which does not exist outside the Termux app. The string is
-     * patched in place, only inside ELF files. The shorter replacement is terminated with one
-     * NUL and the leftover bytes of the old string are left alone: they are dead data, and
-     * padding the whole range with NULs would erase the string that follows SHELL_PATH in
-     * .rodata ("cannot get tree for HEAD", …).
+     * patched in place, only inside ELF files, through the shared [ElfStrings] rewriter: the
+     * shorter replacement is followed by NULs up to the end of the string that held it, which is
+     * dead data, and nothing outside that string is touched (the strings that follow it in .rodata,
+     * "cannot get tree for HEAD", … survive).
      */
     private object TermuxShellPath {
         private const val TERMUX_SHELL = "/data/data/com.termux/files/usr/bin/sh"
@@ -921,32 +921,13 @@ object OpenCodePackages {
             ) {
                 0
             } else {
-                val count = patchBytes(bytes)
+                val count = ElfStrings.replace(bytes, NEEDLE, REPLACEMENT)
                 if (count > 0) file.writeBytes(bytes)
                 count
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not patch the shell path of $file", e)
             0
-        }
-
-        private fun patchBytes(bytes: ByteArray): Int {
-            var count = 0
-            var i = 0
-            val last = bytes.size - NEEDLE.size
-            while (i <= last) {
-                var j = 0
-                while (j < NEEDLE.size && bytes[i + j] == NEEDLE[j]) j++
-                if (j == NEEDLE.size) {
-                    REPLACEMENT.copyInto(bytes, i)
-                    bytes[i + REPLACEMENT.size] = 0
-                    count++
-                    i += NEEDLE.size
-                } else {
-                    i++
-                }
-            }
-            return count
         }
     }
 

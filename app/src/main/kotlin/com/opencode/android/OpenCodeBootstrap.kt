@@ -2781,14 +2781,34 @@ object OpenCodeBootstrap {
         }
     }
 
+    /** Entries of the sandbox root that belong to Android, they must never become an alias. */
+    private val SANDBOX_RESERVED_ENTRIES = setOf(
+        "cache", "code_cache", "databases", "files", "no_backup", "shared_prefs",
+    )
+
     /**
      * Create the same-length aliases the relocated binaries look for. The Termux packages contain
      * `/data/data/com.termux/files/usr/...` in their rodata; the app rewrites that prefix to
-     * [DATA_DIR] (both are 31 characters), so the aliases must exist at the sandbox root.
+     * [DATA_DIR] (both are 31 characters), so the directory part of every compiled-in path lands at
+     * the sandbox root: `…/files/usr/bin/bash` becomes `<dataDir>/bin/bash`. [DATA_DIR] is exactly
+     * as long as the Termux prefix, so a single alias for the prefix is impossible: every top level
+     * directory of the prefix needs its own alias.
      */
     private fun ensurePathAliases() {
-        linkAlias(File(GLIBC_ALIAS_DIR), File(PREFIX, "glibc"))
-        linkAlias(File(ETC_ALIAS_DIR), File(PREFIX, "etc"))
+        val prefix = File(PREFIX)
+        val dirs = prefix.listFiles()
+        if (dirs == null) {
+            // Keep the two aliases the loader needs even when the listing fails.
+            linkAlias(File(GLIBC_ALIAS_DIR), File(prefix, "glibc"))
+            linkAlias(File(ETC_ALIAS_DIR), File(prefix, "etc"))
+            return
+        }
+        for (dir in dirs) {
+            if (!dir.isDirectory) continue
+            val name = dir.name
+            if (name in SANDBOX_RESERVED_ENTRIES || name.startsWith("app_")) continue
+            linkAlias(File(DATA_DIR, name), dir)
+        }
     }
 
     private fun linkAlias(link: File, target: File) {
@@ -2819,8 +2839,13 @@ object OpenCodeBootstrap {
         if (loaderPath == null) return false
         val oldPrefix = PREFIX_TERMUX.toByteArray(StandardCharsets.US_ASCII)
         val newPrefix = DATA_DIR.toByteArray(StandardCharsets.US_ASCII)
-        if (oldPrefix.size != newPrefix.size) {
-            Log.w(LOG_TAG, "Cannot relocate the glibc loader: ${oldPrefix.size} != ${newPrefix.size}")
+        if (newPrefix.size > oldPrefix.size) {
+            // The build enforces equal lengths (see app/build.gradle.kts); a longer sandbox path
+            // would have to move every offset of the binary, so it is refused instead.
+            Log.e(
+                LOG_TAG,
+                "Cannot relocate the glibc loader: $DATA_DIR is longer than $PREFIX_TERMUX",
+            )
             return false
         }
 
@@ -2897,10 +2922,11 @@ object OpenCodeBootstrap {
         if (!libc.isFile) return loaderOk
 
         // A package update replaces libc.so.6 and invalidates the marker, everything else is a
-        // no-op then (files without the prefix are not rewritten).
-        val stamp = "$DATA_DIR|${libc.length()}|${libc.lastModified()}"
+        // no-op then (files without the prefix are not rewritten). The directory time is part of
+        // the stamp too: an update that only replaces another object of the runtime would
+        // otherwise leave that object with the paths of the Termux app.
         val marker = File(GLIBC_RELOCATED_PATH)
-        if (stamp == readTrimmed(marker)) return loaderOk
+        if (glibcStamp(libc, libDir) == readTrimmed(marker)) return loaderOk
 
         val files = libDir.listFiles()
         var patchedFiles = 0
@@ -2931,13 +2957,19 @@ object OpenCodeBootstrap {
             "Relocated $patchedPaths path(s) of $patchedFiles glibc runtime file(s) to $DATA_DIR",
         )
         if (patchedFiles > 0) sGlibcPatchGeneration++
-        writeTextFileQuietly(marker, stamp + "\n")
+        // Stamped after the rewrite: replacing an object updates the time of the directory, and the
+        // marker must describe the runtime as it is now, not as it was before.
+        writeTextFileQuietly(marker, glibcStamp(libc, libDir) + "\n")
         return loaderOk
     }
 
+    /** Fingerprint of the glibc runtime: sandbox path, libc.so.6 and the directory that holds it. */
+    private fun glibcStamp(libc: File, libDir: File): String =
+        "$DATA_DIR|${libc.length()}|${libc.lastModified()}|${libDir.lastModified()}"
+
     /**
-     * Replace same-length strings inside a binary in place. Used for the login shell paths of bash,
-     * which are compiled against the com.termux prefix and are unreadable from this app.
+     * Replace strings inside the C strings of a binary in place. Used for the login shell paths of
+     * bash, which are compiled against the com.termux prefix and are unreadable from this app.
      */
     private fun patchFileStrings(file: File?, vararg replacements: String): Int {
         if (file == null || !file.isFile) return 0
@@ -2948,13 +2980,13 @@ object OpenCodeBootstrap {
             while (i + 1 < replacements.size) {
                 val oldBytes = replacements[i].toByteArray(StandardCharsets.US_ASCII)
                 val newBytes = replacements[i + 1].toByteArray(StandardCharsets.US_ASCII)
-                if (oldBytes.size != newBytes.size) {
+                if (newBytes.size > oldBytes.size) {
                     Log.w(
                         LOG_TAG,
-                        "Cannot rewrite ${replacements[i]}: the replacement differs in length",
+                        "Cannot rewrite ${replacements[i]}: the replacement is longer",
                     )
                 } else {
-                    total += replaceBytes(data, oldBytes, newBytes)
+                    total += ElfStrings.replace(data, oldBytes, newBytes)
                 }
                 i += 2
             }
@@ -2985,28 +3017,8 @@ object OpenCodeBootstrap {
     }
 
     /** @return the number of replaced occurrences. */
-    private fun replaceBytes(data: ByteArray, oldBytes: ByteArray, newBytes: ByteArray): Int {
-        if (oldBytes.isEmpty() || oldBytes.size != newBytes.size) return 0
-        var count = 0
-        var i = 0
-        while (i <= data.size - oldBytes.size) {
-            var match = true
-            for (j in oldBytes.indices) {
-                if (data[i + j] != oldBytes[j]) {
-                    match = false
-                    break
-                }
-            }
-            if (!match) {
-                i++
-                continue
-            }
-            System.arraycopy(newBytes, 0, data, i, newBytes.size)
-            count++
-            i += oldBytes.size
-        }
-        return count
-    }
+    private fun replaceBytes(data: ByteArray, oldBytes: ByteArray, newBytes: ByteArray): Int =
+        ElfStrings.replace(data, oldBytes, newBytes)
 
     private fun readAllBytes(file: File): ByteArray {
         val length = file.length()

@@ -43,6 +43,14 @@ android {
     defaultConfig {
         applicationId = "com.opencode.android"
         minSdk = 26
+        // The relocation of the Termux packages rewrites /data/data/com.termux/files/usr (31 bytes)
+        // into /data/data/<applicationId> inside their binaries, which only works when both paths
+        // have the same length: a longer id would break the resolver of the sandbox silently.
+        val sandboxPath = "/data/data/$applicationId"
+        require(sandboxPath.length == 31) {
+            "applicationId '$applicationId' makes the sandbox path '$sandboxPath' " +
+                "${sandboxPath.length} characters long, the relocation needs exactly 31"
+        }
         // Termux packages are executed directly from the app-private prefix. Android 10+ forbids
         // execve() of app data files for apps that target API 29 or higher (the same reason the
         // Termux app itself still targets API 28), so stay on 28.
@@ -90,6 +98,18 @@ android {
             // Android refuses to install an update over the app that is already on the device.
             if (project.hasProperty("RELEASE_STORE_FILE")) {
                 signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    // A build type that adds an applicationIdSuffix changes the sandbox path of the relocation.
+    buildTypes.all {
+        val suffix = applicationIdSuffix.orEmpty()
+        if (suffix.isNotEmpty()) {
+            val id = "${android.defaultConfig.applicationId}$suffix"
+            require("/data/data/$id".length == 31) {
+                "the applicationIdSuffix '$suffix' makes the sandbox path /data/data/$id " +
+                    "incompatible with the relocation, which needs exactly 31 characters"
             }
         }
     }
