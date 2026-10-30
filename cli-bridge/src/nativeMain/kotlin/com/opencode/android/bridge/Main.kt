@@ -31,16 +31,15 @@ import kotlin.system.exitProcess
 /*
  * oc-bridge - the command line entry point of the app, written in Kotlin/Native.
  *
- * The app has no shell launchers any more. `pkg` and `oc-install` are symlinks to this one
- * executable, which talks to the app through the same ordered broadcast that the old shell
- * script used. The package service still owns the download, verification and extraction; this
- * program only parses the command, starts the request and follows the status file.
+ * The app has no shell launchers any more. `pkg` is a symlink to this executable, which talks to
+ * the app through the same ordered broadcast that the old shell script used. The package service
+ * still owns the download, verification and extraction; this program only parses the command,
+ * starts the request and follows the status file.
  */
 
 private const val APP = "com.opencode.android"
 private const val RECEIVER = "$APP/.OpenCodePkgReceiver"
 private const val REQUEST_ACTION = "$APP.pkg.REQUEST"
-private const val FORCE_UPDATE_ACTION = "$APP.opencode.FORCE_UPDATE"
 
 private const val PREFIX_FALLBACK = "/data/data/com.opencode.android/files/usr"
 private const val HOME_FALLBACK = "/data/data/com.opencode.android/files/home"
@@ -406,33 +405,6 @@ private fun runPkg(arguments: List<String>) {
     }
 }
 
-private fun runInstall() {
-    line("oc-install: asking the OpenCode app to install/update the runtime (watch the notification)")
-    val outputFile = "${stateDir()}/.am-install-${getpid()}.out"
-    ensureStateDir()
-    deleteFile(outputFile)
-    try {
-        val command = buildString {
-            append("/system/bin/am start -a android.intent.action.VIEW")
-            append(" -n ").append(shellQuote("$APP/.OpenCodeWebActivity"))
-            append(" --ez ").append(shellQuote(FORCE_UPDATE_ACTION)).append(" true")
-            append(" > ").append(shellQuote(outputFile)).append(" 2>&1")
-        }
-        val exit = system(command)
-        val output = readTextFile(outputFile).orEmpty()
-        if (exit != 0 || output.contains("Error") || output.contains("Exception")) {
-            err("oc-install: the app could not be started: ${compact(output)}")
-            // exitProcess does not unwind, remove the captured 'am' output first.
-            deleteFile(outputFile)
-            // system() returns the raw wait status, not the exit code; never pass it to
-            // exitProcess, where 256 would be truncated to a successful 0.
-            exitProcess(1)
-        }
-    } finally {
-        deleteFile(outputFile)
-    }
-}
-
 /**
  * The `/system/bin/am` script runs `app_process` without an absolute path, so `/system/bin` has to
  * be in PATH. The library path of the Termux prefix and a bionic preload must not leak into the
@@ -447,31 +419,18 @@ private fun prepareEnvironment() {
     }
 }
 
-/** argv[0] is not in [args], read it back from /proc so pkg and oc-install are distinguishable. */
-private fun invokedName(): String {
-    val line = readTextFile("/proc/self/cmdline").orEmpty()
-    val command = line.substringBefore('\u0000').trim()
-    return command.substringAfterLast('/')
-}
-
-private fun route(args: Array<String>): Pair<String, List<String>> {
-    val invoked = invokedName()
-    if (invoked == "pkg" || invoked == "oc-install") return invoked to args.toList()
-
-    val first = args.firstOrNull()
-    if (first == "pkg" || first == "oc-install") return first to args.drop(1)
-    return "pkg" to args.toList()
-}
+/**
+ * `pkg` is the only entry point. The bridge is also reachable as `oc-bridge`, so an explicit
+ * leading `pkg` is stripped; every other argument belongs to the package command.
+ */
+private fun route(args: Array<String>): List<String> =
+    if (args.firstOrNull() == "pkg") args.drop(1) else args.toList()
 
 fun main(args: Array<String>) {
     umask(63u) // 0077, the status files belong to this app only
     prepareEnvironment()
-    val (command, rest) = route(args)
     try {
-        when (command) {
-            "oc-install" -> runInstall()
-            else -> runPkg(rest)
-        }
+        runPkg(route(args))
     } catch (e: CliError) {
         err(e.message ?: "pkg: the command failed")
         exitProcess(e.code)

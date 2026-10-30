@@ -279,7 +279,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         OpenCodeWatchdog.ensureScheduled(this)
         if (!pageAlive) {
             handler.post(poll)
-            if (wantsForcedUpdate(intent)) beginForcedUpdate()
         } else {
             viewModel.installSessionWatcher()
         }
@@ -1003,46 +1002,17 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     /* ------------------------------------------------------------------ web view */
 
-    /**
-     * The forced update of 'oc-install' arrives as an extra of the intent that starts this
-     * activity. When the activity is already on screen the system may deliver it here instead, so
-     * both paths are handled.
-     */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         // Bringing the app to the front is an explicit start.
         OpenCodeSettings.setStoppedByUser(this, false)
         OpenCodeWatchdog.ensureScheduled(this)
-        if (wantsForcedUpdate(intent)) {
-            beginForcedUpdate()
-        } else {
-            startServerService()
-            if (!pageLoaded) {
-                handler.removeCallbacks(poll)
-                handler.post(poll)
-            }
+        startServerService()
+        if (!pageLoaded) {
+            handler.removeCallbacks(poll)
+            handler.post(poll)
         }
-    }
-
-    private fun wantsForcedUpdate(intent: Intent?): Boolean =
-        intent?.getBooleanExtra(OpenCodeBootstrap.ACTION_FORCE_UPDATE, false) == true
-
-    /** Re-download the runtime while the progress screen takes the place of the web UI. */
-    private fun beginForcedUpdate() {
-        pageLoaded = false
-        waitingForInstall = true
-        pairAttempts = 0
-        loadFailures = 0
-        webView.visibility = View.GONE
-        statusPanel.visibility = View.VISIBLE
-        statusTitle.text = getString(R.string.opencode_updating)
-        statusDetail.text = getString(R.string.opencode_update_preparing)
-        statusProgress.isIndeterminate = true
-        statusRetry.visibility = View.GONE
-        OpenCodeBootstrap.requestUpdate(this)
-        handler.removeCallbacks(poll)
-        handler.post(poll)
     }
 
     override fun onStart() {

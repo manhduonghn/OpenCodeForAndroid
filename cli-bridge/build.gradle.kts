@@ -4,8 +4,7 @@ plugins {
 
 kotlin {
     // The bridge is shipped as an executable for the two ABIs that have an official OpenCode
-    // build. It is started from $PREFIX/bin/pkg and $PREFIX/bin/oc-install, which are symlinks to
-    // $PREFIX/libexec/oc-bridge.
+    // build. It is started from $PREFIX/bin/pkg, which is a symlink to $PREFIX/libexec/oc-bridge.
     androidNativeArm64 {
         binaries {
             executable {
@@ -13,7 +12,7 @@ kotlin {
                 entryPoint = "com.opencode.android.bridge.main"
                 // Be explicit: an Android `executable` used to be a NativeActivity shared
                 // library. "standalone" produces a real ELF program with the bionic loader,
-                // which is what the pkg/oc-install symlinks exec.
+                // which is what the pkg symlink execs.
                 binaryOptions["androidProgramType"] = "standalone"
             }
         }

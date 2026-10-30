@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// pkg and oc-install are symlinks to one Kotlin/Native executable. The module is built first and
+// pkg is a symlink to the Kotlin/Native executable. The module is built first and
 // its two Android binaries are packaged as assets, so the APK contains no shell launcher at all.
 val cliBridgeAssets = layout.buildDirectory.dir("generated/cliBridgeAssets")
 val arm64BridgeDir = rootProject.file("cli-bridge/build/bin/androidNativeArm64/releaseExecutable")

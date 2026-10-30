@@ -68,9 +68,6 @@ object OpenCodeBootstrap {
 
     /* ------------------------------------------------------------------ public API */
 
-    /** Intent action asking the app to (re)install the OpenCode runtime. */
-    const val ACTION_FORCE_UPDATE = "com.opencode.android.opencode.FORCE_UPDATE"
-
     /** The command the user types inside the terminal to start the OpenCode TUI. */
     const val OPENCODE_COMMAND = "opencode"
 
@@ -137,13 +134,10 @@ object OpenCodeBootstrap {
     /** Symlink to the currently installed OpenCode binary, `opencode`. */
     const val OPENCODE_BIN_PATH = "$PREFIX/bin/opencode"
 
-    /** Symlink to [BRIDGE_PATH], `oc-install`. */
-    const val OC_INSTALL_PATH = "$PREFIX/bin/oc-install"
-
     /** Symlink to [BRIDGE_PATH], `pkg`. */
     const val PKG_PATH = "$PREFIX/bin/pkg"
 
-    /** Kotlin/Native executable behind `pkg` and `oc-install`. */
+    /** Kotlin/Native executable behind `pkg`. */
     const val BRIDGE_PATH = "$PREFIX/libexec/oc-bridge"
 
     /** Records which app build extracted the current bridge. */
@@ -692,7 +686,6 @@ object OpenCodeBootstrap {
         if (!File(READY_MARKER_PATH).isFile) problems.add("the installed version marker ($READY_MARKER_PATH)")
         if (!File(OPENCODE_BIN_PATH).exists()) problems.add("the opencode symlink ($OPENCODE_BIN_PATH)")
         if (!isExecutable(File(BRIDGE_PATH))) problems.add("the CLI bridge ($BRIDGE_PATH)")
-        if (!File(OC_INSTALL_PATH).exists()) problems.add("the oc-install symlink ($OC_INSTALL_PATH)")
         if (!File(PKG_PATH).exists()) problems.add("the pkg symlink ($PKG_PATH)")
         if (!File(LINK_PATH).exists()) problems.add("the opencode symlink ($LINK_PATH)")
         if (findGlibcLoader() == null) problems.add("the glibc loader ($GLIBC_LIB_DIR/ld-linux-*.so.*)")
@@ -705,7 +698,6 @@ object OpenCodeBootstrap {
     private fun isEntryPointProblem(problem: String): Boolean =
         problem == "the opencode symlink ($OPENCODE_BIN_PATH)" ||
             problem == "the CLI bridge ($BRIDGE_PATH)" ||
-            problem == "the oc-install symlink ($OC_INSTALL_PATH)" ||
             problem == "the pkg symlink ($PKG_PATH)"
 
     /** True if the OpenCode runtime is complete and can be started. */
@@ -1789,9 +1781,9 @@ object OpenCodeBootstrap {
 
         /**
          * Install the terminal entry points: `opencode` is a symlink to the managed binary and
-         * `pkg`/`oc-install` are symlinks to the Kotlin/Native [BRIDGE_PATH]. Files left behind by
-         * the old shell launchers are replaced in place, so an app update migrates a device
-         * without a reinstall.
+         * `pkg` is a symlink to the Kotlin/Native [BRIDGE_PATH]. Files left behind by the old
+         * shell launchers are replaced in place, so an app update migrates a device without a
+         * reinstall.
          */
         private fun installEntrypoints() {
             val bridge = installBridge()
@@ -1807,13 +1799,24 @@ object OpenCodeBootstrap {
 
             if (bridge) {
                 replaceSymlink(File(PKG_PATH), BRIDGE_PATH)
-                replaceSymlink(File(OC_INSTALL_PATH), BRIDGE_PATH)
             } else {
                 // Keep a regular file of an older build, it still works until the next successful
                 // extraction. The same holds for a symlink whose bridge is still executable; only
                 // a link that would already fail is removed.
                 deleteIfBrokenSymlink(File(PKG_PATH))
-                deleteIfBrokenSymlink(File(OC_INSTALL_PATH))
+            }
+            // Older builds also shipped an `oc-install` entry point. The app updates from its own
+            // settings now, so remove the stale symlink instead of leaving a command that starts
+            // the activity with an intent the app no longer handles.
+            deleteIfSymlink(File("$PREFIX/bin/oc-install"))
+        }
+
+        /** Delete [file] when it is a symlink, so a stale entry point of an older build disappears. */
+        private fun deleteIfSymlink(file: File) {
+            try {
+                if (OsConstants.S_ISLNK(Os.lstat(file.absolutePath).st_mode)) deleteQuietly(file)
+            } catch (e: Exception) {
+                // The file does not exist.
             }
         }
 

@@ -103,7 +103,7 @@ class OpenCodePkgService : Service() {
             if (name in RUNTIME_PACKAGES) {
                 writeStatus(
                     job, "error",
-                    "'$name' is part of the OpenCode runtime, run 'oc-install' to update it.", -1,
+                    "'$name' is part of the OpenCode runtime, use the update button in the app settings.", -1,
                 )
                 return
             }

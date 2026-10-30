@@ -486,7 +486,7 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 12. **Entry point `opencode`:** `$PREFIX/bin/opencode` là symlink trực tiếp tới binary
     đã patch trong `$HOME/.opencode/bin/opencode`. TUI/CLI tự discover server qua
     `service.json`; không còn wrapper chèn `--server`. `opencode upgrade` không được
-    chuyển thành cập nhật app nữa, dùng `oc-install` (bridge) hoặc nút Settings.
+    chuyển thành cập nhật app nữa, dùng nút Cập nhật trong Settings.
 13. **Auto-resume:** route `/session/<id>` (do bridge JavaScript và `doUpdateVisitedHistory`
     báo về) được lưu vào `SharedPreferences` (`last_session_id`). Khi activity được tạo lại
     sau khi process chết, `onPageFinished` của trang chủ tự chuyển tới session đó. Việc quay

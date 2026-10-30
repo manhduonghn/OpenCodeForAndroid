@@ -12,8 +12,6 @@
     <string name="opencode_status_starting">Đang kết nối lại WebUI…</string>
     <string name="opencode_status_waiting">Đang chờ OpenCode khởi động lại.</string>
     <string name="opencode_install_done_detail">Quá trình cài đặt đã xong, server đang khởi động.</string>
-    <string name="opencode_updating">Đang cập nhật OpenCode…</string>
-    <string name="opencode_update_preparing">Đang chuẩn bị tải lại OpenCode.</string>
     <string name="opencode_retry">Thử lại</string>
     <string name="opencode_ui_unavailable">Không tải được giao diện OpenCode</string>
     <string name="opencode_ui_unavailable_detail">Mã %1$d: %2$s. Ứng dụng sẽ thử lại.</string>

@@ -156,7 +156,7 @@ database, so there is nothing to remove from. Clearing the app data is the
 supported way to start over. Reinstalling a core package (`bash`, `coreutils`,
 `glibc`, `patchelf`, `ca-certificates`) is refused as well: the app patches
 their binaries (the login profile path, the relocated glibc loader), so they are
-updated with `oc-install`.
+updated from the app's Updates section.
 
 `bash` and `patchelf` — the two tools the app itself spawns — get their RUNPATH
 rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), so they
@@ -216,14 +216,13 @@ good (`ViewModel.onCleared`).
 # any Android shell, no Termux needed
 $PREFIX/bin/opencode --version
 $PREFIX/bin/opencode            # TUI
-oc-install                      # asks the app to re-download the runtime
 ```
 
 with `PREFIX=/data/data/com.opencode.android/files/usr` and
 `HOME=/data/data/com.opencode.android/files/home`.
 
 There are no shell launchers in the APK. `opencode` is a symlink to the managed
-binary, and `pkg`/`oc-install` are symlinks to one Kotlin/Native executable
+binary, and `pkg` is a symlink to a Kotlin/Native executable
 (`$PREFIX/libexec/oc-bridge`, source in `cli-bridge/`). The bridge parses the
 command, sends the same ordered broadcast/receiver request that the old shell
 script used, and follows the status file written by `OpenCodePkgService`. The
@@ -284,8 +283,7 @@ The app deliberately ships **without** a crash log or a diagnostics dump: the
 removed `OpenCodeCrashLog` wrote `opencode-install-*.log`,
 `opencode-server-*.log` and `last-error.txt` into the app files directory, which
 mostly duplicated what the platform already provides. Progress and errors are
-shown in the app UI, in the notification, and on stderr of the `pkg`/`oc-install`
-bridge.
+shown in the app UI, in the notification, and on stderr of the `pkg` bridge.
 
 When something goes wrong, use logcat:
 
@@ -304,7 +302,7 @@ cd OpenCodeForAndroid
 The nightly workflow builds a debug APK on every push, the release workflow
 builds a signed APK for every `v*` tag.
 
-The `cli-bridge` module compiles the `pkg`/`oc-install` executable with
+The `cli-bridge` module compiles the `pkg` executable with
 Kotlin/Native for `androidNativeArm64` and `androidNativeX64`. Kotlin/Native
 downloads its own Android toolchain and sysroot (see `konan.properties`), so no
 separate Android NDK is needed for the bridge; the binaries are packaged under
