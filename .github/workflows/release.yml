@@ -31,8 +31,7 @@ jobs:
       - name: Set up Gradle (caching)
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Install pinned NDK
-        run: "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager --install 'ndk;27.2.12479018'"
+      # No NDK step: Kotlin/Native downloads its own Android sysroot/toolchain.
 
       - name: Generate release keystore
         run: |
