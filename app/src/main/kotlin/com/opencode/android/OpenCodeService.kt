@@ -338,6 +338,7 @@ class OpenCodeService : Service() {
                     recoveredFromBusyPort = false
                     runningBinaryPath = binary.absolutePath
                     writePidFile(inherited)
+                    writeServerEnvironmentStamp()
                     markServerRunning()
                     return
                 }
@@ -425,6 +426,14 @@ class OpenCodeService : Service() {
             // Android, so `posix_spawn` fails with ENOENT; point it at the patched helper of the
             // app instead, which also saves the extraction on every server start.
             OpenCodeBootstrap.ensureTerminalRuntime()?.let { put("OPENCODE_PTY_BIN", it) }
+            // The daemon creates its unix socket below this directory and dies with EACCES when it
+            // is missing, because its default `/tmp` does not exist on Android. It is recreated on
+            // every start: `pkg install` empties parts of the prefix.
+            val socketDir = File(OpenCodeBootstrap.PTY_SOCKET_DIR)
+            if (!socketDir.isDirectory && !socketDir.mkdirs()) {
+                Log.w(TAG, "Could not create the terminal socket directory $socketDir")
+            }
+            put("OPENCODE_PTY_SOCKET_DIR", OpenCodeBootstrap.PTY_SOCKET_DIR)
             // The 2.x server protects its API (/api, /api/session, …) with HTTP Basic auth. A
             // fixed password from the app preferences is used instead of the random one the
             // server would print, so the WebView can answer the authentication challenge itself.
@@ -510,7 +519,10 @@ class OpenCodeService : Service() {
      */
     private fun serverEnvironmentCurrent(pid: Int): Boolean {
         val helper = OpenCodeBootstrap.terminalRuntimePath() ?: return true
-        val expected = "OPENCODE_PTY_BIN=$helper"
+        val expected = listOf(
+            "OPENCODE_PTY_BIN=$helper",
+            "OPENCODE_PTY_SOCKET_DIR=${OpenCodeBootstrap.PTY_SOCKET_DIR}",
+        )
         val environ = try {
             File("/proc/$pid/environ").takeIf { it.isFile }?.readBytes()
         } catch (e: Exception) {
@@ -519,7 +531,7 @@ class OpenCodeService : Service() {
         }
         if (environ != null && environ.isNotEmpty()) {
             val entries = String(environ, StandardCharsets.ISO_8859_1).split('\u0000')
-            return entries.contains(expected)
+            return expected.all { entries.contains(it) }
         }
         return readServerEnvironmentStamp() == serverEnvironmentStamp()
     }
@@ -528,7 +540,8 @@ class OpenCodeService : Service() {
      * Environment signature of a spawned server, the fallback of [serverEnvironmentCurrent].
      */
     private fun serverEnvironmentStamp(): String =
-        "pty=" + (OpenCodeBootstrap.terminalRuntimePath() ?: "")
+        "pty=" + (OpenCodeBootstrap.terminalRuntimePath() ?: "") +
+            " socket=" + OpenCodeBootstrap.PTY_SOCKET_DIR
 
     /** Remember the environment of the server that was just spawned. */
     private fun writeServerEnvironmentStamp() {

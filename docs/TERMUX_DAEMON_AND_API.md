@@ -514,7 +514,12 @@ dụng: mỗi lần server khởi động lại so checksum với sha256 nhúng 
 `$HOME/.opencode/bin/opencode-pty` và export `OPENCODE_PTY_BIN` cho server (đồng thời ghi vào
 `etc/opencode-env.sh` cho terminal). OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước
 validate cache. `$HOME/.opencode/.terminal-runtime` lưu fingerprint của CLI + version + sha256, nên
-helper chỉ được build lại khi binary đổi.
+helper chỉ được build lại khi binary đổi. Riêng trên Android chỉ có vậy vẫn chưa đủ: daemon bind
+unix socket dưới `${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, mà `/tmp` không tồn tại nên nó chết
+với `EACCES` (panel báo `ENOENT ... service.json`). Vì vậy server export thêm
+`OPENCODE_PTY_SOCKET_DIR=$PREFIX/run` và thư mục này được tạo lại mỗi lần khởi động. Đường dẫn phải
+ngắn: unix socket giới hạn 107 byte, daemon cộng thêm `/opencode-pty-<uid>/<32 hex>.sock` (57 byte),
+nên không dùng được `$HOME/.opencode/tmp`.
 
 **Thời gian khởi động đo trên máy (runtime đã cài):** `opencode --version` ≈0.24 s; `serve` mở TCP
 sau ≈0.5 s và `/api/info` trả 200 sau ≈0.7 s; `POST /api/pair` ≈40 ms và `/auth/connect/<code>`

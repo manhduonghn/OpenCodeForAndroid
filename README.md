@@ -213,6 +213,13 @@ file (the shell profile exports it as well), which makes OpenCode skip both the 
 checksum validation of its cache copy. `$HOME/.opencode/.terminal-runtime` records the fingerprint
 of the CLI, so the helper is rebuilt only when the binary changes.
 
+That is not enough on Android: `opencode-pty` binds its unix socket below
+`${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, and `/tmp` does not exist on Android, so the daemon
+dies with `EACCES` and the panel hangs with `ENOENT ... service.json`. The server therefore also
+exports `OPENCODE_PTY_SOCKET_DIR=$PREFIX/run` (the directory is recreated on every start). The path
+has to stay short: a unix socket path is limited to 107 bytes and the daemon appends
+`/opencode-pty-<uid>/<32 hex>.sock` (57 more), so `$HOME/.opencode/tmp` would not fit.
+
 ### Installation progress
 
 The first start downloads ≈20 MB of toolchain and ≈114 MB of OpenCode, so the

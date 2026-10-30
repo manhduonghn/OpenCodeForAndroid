@@ -136,6 +136,15 @@ object OpenCodeBootstrap {
      */
     const val PTY_BIN_PATH = "$OC_HOME/bin/opencode-pty"
 
+    /**
+     * Directory below which the `opencode-pty` daemon creates its unix socket. It falls back to
+     * `/tmp`, which does not exist on Android, so without this the daemon dies with EACCES and the
+     * terminal never opens. The path must stay short: a unix socket path is limited to 107 bytes
+     * and `<dir>/opencode-pty-<uid>/<32 hex>.sock` already uses 57 of them, so neither [OC_HOME]
+     * nor `$PREFIX/tmp/opencode` fits.
+     */
+    const val PTY_SOCKET_DIR = "$PREFIX/run"
+
     /** Fingerprint of the CLI build that [PTY_BIN_PATH] was produced from, plus its version. */
     private const val PTY_MARKER_PATH = "$OC_HOME/.terminal-runtime"
 
@@ -870,6 +879,11 @@ object OpenCodeBootstrap {
         terminalRuntimePath()?.let { pty ->
             append("OPENCODE_PTY_BIN=\"\${OPENCODE_PTY_BIN:-").append(pty).append("}\"; export OPENCODE_PTY_BIN\n")
         }
+        // The daemon of the web terminal creates its socket below this directory; its default
+        // `/tmp` does not exist on Android.
+        append("OPENCODE_PTY_SOCKET_DIR=\"\${OPENCODE_PTY_SOCKET_DIR:-")
+        append(PTY_SOCKET_DIR)
+        append("}\"; export OPENCODE_PTY_SOCKET_DIR\n")
         append(":\n")
     }
 
@@ -2388,6 +2402,12 @@ object OpenCodeBootstrap {
     fun ensureTerminalRuntime(): String? = synchronized(sPtyLock) { prepareTerminalRuntime() }
 
     private fun prepareTerminalRuntime(): String? {
+        // The daemon creates its unix socket below this directory and dies with EACCES when it is
+        // missing. It cannot live in $PREFIX/tmp either: `pkg install` empties it.
+        val socketDir = File(PTY_SOCKET_DIR)
+        if (!socketDir.isDirectory && !socketDir.mkdirs()) {
+            Log.w(LOG_TAG, "Could not create the terminal socket directory $socketDir")
+        }
         val cli = resolveLink(File(LINK_PATH))
         val installed = terminalRuntimePath()
         if (!cli.isFile) return installed
