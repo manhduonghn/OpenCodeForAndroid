@@ -23,6 +23,7 @@ key.properties
 signing-keys/
 *.jks
 *.keystore
+!keystore/debug.keystore
 *.p12
 *.pfx
 *.key

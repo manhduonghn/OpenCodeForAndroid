@@ -19,6 +19,17 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            // A fixed debug key is committed so every build (local and CI) has the same
+            // signature. Otherwise each CI run generates a new debug keystore and the APK
+            // has to be uninstalled before it can be installed over the previous one.
+            // This key is public and only used for debug builds.
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+            storeType = "PKCS12"
+        }
         create("release") {
             if (project.hasProperty("RELEASE_STORE_FILE")) {
                 storeFile = file(project.property("RELEASE_STORE_FILE") as String)

@@ -266,6 +266,10 @@ cd OpenCodeForAndroid
 The nightly workflow builds a debug APK on every push, the release workflow
 builds a signed APK for every `v*` tag.
 
+Debug builds are signed with the committed `keystore/debug.keystore` (password
+`android`, alias `androiddebugkey`), so local and CI builds share the same
+signature and can be installed as an update without uninstalling first.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
