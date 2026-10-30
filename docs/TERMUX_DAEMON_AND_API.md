@@ -42,8 +42,8 @@ Nguồn đã đọc:
 - `OpenCodeService`: foreground service `specialUse`, notification ongoing (Open/Stop),
   `START_STICKY`, `PARTIAL_WAKE_LOCK` (bật/tắt trong Settings), adopt server cũ qua
   `$HOME/.opencode/server.pid` + quét `/proc`, restart khi binary đổi.
-- `onCreate()` tự chạy bootstrap rồi start server, nên khi hệ thống restart service
-  với `intent == null` server vẫn được start lại.
+- `onCreate()` tự chạy bootstrap rồi start server; `onStartCommand(null)` (hệ thống restart
+  service sau khi giết app process) cũng start server ngay khi runtime đã sẵn sàng.
 - UI đã có nút xin **ignore battery optimizations**
   (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`).
 - `targetSdk = 28` → không bị giới hạn start FGS từ background (Android 12) và
@@ -62,7 +62,8 @@ Còn thiếu (trước P0/P1):
 | Không có hướng dẫn phantom-process killer | Android 12+ giết tiến trình con mà wake lock không cứu được. |
 
 Đã bổ sung trong P0/P1: WifiLock, bỏ `stopSelf()` khi task bị remove, BootReceiver, watchdog
-JobScheduler, nhận diện exit 9/137 + backoff, và dialog hướng dẫn OEM/phantom trong Settings.
+JobScheduler, restart mọi exit bất thường + backoff, heartbeat 60 giây trong service, và dialog
+hướng dẫn OEM/phantom trong Settings.
 Phần chưa làm: toggle wake lock ngay trên notification và timeout theo session (P2).
 
 ---
@@ -465,8 +466,16 @@ javac -version
    - **Tôn trọng Stop:** bấm Stop trong notification đặt cờ `user_stopped`, hủy job watchdog
      và activity không tự start lại; mở app / bấm Retry / Restart mới xóa cờ.
 8. **Phát hiện bị kill**: exit code `9` hoặc `137` → notification giải thích Android đã kill
-   tiến trình (phantom/LMK), kèm nút **Khởi động lại**; server được start lại với backoff
-   5s → 10s → 20s → 40s → 80s → 160s → 300s, reset khi start thành công.
+   tiến trình (phantom/LMK), kèm nút **Khởi động lại**. Mọi exit bất thường khác (crash, thiếu
+   thư viện, OOM cả cgroup) cũng được start lại thay vì chờ watchdog 15 phút. Backoff
+   5s → 10s → 20s → 40s → 80s → 160s → 300s; chỉ reset khi server đã chạy ≥ 60 giây, nên một
+   binary hỏng không tạo vòng lặp 5 giây.
+   - **`onStartCommand(null)`**: khi Android restart service sau khi giết app process, service
+     start server ngay nếu runtime đã sẵn sàng, thay vì trả `START_STICKY` rồi để port chết.
+     Cờ `user_stopped` vẫn thắng: service tự `stopSelf()`.
+   - **Heartbeat 60 giây**: kiểm tra port; nếu không có gì listen và không có process con đang
+     chạy thì start lại. Chủ yếu cứu server được *adopt* (không có reader thread) và exit bị
+     bỏ lỡ khi app bị freeze.
 9. **OEM guidance**: nút "Hướng dẫn giữ chạy nền" trong Settings → Pin, gồm tắt tối ưu pin,
    autostart Xiaomi/Oppo/vivo/Samsung/Huawei và lệnh tắt phantom process killer.
 10. **Chưa làm** (để P2): wake lock timeout có chủ đích / "chỉ giữ khi có session đang chạy".
@@ -535,7 +544,7 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 | Server sống khi màn hình tắt | FGS + wake lock (+ WifiLock) | Chỉ dựa vào wake lock |
 | Server sống khi vuốt recents | Bỏ `stopSelf()` trong `onTaskRemoved` | Stop service khi task removed |
 | Tự chạy sau reboot | `BOOT_COMPLETED` receiver + start FGS | Dùng runit |
-| Tự restart khi bị kill | JobScheduler watchdog + exit-code 9 handling | Trông chờ `START_STICKY` một mình |
+| Tự restart khi bị kill | Watchdog JobScheduler + heartbeat 60s + restart mọi exit bất thường | Trông chờ `START_STICKY` một mình |
 | WebUI + terminal cùng lúc | `service.json` (TUI tự attach) | Để TUI tự spawn server thứ hai |
 | Mở lại app giữa chừng | Lưu `last_session_id`, mở `/session/<id>` | Xoá session khi về trang chủ |
 | Chạy sshd/cron | `pkg install openssh`/`runit` (chấp nhận chết cùng app) | Coi runit là systemd |

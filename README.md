@@ -257,6 +257,15 @@ keeps the button for a later change of mind. A
 network and rewrites the resolver configuration when Wi-Fi, mobile data or a
 VPN changes.
 
+The service also heals itself instead of waiting for the 15-minute watchdog. An
+unexpected server exit (a crash, a missing library, an OOM kill of the whole
+cgroup) is restarted with the same exponential backoff used for a phantom kill,
+and a one-minute heartbeat starts the server again when nothing listens on the
+port — the case of an adopted server, which has no reader thread to report its
+exit. When Android restarts the service after killing the app process,
+`onStartCommand(null)` resumes the server right away rather than leaving the
+port dead until the next watchdog run.
+
 ## Security notes
 
 * **Cleartext HTTP is limited to loopback.** `res/xml/network_security_config.xml`

@@ -142,8 +142,8 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * How often the server was restarted after a SIGKILL, used for the exponential backoff. It is
-     * reset whenever a server starts successfully.
+     * How often the server was restarted after an unexpected exit, used for the exponential
+     * backoff. It is reset when the server ran long enough to count as healthy again.
      */
     @Volatile
     private var restartAttempts = 0
@@ -166,6 +166,21 @@ class OpenCodeService : Service() {
         }
     }
 
+    private var heartbeatRunning = false
+
+    /**
+     * Periodic self-check of the server. The reader thread reports the exit of a spawned server,
+     * but an adopted server has no reader, and an exit notification can be missed when Android
+     * freezes the app process. This catches both without waiting for the 15 minute watchdog.
+     */
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            if (!heartbeatRunning) return
+            WORKER.execute { checkServerAlive() }
+            handler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         sInstance = this
@@ -173,6 +188,7 @@ class OpenCodeService : Service() {
         applyWakeLock()
         startForegroundCompat(buildNotification())
         startSessionPolling()
+        startHeartbeat()
         registerNetworkCallback()
         // The watchdog is persisted, but an update of the app or a disabled job can lose it.
         OpenCodeWatchdog.ensureScheduled(this)
@@ -192,7 +208,21 @@ class OpenCodeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) return START_STICKY
+        if (intent == null) {
+            // Android restarted the service after it killed the app process, so there is no
+            // intent to repeat. Returning START_STICKY without starting anything left the port
+            // dead until the 15 minute watchdog; resume the server right here instead.
+            Log.i(TAG, "The service was restarted without an intent, resuming the server.")
+            if (OpenCodeSettings.stoppedByUser(this)) {
+                // A Stop that raced with the process death must win.
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            OpenCodeWatchdog.ensureScheduled(this)
+            // onCreate may still be installing the runtime; its callback starts the server then.
+            if (bootstrapReady) startServer()
+            return START_STICKY
+        }
 
         val action = intent.getStringExtra("action")
         if (action == ACTION_STOP) {
@@ -229,6 +259,7 @@ class OpenCodeService : Service() {
 
     override fun onDestroy() {
         stopSessionPolling()
+        stopHeartbeat()
         unregisterNetworkCallback()
         handler.removeCallbacksAndMessages(null)
         stopServer()
@@ -457,9 +488,8 @@ class OpenCodeService : Service() {
         }
     }
 
-    /** Reset the restart backoff and clear the explanation of an earlier phantom kill. */
+    /** Clear the explanation of an earlier phantom kill and publish the new server state. */
     private fun markServerRunning() {
-        restartAttempts = 0
         // The WebView pairs with the server once. When the server is replaced in the background
         // (a restart, or a second start after the app process was killed), the session cookie and
         // the basic credentials of the old pairing are stale; this counter tells the UI to pair
@@ -477,6 +507,7 @@ class OpenCodeService : Service() {
      * Drain the output of the server (a full pipe would block it) and react to its exit.
      */
     private fun watchServer(started: Process, startedPid: Int) {
+        val startedAt = SystemClock.uptimeMillis()
         var portBusy = false
         try {
             BufferedReader(InputStreamReader(started.inputStream)).use { reader ->
@@ -496,6 +527,7 @@ class OpenCodeService : Service() {
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
         }
+        val ranFor = SystemClock.uptimeMillis() - startedAt
         val current = process === started
         if (current) {
             process = null
@@ -504,13 +536,19 @@ class OpenCodeService : Service() {
             clearPidFile(startedPid)
             clearServiceRegistration(startedPid)
         }
-        Log.w(TAG, "The OpenCode server exited with $exitCode")
+        Log.w(TAG, "The OpenCode server exited with $exitCode after ${ranFor}ms")
 
         val intentional = stopping || !current
+        if (intentional) return
+
+        // A server that stayed up long enough is healthy again: its next death starts a fresh
+        // backoff instead of continuing the delay of an earlier crash loop.
+        if (ranFor >= HEALTHY_UPTIME_MS) restartAttempts = 0
+
         // `opencode service stop` sends SIGTERM to the registered server. That is an explicit
         // request of the user, exactly like the Stop action of the notification: the watchdog
         // must not start the server again a few minutes later.
-        if (!intentional && exitCode == 143) {
+        if (exitCode == 143) {
             Log.i(TAG, "The OpenCode server was stopped by 'opencode service stop'.")
             handleUserStop()
             return
@@ -518,24 +556,27 @@ class OpenCodeService : Service() {
         // Android's phantom process killer (and the low memory killer) sends SIGKILL, which the
         // JVM reports as 9 or 137. A foreground service and a wake lock cannot prevent that, so
         // explain it instead of showing a generic crash and retry with a backoff.
-        if (!intentional && (exitCode == 9 || exitCode == 137)) {
+        if (exitCode == 9 || exitCode == 137) {
             Log.w(TAG, "The OpenCode server was killed by Android (exit $exitCode).")
-            handlePhantomKill(exitCode)
+            handlePhantomKill()
             return
-        }
-        if (exitCode != 0 && !intentional) {
-            updateNotification("The OpenCode server stopped (exit $exitCode).")
         }
         // Another instance can win the race for the port. The winner is usually our own server
         // from a previous app process, so adopt it instead of staying dead.
-        if (!intentional && portBusy && !recoveredFromBusyPort) {
+        if (portBusy && !recoveredFromBusyPort) {
             recoveredFromBusyPort = true
             Log.i(TAG, "The port was busy, retrying with the server that holds it.")
             handler.postDelayed({
                 // The service may have been destroyed in the meantime.
                 if (sInstance === this) startServer()
             }, 1500)
+            return
         }
+        // Every other exit (a crash, a missing library, an OOM kill of the whole cgroup) used to
+        // leave the port dead until the 15 minute watchdog ran. Restart it with the same backoff.
+        Log.w(TAG, "The OpenCode server stopped unexpectedly (exit $exitCode), restarting it.")
+        updateNotification("The OpenCode server stopped (exit $exitCode), restarting it...")
+        restartAfterExit()
     }
 
     /**
@@ -543,20 +584,43 @@ class OpenCodeService : Service() {
      * avoids a tight loop when the phantom process killer is still deciding to kill every new
      * child of the app.
      */
-    private fun handlePhantomKill(exitCode: Int) {
+    private fun handlePhantomKill() {
         val explanation = getString(R.string.opencode_notification_phantom_text)
         updateNotification(explanation)
         postPhantomKillNotification()
+        restartAfterExit()
+    }
+
+    /**
+     * Start the server again after it died on its own, with an exponential backoff. The delay
+     * avoids a tight loop when the phantom process killer is still deciding to kill every new
+     * child of the app, or when a broken installation makes the binary exit right after start.
+     */
+    private fun restartAfterExit() {
         if (sInstance !== this || stopping) return
         val attempt = restartAttempts.coerceAtMost(6)
         val delay = (5_000L shl attempt).coerceAtMost(5 * 60_000L)
         restartAttempts++
-        Log.i(TAG, "Restarting the server after a kill in ${delay}ms (attempt $restartAttempts).")
+        Log.i(TAG, "Restarting the server in ${delay}ms (attempt $restartAttempts).")
         handler.postDelayed({
             if (sInstance !== this || stopping) return@postDelayed
             if (process?.isAlive == true) return@postDelayed
             startServer()
         }, delay)
+    }
+
+    /**
+     * Runs on [WORKER]. Restart the server when it should be running but nothing listens on the
+     * port. The reader thread of a spawned server reports its own exit, so this mainly covers an
+     * adopted server (which has no reader) and an exit that was missed while the app was frozen.
+     */
+    private fun checkServerAlive() {
+        if (sInstance !== this || stopping || !bootstrapReady) return
+        if (OpenCodeSettings.stoppedByUser(this)) return
+        if (process?.isAlive == true) return
+        if (isPortOpen(port)) return
+        Log.w(TAG, "The heartbeat found no server on port $port, starting it again.")
+        startServerBlocking()
     }
 
     /**
@@ -982,6 +1046,20 @@ class OpenCodeService : Service() {
         handler.removeCallbacks(sessionPoll)
     }
 
+    private fun startHeartbeat() {
+        if (heartbeatRunning) return
+        heartbeatRunning = true
+        handler.removeCallbacks(heartbeat)
+        // The first check is delayed: the bootstrap or a start command is already starting the
+        // server, and the heartbeat must not race it at service creation time.
+        handler.postDelayed(heartbeat, HEARTBEAT_INTERVAL_MS)
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatRunning = false
+        handler.removeCallbacks(heartbeat)
+    }
+
     /**
      * Resolve the session of the notification: the route reported by the WebView when the app is
      * open, otherwise the most recently updated session of the server. Runs on [WORKER].
@@ -1035,6 +1113,15 @@ class OpenCodeService : Service() {
 
         /** How often the service refreshes the session shown in the notification. */
         private const val SESSION_POLL_INTERVAL_MS = 4000L
+
+        /** How often the service checks that the server it should run is still listening. */
+        private const val HEARTBEAT_INTERVAL_MS = 60_000L
+
+        /**
+         * A server that ran at least this long counts as healthy, so its next unexpected exit
+         * starts the restart backoff from scratch instead of continuing an earlier crash loop.
+         */
+        private const val HEALTHY_UPTIME_MS = 60_000L
 
         @Volatile
         private var sInstance: OpenCodeService? = null
