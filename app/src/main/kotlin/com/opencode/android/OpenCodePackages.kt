@@ -98,7 +98,9 @@ object OpenCodePackages {
         "patchelf" to listOf("bin/patchelf"),
         "git" to listOf("bin/git"),
         "gh" to listOf("bin/gh"),
-        "openssl" to listOf("bin/openssl"),
+        // Termux splits the package: 'openssl' ships the libraries, 'openssl-tool' the command.
+        // Proving the library keeps the package from looking broken on every install.
+        "openssl" to listOf("lib/libcrypto.so", "lib/libssl.so"),
         "python" to listOf("bin/python3", "bin/python"),
         "python-pip" to listOf("bin/pip", "bin/pip3"),
         "nodejs" to listOf("bin/node"),
