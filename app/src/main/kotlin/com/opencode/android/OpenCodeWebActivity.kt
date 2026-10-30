@@ -377,7 +377,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         githubCopy.setOnClickListener { copyGithubCode() }
         githubLink.setOnClickListener { openGithubVerification() }
         githubClone.setOnClickListener { startGithubClone() }
-        githubRepoRefresh.setOnClickListener { refreshGithubRepos(force = true) }
 
         onBackPressedDispatcher.addCallback(
             this,
@@ -875,14 +874,12 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         if (!force && githubReposLoaded) return
         githubReposLoading = true
         githubRepoStatus.text = getString(R.string.opencode_settings_github_repos_loading)
-        githubRepoRefresh.isEnabled = false
         backgroundExecutor.execute {
             val result = OpenCodeGitHub.listRepos()
             val repos = if (result.ok) OpenCodeGitHub.parseRepos(result.output) else emptyList()
             handler.post {
                 if (destroyed) return@post
                 githubReposLoading = false
-                githubRepoRefresh.isEnabled = true
                 if (!result.ok) {
                     githubRepoStatus.text = getString(
                         R.string.opencode_settings_github_repos_failed,
@@ -1069,7 +1066,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
             renderStorage()
-            refreshSessionCard()
         }
     }
 
@@ -1114,12 +1110,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                 if (url != null && url.startsWith(baseUrl)) {
                     viewModel.reportSessionFromUrl(url)
                     viewModel.installSessionWatcher()
-                    renderTopBarSubtitle()
-                    val pending = pendingSessionId
-                    if (pending != null && pageLoaded) {
-                        pendingSessionId = null
-                        view?.loadUrl(sessionUrl(pending))
-                    }
                 }
             }
 
@@ -1127,7 +1117,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                 super.doUpdateVisitedHistory(view, url, isReload)
                 if (url != null && url.startsWith(baseUrl)) {
                     viewModel.reportSessionFromUrl(url)
-                    renderTopBarSubtitle()
                 }
             }
 
