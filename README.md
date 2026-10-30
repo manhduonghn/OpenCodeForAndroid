@@ -65,9 +65,20 @@ The app combines the two techniques that make this possible:
    directory belongs to the Termux app and is unreadable here, so a browser in
    such a sandbox starts, serves the UI and then fails every host lookup with
    `getaddrinfo`. The resolver configuration is written on every server start
-   too, using the DNS servers of the active network
-   (`ConnectivityManager`/`LinkProperties`), because glibc cannot use the
-   resolver of Android (bionic hands DNS over to `netd`).
+   and whenever the default network changes, using the IPv4 DNS servers of the
+   active network (`ConnectivityManager`/`LinkProperties`) first, because glibc
+   cannot use the resolver of Android (bionic hands DNS over to `netd`).
+
+   The order is what makes every network work. Many carriers report an IPv6
+   resolver first even on a connection that has no IPv6 route; glibc then waits
+   for that server to time out on **every** lookup and, on networks whose only
+   resolver is IPv6, fails with `EAI_AGAIN` while the IPv4 side of the
+   connection is fine. `resolv.conf` therefore lists IPv4 servers first, keeps
+   an IPv6 server only when the device owns a global IPv6 address, and appends
+   `1.1.1.1`/`8.8.8.8` as a fallback (`timeout:1 attempts:1`, at most three
+   servers, which is glibc's `MAXNS`). The file is only rewritten when its
+   content changes, so a Wi-Fi/mobile handover does not wake the server for
+   nothing.
 
 3. **Pairing the WebView.** `GET /` alone only serves the web app shell, which
    asks for a server address and password. The app therefore mints a one-time
@@ -224,6 +235,25 @@ when the app process dies. On start the service therefore looks the server up
 it runs the current binary, instead of starting a second `serve` that would
 fail with `EADDRINUSE`. A server of an older binary is stopped first, and the
 service waits until the port is free before spawning.
+
+When the server is replaced (a restart, or a new app process adopting an
+orphan), the page that the retained WebView shows is paired with the old
+server: its cookie and pairing token are stale. A generation counter on the
+service lets the UI notice the replacement on resume, mint a new token and
+reopen the same chat instead of leaving a page that only receives 401s.
+
+### Screen off and background
+
+The foreground service keeps a `PARTIAL_WAKE_LOCK` while it runs (the switch in
+the settings) and holds a Wi-Fi lock so the radio does not drop into power save
+during a long answer (`WIFI_MODE_FULL_HIGH_PERF`; the low-latency mode only
+works while the screen is on, which is the opposite of what a screen-off lock
+needs). The app asks once for the battery optimization exemption, because Doze
+can otherwise stop the server while the screen is off; the settings screen
+keeps the button for a later change of mind. A
+`ConnectivityManager.registerDefaultNetworkCallback` watches the default
+network and rewrites the resolver configuration when Wi-Fi, mobile data or a
+VPN changes.
 
 ## Security notes
 

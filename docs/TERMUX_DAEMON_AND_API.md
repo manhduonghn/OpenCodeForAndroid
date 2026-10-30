@@ -290,6 +290,23 @@ Luồng trong `LinuxEnvironment`:
 - Hạn chế: không có `apt`/`dpkg` (không chạy `postinst`), không remove package,
   package nào hardcode path trong rodata (khác độ dài) sẽ cần xử lý riêng.
 
+#### 4.3.1. Vì sao "một số mạng chạy, một số mạng không"
+
+`resolv.conf` của glibc là thứ quyết định. Trên nhiều mạng, Android trả về DNS
+IPv6 trước (thường do router quảng bá), trong khi máy **không có route IPv6**
+(`/proc/net/ipv6_route` rỗng, không có địa chỉ global). glibc thử nameserver theo
+đúng thứ tự trong file: mỗi lookup phải chờ IPv6 timeout rồi mới fallback IPv4,
+và nếu mạng chỉ có DNS IPv6 thì mọi lookup trả `EAI_AGAIN` dù IPv4 vẫn vào
+Internet bình thường. Vì vậy app hiện tại:
+
+1. Ghi **IPv4 trước**, IPv6 chỉ khi máy thật sự có địa chỉ global.
+2. Thêm `1.1.1.1`, `8.8.8.8` làm fallback, tối đa 3 nameserver (giới hạn
+   `MAXNS` của glibc), `options timeout:1 attempts:1`.
+3. Ghi file reset lại mỗi khi **default network đổi** (Wi-Fi ↔ 4G, bật/tắt VPN)
+   qua `ConnectivityManager.registerDefaultNetworkCallback`, nhưng bỏ qua nếu
+   nội dung không đổi để không đánh thức server vô ích.
+4. Ghi qua file tạm + `rename()` để server không đọc phải file dở dang.
+
 ### 4.4. Nếu muốn mở rộng
 
 - `pkg install openssh` → `sshd -D` (không daemonize) nếu cần SSH vào máy; nhớ nó vẫn

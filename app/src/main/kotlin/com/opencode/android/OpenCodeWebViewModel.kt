@@ -47,6 +47,13 @@ class OpenCodeWebViewModel : ViewModel() {
     /** HTTP Basic password of the local server, the WebView answers its challenges with it. */
     var serverPassword = ""
 
+    /**
+     * [OpenCodeService.serverGeneration] of the server the page was paired with. When the server
+     * is replaced while the app is in the background (watchdog, restart, another app start), the
+     * token and the cookie of the old pairing are stale and the page has to be paired again.
+     */
+    var pairedServerGeneration = 0
+
     /** The activity of the moment, used for the JavaScript dialogs only. */
     var ui: Ui? = null
 
@@ -114,6 +121,21 @@ class OpenCodeWebViewModel : ViewModel() {
     fun installSessionWatcher() {
         val view = webViewInstance ?: return
         view.evaluateJavascript(WATCHER_SCRIPT, null)
+    }
+
+    /**
+     * Resume timers and rendering of the retained WebView. The activity is stopped and started
+     * again when the screen is locked and unlocked; without this the timers of the web app can
+     * stay paused after the resume and the UI looks frozen until a manual reload.
+     */
+    fun resumeWebView() {
+        val view = webViewInstance ?: return
+        try {
+            view.onResume()
+            view.resumeTimers()
+        } catch (e: Exception) {
+            // A destroyed WebView throws here; the ViewModel is about to be cleared anyway.
+        }
     }
 
     /** Report a session from a native URL callback, before the injected script runs. */

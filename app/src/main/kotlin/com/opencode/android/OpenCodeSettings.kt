@@ -18,6 +18,7 @@ object OpenCodeSettings {
     private const val KEY_AUTO_UPDATE = "auto_update_check"
     private const val KEY_LAST_PROJECT = "storage_last_project_dir"
     private const val KEY_LAST_SESSION = "last_session_id"
+    private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -89,5 +90,16 @@ object OpenCodeSettings {
         val normalized = id.trim()
         if (!normalized.startsWith("ses_")) return
         prefs(context).edit().putString(KEY_LAST_SESSION, normalized).apply()
+    }
+
+    /**
+     * False until the app offered the battery optimization exemption once. Asking on every launch
+     * is hostile; the settings screen keeps the button for later.
+     */
+    fun batteryPromptShown(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_BATTERY_PROMPT_SHOWN, false)
+
+    fun setBatteryPromptShown(context: Context, shown: Boolean) {
+        prefs(context).edit().putBoolean(KEY_BATTERY_PROMPT_SHOWN, shown).apply()
     }
 }

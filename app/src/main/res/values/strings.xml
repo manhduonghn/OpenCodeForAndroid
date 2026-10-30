@@ -90,6 +90,11 @@
     <string name="opencode_battery_optimization_desc">Cho phép OpenCode chạy ổn định khi ứng dụng ở nền.</string>
     <string name="opencode_battery_optimization_ok">Đã bỏ tối ưu pin</string>
     <string name="opencode_battery_optimization_ask">Chưa bỏ tối ưu pin</string>
+    <string name="opencode_battery_prompt_title">Giữ OpenCode chạy khi khoá màn hình</string>
+    <string name="opencode_battery_prompt_message">Android tối ưu pin có thể dừng server khi màn hình tắt. Bỏ tối ưu pin cho OpenCode để phiên làm việc không bị ngắt khi bạn khoá máy.</string>
+    <string name="opencode_battery_prompt_allow">Bỏ tối ưu pin</string>
+    <string name="opencode_battery_prompt_later">Để sau</string>
+    <string name="opencode_reconnecting">Server vừa khởi động lại, đang kết nối lại…</string>
 
     <!-- Shared storage / SD card -->
     <string name="opencode_storage_title">Bộ nhớ &amp; SD card</string>

@@ -1058,10 +1058,75 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     override fun onResume() {
         super.onResume()
+        // The screen was off: the WebView of the ViewModel is the same instance, the system (or a
+        // long stop) can leave its timers paused, which makes the web UI look frozen.
+        viewModel.resumeWebView()
+        // A server that was replaced while the app was in the background invalidated the cookie
+        // and the pairing token of the page. Pair again instead of showing a page that only gets
+        // 401s from the API.
+        val generation = OpenCodeService.serverGeneration()
+        if (pageLoaded && generation != 0 && generation != viewModel.pairedServerGeneration) {
+            reconnectToRestartedServer()
+        }
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
             renderStorage()
         }
+        offerBatteryOptimizationOnce()
+    }
+
+    /**
+     * Pair the retained WebView with the server that replaced the old one, keeping the session
+     * the user had open. The cookie of the previous server is dropped, a new token is minted.
+     */
+    private fun reconnectToRestartedServer() {
+        if (destroyed) return
+        Log.i(TAG, "The server was replaced while the app was away, pairing again")
+        val sessionId = OpenCodeWebViewModel.sessionIdOf(webView.url)
+            ?: OpenCodeSettings.lastSessionId(this)
+        pageLoaded = false
+        pairAttempts = 0
+        loadFailures = 0
+        pendingSessionId = sessionId
+        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        try {
+            CookieManager.getInstance().apply {
+                removeAllCookies(null)
+                flush()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not drop the cookies of the previous server", e)
+        }
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        statusTitle.setText(R.string.opencode_status_starting)
+        statusDetail.setText(R.string.opencode_reconnecting)
+        statusProgress.visibility = View.VISIBLE
+        statusProgress.isIndeterminate = true
+        statusRetry.visibility = View.GONE
+        handler.removeCallbacks(poll)
+        handler.post(poll)
+    }
+
+    /**
+     * Ask once for the battery optimization exemption. Without it Doze can stop the server while
+     * the screen is off, which is exactly the case this app is used in. The prompt is recorded
+     * before it is shown, so a rotation or a second launch does not ask again; the button in the
+     * settings screen remains for users who choose "later".
+     */
+    private fun offerBatteryOptimizationOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (OpenCodeSettings.batteryPromptShown(this)) return
+        OpenCodeSettings.setBatteryPromptShown(this, true)
+        if (isIgnoringBatteryOptimizations()) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.opencode_battery_prompt_title)
+            .setMessage(R.string.opencode_battery_prompt_message)
+            .setPositiveButton(R.string.opencode_battery_prompt_allow) { _, _ ->
+                requestIgnoreBatteryOptimizations()
+            }
+            .setNegativeButton(R.string.opencode_battery_prompt_later, null)
+            .show()
     }
 
     override fun onJsAlert(view: WebView, message: String?, result: JsResult) {
@@ -1103,15 +1168,22 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
                 // The page rendered, so the counter of failed loads starts again.
                 if (pageLoaded) loadFailures = 0
                 if (url != null && url.startsWith(baseUrl)) {
-                    viewModel.reportSessionFromUrl(url)
+                    reportSession(url)
                     viewModel.installSessionWatcher()
+                    // A re-pair after a server restart keeps the chat the user was reading: the
+                    // start page was loaded with the fresh token, open the session on top of it.
+                    val pending = pendingSessionId
+                    if (pending != null && OpenCodeWebViewModel.sessionIdOf(url) == null) {
+                        pendingSessionId = null
+                        webView.loadUrl("$baseUrl/session/$pending")
+                    }
                 }
             }
 
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 if (url != null && url.startsWith(baseUrl)) {
-                    viewModel.reportSessionFromUrl(url)
+                    reportSession(url)
                 }
             }
 
@@ -1145,6 +1217,12 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         }
         // The Pairing redirect stores the session cookie of the server here.
         CookieManager.getInstance().setAcceptCookie(true)
+    }
+
+    /** Report the route to the notification tracker and remember it across a process death. */
+    private fun reportSession(url: String?) {
+        viewModel.reportSessionFromUrl(url)
+        OpenCodeWebViewModel.sessionIdOf(url)?.let { OpenCodeSettings.setLastSessionId(this, it) }
     }
 
     // ------------------------------------------------------------------ install state
@@ -1333,6 +1411,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private fun loadUi(sessionToken: String?) {
         if (pageLoaded) return
         pageLoaded = true
+        viewModel.pairedServerGeneration = OpenCodeService.serverGeneration()
         waitingForInstall = false
         statusPanel.visibility = View.GONE
         webView.visibility = View.VISIBLE

@@ -9,6 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -86,6 +90,57 @@ class OpenCodeService : Service() {
      */
     private var wifiLock: WifiManager.WifiLock? = null
 
+    /** Whether [networkCallback] is registered, so onDestroy only unregisters a live callback. */
+    private var networkCallbackRegistered = false
+
+    /**
+     * The resolver configuration follows the default network: Wi-Fi, mobile data and a VPN each
+     * report different DNS servers. A network handover while the screen is off used to leave the
+     * glibc runtime of the prefix with the dead servers of the previous network, and every host
+     * lookup of the running server failed with "fetch failed".
+     */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = refreshResolvConfInBackground()
+
+        override fun onLost(network: Network) = refreshResolvConfInBackground()
+
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+            refreshResolvConfInBackground()
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) =
+            refreshResolvConfInBackground()
+    }
+
+    private fun refreshResolvConfInBackground() {
+        if (sInstance !== this) return
+        try {
+            WORKER.execute { OpenCodeBootstrap.refreshResolvConf(applicationContext) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not schedule the resolver refresh", e)
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
+        try {
+            val manager = getSystemService(ConnectivityManager::class.java) ?: return
+            manager.registerDefaultNetworkCallback(networkCallback, handler)
+            networkCallbackRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not watch the default network", e)
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        if (!networkCallbackRegistered) return
+        networkCallbackRegistered = false
+        try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not stop watching the default network", e)
+        }
+    }
+
     /**
      * How often the server was restarted after a SIGKILL, used for the exponential backoff. It is
      * reset whenever a server starts successfully.
@@ -118,6 +173,7 @@ class OpenCodeService : Service() {
         applyWakeLock()
         startForegroundCompat(buildNotification())
         startSessionPolling()
+        registerNetworkCallback()
         // The watchdog is persisted, but an update of the app or a disabled job can lose it.
         OpenCodeWatchdog.ensureScheduled(this)
         // Make sure the Linux toolchain and OpenCode itself are installed first, then start the
@@ -173,6 +229,7 @@ class OpenCodeService : Service() {
 
     override fun onDestroy() {
         stopSessionPolling()
+        unregisterNetworkCallback()
         handler.removeCallbacksAndMessages(null)
         stopServer()
         releaseWakeLock()
@@ -403,6 +460,11 @@ class OpenCodeService : Service() {
     /** Reset the restart backoff and clear the explanation of an earlier phantom kill. */
     private fun markServerRunning() {
         restartAttempts = 0
+        // The WebView pairs with the server once. When the server is replaced in the background
+        // (a restart, or a second start after the app process was killed), the session cookie and
+        // the basic credentials of the old pairing are stale; this counter tells the UI to pair
+        // again instead of showing a dead page.
+        sServerGeneration++
         getSystemService(NotificationManager::class.java)?.cancel(PHANTOM_NOTIFICATION_ID)
         // Register the server in the state file that the TUI and the CLI of OpenCode discover.
         // Without it `opencode` starts a second server of its own, which then fights for the
@@ -865,9 +927,14 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * Termux acquires the same high performance Wi-Fi lock in `TermuxService`. The CPU wake lock
-     * alone does not keep the Wi-Fi radio out of power save, so a long answer could stall while
-     * the screen is off.
+     * Keep the Wi-Fi radio out of power save while the server runs. The CPU wake lock alone does
+     * not do that, so a long answer could stall when the screen turns off.
+     *
+     * `WIFI_MODE_FULL_LOW_LATENCY` would look like the modern replacement, but the Wi-Fi stack
+     * only honours it while the app is in the foreground **and the screen is on**; with the screen
+     * locked it does nothing, which is exactly the situation this lock exists for. The high
+     * performance mode stays effective when the screen is off (Termux uses it for the same
+     * reason), so it is kept even though API 34 deprecated it.
      */
     @Suppress("DEPRECATION")
     private fun acquireWifiLock() {
@@ -971,6 +1038,14 @@ class OpenCodeService : Service() {
 
         @Volatile
         private var sInstance: OpenCodeService? = null
+
+        /** Incremented every time a server becomes reachable, shared with the WebView. */
+        @Volatile
+        private var sServerGeneration = 0
+
+        /** The generation of the server that is listening right now, 0 when none ever started. */
+        @JvmStatic
+        fun serverGeneration(): Int = sServerGeneration
 
         /**
          * Apply the wake lock preference to the running service immediately. Preferences are

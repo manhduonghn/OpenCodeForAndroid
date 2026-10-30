@@ -31,7 +31,9 @@ import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.HttpURLConnection
+import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -456,35 +458,20 @@ object OpenCodeBootstrap {
      * glibc cannot use the resolver of Android (bionic hands DNS over to netd); it reads its
      * nameservers from `$PREFIX/glibc/etc/resolv.conf`. The servers of the active network are
      * used, because they change with Wi-Fi, mobile data and VPN, so the file is rewritten every
-     * time the server starts. Public resolvers are only a last resort for a network that does not
-     * report its own servers.
+     * time the network changes and the server starts. Public resolvers are appended as a fallback.
+     *
+     * The order matters. Android reports the IPv6 DNS server first on many carriers, and glibc
+     * tries the servers in the order they are listed. When the device has no IPv6 connectivity,
+     * each lookup waits for the IPv6 timeout before it falls back to IPv4, and on a network whose
+     * only resolver is IPv6-only every lookup fails with `EAI_AGAIN` even though the IPv4 side of
+     * the connection works. IPv4 servers are therefore written first, and an IPv6 server is only
+     * kept when this device actually has a global IPv6 address to reach it.
      */
     fun refreshResolvConf(context: Context?) {
-        val servers = ArrayList<String>()
-        if (context != null) {
-            try {
-                val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                val network: Network? = manager?.activeNetwork
-                val properties = if (network == null) null else manager.getLinkProperties(network)
-                properties?.dnsServers?.forEach { address: InetAddress ->
-                    if (address.isAnyLocalAddress || address.isLinkLocalAddress) return@forEach
-                    val host = address.hostAddress
-                    if (host.isNullOrEmpty() || host in servers) return@forEach
-                    servers.add(host)
-                }
-            } catch (e: Exception) {
-                Log.w(LOG_TAG, "Could not read the DNS servers of the active network", e)
-            }
-        }
-        if (servers.isEmpty()) {
-            // The device does not report its resolvers (rare, but some ROMs do that).
-            servers.add("1.1.1.1")
-            servers.add("8.8.8.8")
-        }
-
-        val content = buildString {
-            servers.take(4).forEach { append("nameserver ").append(it).append('\n') }
-            append("options timeout:2 attempts:2\n")
+        val content = buildResolvConf(context)
+        if (content == null) {
+            // The prefix is not unpacked yet, there is nothing to configure.
+            return
         }
 
         // resolv.conf of the prefix and the one the glibc libraries read. In the Termux packages
@@ -492,13 +479,146 @@ object OpenCodeBootstrap {
         for (path in listOf(RESOLV_CONF_PATH, "$GLIBC_ETC_DIR/resolv.conf")) {
             val file = File(path)
             if (file.parentFile?.isDirectory != true) continue
+            // A default-network callback fires on every handover, including ones that keep the
+            // same resolvers. Rewriting the file would wake the server for nothing.
+            if (readTextFileQuietly(file) == content) continue
             try {
-                writeTextFile(file, content)
+                // The glibc copy is usually a symlink to the prefix copy; write the real target so
+                // the link itself survives the atomic rename.
+                writeTextFileAtomically(file.canonicalFile, content)
             } catch (e: IOException) {
                 Log.w(LOG_TAG, "Could not write $path", e)
             }
         }
-        Log.i(LOG_TAG, "Resolver configuration: $servers")
+        val nameservers = content.lineSequence().filter { it.startsWith("nameserver") }.joinToString()
+        Log.i(LOG_TAG, "Resolver configuration: $nameservers")
+    }
+
+    /** Servers that resolve names on networks which report no resolver of their own. */
+    private val PUBLIC_DNS_SERVERS = listOf("1.1.1.1", "8.8.8.8")
+
+    /**
+     * glibc reads at most three nameservers (`MAXNS`); anything beyond the third line is ignored,
+     * so the list is capped here instead of writing lines that would never be used.
+     */
+    private const val MAX_RESOLV_SERVERS = 3
+
+    /**
+     * At most two servers of the network are kept, which leaves one slot for a public fallback and
+     * keeps a lookup from spending its whole budget on resolvers that an OEM router silently
+     * drops.
+     */
+    private const val MAX_NETWORK_SERVERS = 2
+
+    /**
+     * Build the content of `resolv.conf` for the current network, or null when the prefix itself is
+     * not unpacked yet.
+     */
+    private fun buildResolvConf(context: Context?): String? {
+        val prefixReady = File(RESOLV_CONF_PATH).parentFile?.isDirectory == true ||
+            File(GLIBC_ETC_DIR).isDirectory
+        if (!prefixReady) return null
+
+        val servers = selectResolvServers(context)
+        return buildString {
+            servers.forEach { append("nameserver ").append(it).append('\n') }
+            // One round of one second is enough for a resolver that answers, and it keeps a broken
+            // server from stalling every lookup for four seconds (timeout x attempts).
+            append("options timeout:1 attempts:1\n")
+        }
+    }
+
+    /**
+     * Pick the nameservers for `resolv.conf`: the IPv4 servers of the active network first, then
+     * an IPv6 server only when the device has a global IPv6 address, then public IPv4 resolvers.
+     */
+    private fun selectResolvServers(context: Context?): List<String> {
+        val network4 = ArrayList<String>()
+        val network6 = ArrayList<String>()
+        if (context != null) {
+            try {
+                val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                val network: Network? = manager?.activeNetwork
+                val properties = if (network == null) null else manager.getLinkProperties(network)
+                properties?.dnsServers?.forEach { address: InetAddress ->
+                    if (address.isAnyLocalAddress || address.isLinkLocalAddress || address.isMulticastAddress) {
+                        return@forEach
+                    }
+                    val host = address.hostAddress?.substringBefore('%')
+                    if (host.isNullOrEmpty()) return@forEach
+                    val target = if (address is Inet6Address) network6 else network4
+                    if (host !in target) target.add(host)
+                }
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not read the DNS servers of the active network", e)
+            }
+        }
+
+        val servers = ArrayList<String>()
+        // IPv4 first: it is reachable on every network and answers without waiting for an IPv6
+        // route that this device may not have.
+        network4.take(MAX_NETWORK_SERVERS).forEach { if (servers.size < MAX_RESOLV_SERVERS) servers.add(it) }
+        if (network6.isNotEmpty() && hasGlobalIpv6Address()) {
+            network6.take(1).forEach { if (servers.size < MAX_RESOLV_SERVERS) servers.add(it) }
+        }
+        PUBLIC_DNS_SERVERS.forEach {
+            if (servers.size < MAX_RESOLV_SERVERS && it !in servers) servers.add(it)
+        }
+        return servers
+    }
+
+    /**
+     * Whether any interface of this device owns a global IPv6 address.
+     *
+     * Android happily reports the IPv6 resolver of the carrier on an IPv4-only connection (the
+     * router advertises it, the host route is missing). Writing that server first is what makes
+     * `getaddrinfo` wait for the unreachable address and eventually fail with `EAI_AGAIN`.
+     */
+    private fun hasGlobalIpv6Address(): Boolean {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return false
+            for (nic in interfaces) {
+                if (!nic.isUp) continue
+                for (address in nic.inetAddresses) {
+                    if (address is Inet6Address && address.isGlobalIpv6Address()) return true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not inspect the IPv6 addresses of this device", e)
+        }
+        return false
+    }
+
+    /**
+     * A routable IPv6 address. `isSiteLocalAddress` also covers the deprecated `fec0::/10` range,
+     * which no carrier routes; `isLoopbackAddress` and `isLinkLocalAddress` cover the rest.
+     */
+    private fun Inet6Address.isGlobalIpv6Address(): Boolean =
+        !isAnyLocalAddress && !isLoopbackAddress && !isLinkLocalAddress && !isSiteLocalAddress &&
+            !isMulticastAddress
+
+    /**
+     * Write the file through a sibling temporary file and rename it over the destination, so a
+     * server that resolves a name in the middle of a network handover never reads half a file.
+     */
+    private fun writeTextFileAtomically(file: File, content: String) {
+        val directory = file.parentFile
+        if (directory != null && !directory.isDirectory && !directory.mkdirs()) {
+            throw IOException("Could not create the directory $directory")
+        }
+        val temporary = File(directory, "${file.name}.tmp")
+        FileOutputStream(temporary).use { stream ->
+            stream.write(content.toByteArray(Charsets.UTF_8))
+            stream.flush()
+        }
+        if (!temporary.renameTo(file)) {
+            // rename(2) replaces the destination atomically; the fallback keeps FAT-style storages
+            // working, where rename refuses to overwrite an existing file.
+            if (!file.delete() || !temporary.renameTo(file)) {
+                temporary.delete()
+                throw IOException("Could not replace $file")
+            }
+        }
     }
 
     /**
