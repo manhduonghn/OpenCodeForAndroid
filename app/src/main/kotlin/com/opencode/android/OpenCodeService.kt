@@ -156,6 +156,18 @@ class OpenCodeService : Service() {
     @Volatile
     private var activeSession: OpenCodeApi.Session? = null
 
+    /** Sessions listed in the expanded notification: the active one first, then the busy ones. */
+    @Volatile
+    private var notificationSessions: List<OpenCodeApi.Session> = emptyList()
+
+    /**
+     * Fingerprint of the last notification content. The service polls every few seconds; posting
+     * an identical notification each time would wake the system for nothing. The empty string is
+     * never a fingerprint, so a server without sessions still clears a stale one.
+     */
+    @Volatile
+    private var sessionSignature = ""
+
     private var sessionPolling = false
 
     private val sessionPoll = object : Runnable {
@@ -944,7 +956,7 @@ class OpenCodeService : Service() {
     /**
      * The notification identifies the chat session that is open in the WebView, not only the
      * server URL. [OpenCodeSessionTracker] is fed by the injected route watcher, and the service
-     * polls `/api/session/<id>` for the title and the project directory.
+     * polls `/api/session` for the title, the project directory and the working state.
      */
     private fun buildNotification(): Notification {
         val openIntent = PendingIntent.getActivity(
@@ -972,18 +984,42 @@ class OpenCodeService : Service() {
         if (session != null) {
             title = session.title
             val directory = session.directory.ifEmpty { OpenCodeBootstrap.HOME }
-            val age = OpenCodeApi.relativeAge(session.updated)
-            text = if (age.isEmpty()) directory else "$directory · $age"
+            text = "$directory · ${sessionState(session)}"
         } else {
             title = getString(R.string.opencode_notification_title)
             text = serverStatusText
+        }
+
+        // The collapsed notification shows the session of the UI; the expanded one lists the
+        // sessions that are working too, so a background turn is visible without opening the app.
+        val sessions = notificationSessions
+        val running = sessions.count { it.running }
+        val style = Notification.InboxStyle()
+            .setBigContentTitle(getString(R.string.opencode_notification_title))
+        if (sessions.isEmpty()) {
+            style.addLine(text)
+        } else {
+            for (item in sessions) {
+                style.addLine(
+                    getString(
+                        R.string.opencode_notification_session_line,
+                        item.title,
+                        sessionState(item),
+                    ),
+                )
+            }
+            if (running > 1) {
+                style.setSummaryText(
+                    getString(R.string.opencode_notification_running_count, running),
+                )
+            }
         }
 
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_service_notification)
             .setContentTitle(title)
             .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setStyle(style)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -1005,6 +1041,33 @@ class OpenCodeService : Service() {
                 stopIntent,
             )
             .build()
+    }
+
+    /**
+     * State of a session for the notification: `đang chạy · 3 phút` while the agent works,
+     * `nhàn rỗi · 5 phút trước` when it does not, with a failed outcome appended.
+     */
+    private fun sessionState(session: OpenCodeApi.Session): String {
+        val state = if (session.running) {
+            val elapsed = OpenCodeApi.elapsed(session.busy)
+            if (elapsed.isEmpty()) {
+                getString(R.string.opencode_notification_running)
+            } else {
+                getString(R.string.opencode_notification_running_for, elapsed)
+            }
+        } else {
+            val age = OpenCodeApi.relativeAge(session.updated)
+            if (age.isEmpty()) {
+                getString(R.string.opencode_notification_idle)
+            } else {
+                getString(R.string.opencode_notification_idle_ago, age)
+            }
+        }
+        // 'succeeded' is the normal result, anything else that the server recorded is shown.
+        if (!session.running && session.outcome.isNotEmpty() && session.outcome != OUTCOME_SUCCEEDED) {
+            return getString(R.string.opencode_notification_failed, state)
+        }
+        return state
     }
 
     private fun startForegroundCompat(notification: Notification) {
@@ -1134,37 +1197,63 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * Resolve the session of the notification: the route reported by the WebView when the app is
-     * open, otherwise the most recently updated session of the server. Runs on [WORKER].
+     * Resolve the sessions of the notification. The one open in the WebView comes first; the rest
+     * of the list makes a turn that runs in the background visible. Runs on [WORKER].
      */
     private fun refreshActiveSession() {
         if (!bootstrapReady) return
         val currentPort = port
         val secret = OpenCodeBootstrap.getServerPassword(this)
+        val sessions = OpenCodeApi.sessionList(currentPort, secret, 3500) ?: return
         val reported = OpenCodeSessionTracker.activeSessionId
-        var resolved: OpenCodeApi.Session? = null
-        if (reported != null) resolved = OpenCodeApi.session(currentPort, secret, reported, 3500)
-        if (resolved == null && reported == null) {
-            val sessions = OpenCodeApi.sessionList(currentPort, secret, 3500)
-            resolved = sessions?.firstOrNull()
-        }
-        val previous = activeSession
-        if (resolved == null) {
-            if (reported == null && previous != null) {
-                activeSession = null
-                postNotification()
+        val active = reported?.let { id -> sessions.firstOrNull { it.id == id } }
+            ?: sessions.firstOrNull()
+        val shown = sessionsForNotification(active, sessions)
+        val signature = buildString {
+            // Prefix so an empty server list still differs from the initial empty signature.
+            append("sessions")
+            append('|').append(active?.id.orEmpty())
+            for (session in shown) {
+                append('|').append(session.id)
+                    .append(':').append(session.busy)
+                    .append(':').append(session.idle)
+                    .append(':').append(session.updated)
+                    .append(':').append(session.outcome)
+                    .append(':').append(session.title)
             }
-            return
+            // A working session shows how long it has been working, so the line has to be
+            // refreshed even when no field of the session changes.
+            if (shown.any { it.running }) append('|').append(System.currentTimeMillis() / 60_000L)
         }
-        val changed = previous == null ||
-            previous.id != resolved.id ||
-            previous.title != resolved.title ||
-            previous.updated != resolved.updated ||
-            previous.directory != resolved.directory
-        if (changed) {
-            activeSession = resolved
-            postNotification()
+        if (signature == sessionSignature) return
+        sessionSignature = signature
+        activeSession = active
+        notificationSessions = shown
+        postNotification()
+    }
+
+    /**
+     * Sessions of the expanded notification, at most [NOTIFICATION_SESSION_LIMIT]: the one open in
+     * the UI, then the ones that are working, then the most recently updated ones (the server
+     * already sorts its list by the last update).
+     */
+    private fun sessionsForNotification(
+        active: OpenCodeApi.Session?,
+        sessions: List<OpenCodeApi.Session>,
+    ): List<OpenCodeApi.Session> {
+        val ordered = ArrayList<OpenCodeApi.Session>(NOTIFICATION_SESSION_LIMIT)
+        if (active != null) ordered.add(active)
+        for (session in sessions) {
+            if (ordered.size >= NOTIFICATION_SESSION_LIMIT) break
+            if (session.id == active?.id || !session.running) continue
+            ordered.add(session)
         }
+        for (session in sessions) {
+            if (ordered.size >= NOTIFICATION_SESSION_LIMIT) break
+            if (ordered.any { it.id == session.id }) continue
+            ordered.add(session)
+        }
+        return ordered
     }
 
     companion object {
@@ -1186,6 +1275,12 @@ class OpenCodeService : Service() {
 
         /** How often the service refreshes the session shown in the notification. */
         private const val SESSION_POLL_INTERVAL_MS = 4000L
+
+        /** Sessions listed in the expanded notification, the active one included. */
+        private const val NOTIFICATION_SESSION_LIMIT = 5
+
+        /** Outcome the server records for a turn that finished without an error. */
+        private const val OUTCOME_SUCCEEDED = "succeeded"
 
         /** How often the service checks that the server it should run is still listening. */
         private const val HEARTBEAT_INTERVAL_MS = 60_000L

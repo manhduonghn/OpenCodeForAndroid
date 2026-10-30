@@ -28,7 +28,19 @@ object OpenCodeApi {
         val agent: String,
         val model: String,
         val updated: Long,
-    )
+        /** Last time the server started work on the session, ms since the epoch. */
+        val busy: Long = 0L,
+        /** Last time the session went idle, ms since the epoch. */
+        val idle: Long = 0L,
+        /** Result of the last turn (`succeeded`, …), empty while none has finished. */
+        val outcome: String = "",
+    ) {
+        /**
+         * True while the agent is working: the server writes a new `busy` time when a turn starts
+         * and an `idle` time when it ends, so the most recent of the two tells the state.
+         */
+        val running: Boolean get() = busy > idle
+    }
 
     fun sessionList(port: Int, secret: String, timeoutMs: Int = 5000): List<Session>? {
         val body = get("http://127.0.0.1:$port/api/session", secret, timeoutMs) ?: return null
@@ -145,7 +157,30 @@ object OpenCodeApi {
             agent = item.optString("agent", ""),
             model = if (provider.isEmpty()) modelName else "$provider/$modelName",
             updated = time?.optLong("updated", 0L) ?: 0L,
+            busy = time?.optLong("busy", 0L) ?: 0L,
+            idle = time?.optLong("idle", 0L) ?: 0L,
+            outcome = item.optString("outcome", ""),
         )
+    }
+
+    /**
+     * Human readable duration since [since], used for a session that is working. The session list
+     * only tells when the work started, so the elapsed time is computed here.
+     */
+    fun elapsed(since: Long): String {
+        if (since <= 0L) return ""
+        val seconds = TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis() - since)
+            .coerceAtLeast(0L)
+        return when {
+            seconds < 60 -> "$seconds giây"
+            seconds < 3600 -> "${seconds / 60} phút"
+            seconds < 86_400 -> {
+                val hours = seconds / 3600
+                val minutes = (seconds % 3600) / 60
+                if (minutes == 0L) "$hours giờ" else "$hours giờ $minutes phút"
+            }
+            else -> "${seconds / 86_400} ngày"
+        }
     }
 
     private fun get(url: String, secret: String, timeoutMs: Int): String? =

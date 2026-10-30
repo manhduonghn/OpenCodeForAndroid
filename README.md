@@ -340,6 +340,17 @@ exit. When Android restarts the service after killing the app process,
 `onStartCommand(null)` resumes the server right away rather than leaving the
 port dead until the next watchdog run.
 
+The foreground notification is the handle that keeps the service alive, and it
+also reports what the server is doing. The collapsed form names the session open
+in the UI, its project directory and the state of the agent: `đang chạy · 3
+phút` while `time.busy` is newer than `time.idle`, `nhàn rỗi · 5 phút trước`
+otherwise, with a non-`succeeded` outcome appended as `lỗi`. The expanded form
+lists up to five sessions — the active one, then every other working session,
+then the most recently updated ones — so a turn started from the terminal or a
+second tab is visible without opening the app. The service polls `/api/session`
+every four seconds and posts only when the fingerprint changes, plus once a
+minute while something runs so the elapsed time advances.
+
 ## Security notes
 
 * **Cleartext HTTP is limited to loopback.** `res/xml/network_security_config.xml`
