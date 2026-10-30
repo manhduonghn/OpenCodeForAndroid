@@ -41,6 +41,15 @@
                 android:textSize="11sp" />
 
             <ImageButton
+                android:id="@+id/refresh_button"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:background="@drawable/bg_button_ghost"
+                android:contentDescription="@string/opencode_webui_refresh"
+                android:padding="9dp"
+                android:src="@drawable/ic_refresh" />
+
+            <ImageButton
                 android:id="@+id/settings_button"
                 android:layout_width="42dp"
                 android:layout_height="42dp"
@@ -822,58 +831,6 @@
                         android:layout_height="wrap_content"
                         android:orientation="vertical" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <!-- WebUI connection -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="14dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:contentDescription="@null"
-                        android:src="@drawable/ic_refresh" />
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1"
-                        android:text="Kết nối WebUI"
-                        android:textColor="@color/oc_text"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="Dùng khi WebUI không mở được, bị kẹt trang pair hoặc hiện đống link /auth/connect. Thao tác này sẽ xóa cookie, bộ nhớ cache WebView, xác thực HTTP và bắt đầu lại quá trình ghép nối từ đầu."
-                    android:textColor="@color/oc_text_muted"
-                    android:textSize="12sp" />
-
-                <Button
-                    android:id="@+id/settings_webui_hard_refresh"
-                    android:layout_width="match_parent"
-                    android:layout_height="40dp"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/bg_button_outline"
-                    android:text="Làm mới WebUI"
-                    android:textAllCaps="false"
-                    android:textColor="@color/oc_text"
-                    android:textSize="13sp" />
             </LinearLayout>
         </LinearLayout>
     </ScrollView>

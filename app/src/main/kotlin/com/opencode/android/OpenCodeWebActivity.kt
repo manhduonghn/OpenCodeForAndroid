@@ -116,7 +116,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var githubRepoSection: View
     private lateinit var githubRepoStatus: TextView
     private lateinit var githubRepoList: LinearLayout
-    private lateinit var webuiHardRefreshButton: Button
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -329,20 +328,16 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         githubRepoSection = findViewById(R.id.github_repo_section)
         githubRepoStatus = findViewById(R.id.github_repo_status)
         githubRepoList = findViewById(R.id.github_repo_list)
-        webuiHardRefreshButton = findViewById(R.id.settings_webui_hard_refresh)
     }
 
     private fun bindSettings() {
+        findViewById<View>(R.id.refresh_button).setOnClickListener { hardRefreshWebUi() }
         findViewById<View>(R.id.settings_button).setOnClickListener { openSettings() }
         findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
         findViewById<View>(R.id.files_manage).setOnClickListener {
             FileManagerDialog.show(this) { directory -> openProject(directory) }
         }
 
-        webuiHardRefreshButton.setOnClickListener {
-            closeSettings()
-            hardRefreshWebUi()
-        }
         updatesCheck.setOnClickListener { checkForUpdates() }
         updatesUpdate.setOnClickListener { startUpdate() }
         updatesAuto.setOnCheckedChangeListener { _, checked ->

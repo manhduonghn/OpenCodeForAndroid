@@ -41,6 +41,7 @@
     <string name="opencode_settings_close">Đóng</string>
     <string name="opencode_settings_subtitle">Phiên chat, chạy nền, bộ nhớ, cập nhật và GitHub</string>
     <string name="opencode_settings_open">Mở cài đặt</string>
+    <string name="opencode_webui_refresh">Làm mới WebUI</string>
 
     <!-- Current session -->
     <string name="opencode_session_title">Phiên chat</string>
