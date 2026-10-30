@@ -12,25 +12,27 @@ val prepareCliBridgeAssets = tasks.register<Sync>("prepareCliBridgeAssets") {
     dependsOn(":cli-bridge:linkReleaseExecutableAndroidNativeArm64")
     dependsOn(":cli-bridge:linkReleaseExecutableAndroidNativeX64")
     into(cliBridgeAssets)
-    from(arm64BridgeDir) {
+    // Copy the script-level paths into local values. A task action that reads a top-level property
+    // captures the whole build script, which the configuration cache refuses to serialize.
+    val arm64Dir = arm64BridgeDir
+    val x64Dir = x64BridgeDir
+    from(arm64Dir) {
         // .kexe on Linux/macOS hosts, .exe on Windows hosts.
         include("oc-bridge.kexe", "oc-bridge.exe")
         rename { "oc-bridge" }
         into("cli/arm64-v8a")
     }
-    from(x64BridgeDir) {
+    from(x64Dir) {
         include("oc-bridge.kexe", "oc-bridge.exe")
         rename { "oc-bridge" }
         into("cli/x86_64")
     }
     doFirst {
-        fun requireBinary(dir: File, abi: String) {
+        listOf("arm64-v8a" to arm64Dir, "x86_64" to x64Dir).forEach { (abi, dir) ->
             val binary = File(dir, "oc-bridge.kexe").takeIf { it.isFile }
                 ?: File(dir, "oc-bridge.exe")
             check(binary.isFile) { "The $abi oc-bridge executable was not built in $dir" }
         }
-        requireBinary(arm64BridgeDir, "arm64-v8a")
-        requireBinary(x64BridgeDir, "x86_64")
     }
 }
 
