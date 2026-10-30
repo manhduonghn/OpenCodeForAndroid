@@ -1217,13 +1217,17 @@ class OpenCodeService : Service() {
                 append('|').append(session.id)
                     .append(':').append(session.busy)
                     .append(':').append(session.idle)
-                    .append(':').append(session.updated)
                     .append(':').append(session.outcome)
                     .append(':').append(session.title)
+                    .append(':').append(session.directory)
+                // The line of an idle session shows the age of the last update, the line of a
+                // running one the elapsed time. While a session runs its `updated` changes every
+                // few seconds but the line does not use it, so it stays out of the fingerprint.
+                if (!session.running) append(':').append(session.updated)
             }
-            // A working session shows how long it has been working, so the line has to be
-            // refreshed even when no field of the session changes.
-            if (shown.any { it.running }) append('|').append(System.currentTimeMillis() / 60_000L)
+            // Both lines show a duration, so the notification has to be refreshed once a minute
+            // even when no field of a session changes.
+            if (shown.isNotEmpty()) append('|').append(System.currentTimeMillis() / 60_000L)
         }
         if (signature == sessionSignature) return
         sessionSignature = signature
