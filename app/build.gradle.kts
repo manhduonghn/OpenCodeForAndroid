@@ -1,6 +1,6 @@
 plugins {
-    id("com.android.application") version "9.3.1"
-    id("org.jetbrains.kotlin.android") version "2.4.10"
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 // pkg and oc-install are symlinks to one Kotlin/Native executable. The module is built first and
