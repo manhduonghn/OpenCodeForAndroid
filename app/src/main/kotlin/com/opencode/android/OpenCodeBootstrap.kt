@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.system.Os
+import android.system.OsConstants
 import android.util.Base64
 import android.util.Log
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
@@ -131,14 +132,20 @@ object OpenCodeBootstrap {
     /** Directory holding the glibc loader shipped by `glibc-runner`. */
     const val GLIBC_LIB_DIR = "$PREFIX/glibc/lib"
 
-    /** Launcher script, `opencode`. */
+    /** Symlink to the currently installed OpenCode binary, `opencode`. */
     const val OPENCODE_BIN_PATH = "$PREFIX/bin/opencode"
 
-    /** Launcher script, `oc-install`. */
+    /** Symlink to [BRIDGE_PATH], `oc-install`. */
     const val OC_INSTALL_PATH = "$PREFIX/bin/oc-install"
 
-    /** Explains that this prefix has no apt/dpkg, so `pkg` cannot be used. */
+    /** Symlink to [BRIDGE_PATH], `pkg`. */
     const val PKG_PATH = "$PREFIX/bin/pkg"
+
+    /** Kotlin/Native executable behind `pkg` and `oc-install`. */
+    const val BRIDGE_PATH = "$PREFIX/libexec/oc-bridge"
+
+    /** Records which app build extracted the current bridge. */
+    const val BRIDGE_MARKER_PATH = "$OC_HOME/.cli-bridge"
 
     /** Environment snippet that the shell startup files of the runtime source. */
     const val ENV_SCRIPT_PATH = "$PREFIX/etc/opencode-env.sh"
@@ -146,7 +153,7 @@ object OpenCodeBootstrap {
     /** HTTP Basic user name the `opencode serve` of the 2.x line expects. */
     const val SERVER_USER = "opencode"
 
-    /** Password of the server, exported by the launchers and used by the WebView. */
+    /** Password of the server, exported by the environment and used by the WebView. */
     const val SERVER_PASSWORD_PATH = "$OC_HOME/server-password"
 
     /** Installer script of older versions, removed on sight. */
@@ -174,10 +181,11 @@ object OpenCodeBootstrap {
 
     /* ------------------------------------------------------------------ constants */
 
-    /** Bumped whenever the launcher scripts change so that they get rewritten. */
-    private const val LAUNCHER_VERSION = 10
-    private const val LAUNCHER_MARKER =
-        "Managed by the OpenCode for Android app. opencode-launcher-version: $LAUNCHER_VERSION"
+    /** Bumped when the bridge binary has to be extracted again, even for the same app build. */
+    private const val BRIDGE_VERSION = 1
+
+    /** Bumped when the native interpreter repair has to be retried for an installed binary. */
+    private const val NATIVE_REPAIR_VERSION = 11
 
     /** First line of the profile this app writes, a profile without it is left alone. */
     private const val PROFILE_MARKER =
@@ -290,14 +298,26 @@ object OpenCodeBootstrap {
     fun setupIfNeeded(context: Context?, onReady: (() -> Unit)? = null) {
         if (context == null) return
 
-        // Nothing has to be downloaded. Refresh the launchers in the background without showing
-        // any progress UI, otherwise the installation dialog would flash on every cold start even
-        // though OpenCode is already installed.
-        if (!isInstallRunning() && runtimeProblems().isEmpty()) {
-            clearFinishedState()
-            maintainInBackground(context)
-            runOnUiThread(context, onReady)
-            return
+        // Nothing has to be downloaded. Refresh the CLI entry points in the background without
+        // showing any progress UI, otherwise the installation dialog would flash on every cold
+        // start even though OpenCode is already installed.
+        if (!isInstallRunning()) {
+            val problems = runtimeProblems()
+            if (problems.isEmpty()) {
+                clearFinishedState()
+                maintainInBackground(context)
+                runOnUiThread(context, onReady)
+                return
+            }
+            // An app update adds the Kotlin/Native bridge and replaces the old shell launchers with
+            // symlinks. That only needs the cheap maintenance pass, not a 100 MB reinstall.
+            if (problems.all { isEntryPointProblem(it) }) {
+                Log.i(LOG_TAG, "Only the CLI entry points need to be refreshed: $problems")
+                clearFinishedState()
+                maintainInBackground(context)
+                runOnUiThread(context, onReady)
+                return
+            }
         }
 
         val installer: Installer
@@ -351,7 +371,7 @@ object OpenCodeBootstrap {
 
         val problems = runtimeProblems()
         if (problems.isEmpty()) {
-            // Everything is fine, but the launchers may belong to an older build of the app, so
+            // Everything is fine, but the entry points may belong to an older build of the app, so
             // refresh them in the background.
             clearFinishedState()
             maintainInBackground(context)
@@ -374,8 +394,8 @@ object OpenCodeBootstrap {
     }
 
     /**
-     * Refresh the launchers in the background. No progress is published and no dialog is shown,
-     * so this is safe to call on every start of the app.
+     * Refresh the CLI entry points in the background. No progress is published and no dialog is
+     * shown, so this is safe to call on every start of the app.
      */
     private fun maintainInBackground(context: Context) {
         synchronized(sLock) {
@@ -486,7 +506,7 @@ object OpenCodeBootstrap {
      *
      * The 2.x server requires HTTP Basic authentication and otherwise prints a random password on
      * every start. The app generates one on the first use and keeps it, so the WebView and the
-     * terminal launcher always know it.
+     * terminal always know it.
      */
     fun getServerPassword(context: Context?): String = synchronized(sLock) {
         sServerPassword?.let { return it }
@@ -545,14 +565,23 @@ object OpenCodeBootstrap {
         if (!isPrefixReady()) problems.add("the Linux toolchain ($PREFIX/bin/bash)")
         if (!File("$PREFIX/bin/sh").exists()) problems.add("the shell link ($PREFIX/bin/sh)")
         if (!File(READY_MARKER_PATH).isFile) problems.add("the installed version marker ($READY_MARKER_PATH)")
-        if (!File(OPENCODE_BIN_PATH).exists()) problems.add("the opencode launcher ($OPENCODE_BIN_PATH)")
-        if (!File(OC_INSTALL_PATH).exists()) problems.add("the oc-install launcher ($OC_INSTALL_PATH)")
+        if (!File(OPENCODE_BIN_PATH).exists()) problems.add("the opencode symlink ($OPENCODE_BIN_PATH)")
+        if (!isExecutable(File(BRIDGE_PATH))) problems.add("the CLI bridge ($BRIDGE_PATH)")
+        if (!File(OC_INSTALL_PATH).exists()) problems.add("the oc-install symlink ($OC_INSTALL_PATH)")
+        if (!File(PKG_PATH).exists()) problems.add("the pkg symlink ($PKG_PATH)")
         if (!File(LINK_PATH).exists()) problems.add("the opencode symlink ($LINK_PATH)")
         if (findGlibcLoader() == null) problems.add("the glibc loader ($GLIBC_LIB_DIR/ld-linux-*.so.*)")
         if (!isExecutable(File("$PREFIX/bin/patchelf"))) problems.add("the patchelf tool ($PREFIX/bin/patchelf)")
 
         return problems
     }
+
+    /** True for a problem that the maintenance pass repairs without downloading anything. */
+    private fun isEntryPointProblem(problem: String): Boolean =
+        problem == "the opencode symlink ($OPENCODE_BIN_PATH)" ||
+            problem == "the CLI bridge ($BRIDGE_PATH)" ||
+            problem == "the oc-install symlink ($OC_INSTALL_PATH)" ||
+            problem == "the pkg symlink ($PKG_PATH)"
 
     /** True if the OpenCode runtime is complete and can be started. */
     fun isRuntimeComplete(): Boolean = runtimeProblems().isEmpty()
@@ -632,6 +661,11 @@ object OpenCodeBootstrap {
         append("  *\":\$PREFIX/lib:\"*) ;;\n")
         append("  *) LD_LIBRARY_PATH=\"\$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
         append("esac\n")
+        // The app owns the installed binary, and the bionic preload of Termux must never be
+        // loaded into a glibc process.
+        append("OPENCODE_DISABLE_AUTOUPDATE=1; export OPENCODE_DISABLE_AUTOUPDATE\n")
+        append("unset LD_PRELOAD\n")
+        append("[ -n \"\${SHELL:-}\" ] || { SHELL=\"\$PREFIX/bin/bash\"; export SHELL; }\n")
         // The JDK links its own libraries relative to JAVA_HOME, but its RUNPATH still points at
         // /data/data/com.termux. Point the loader at the relocated JDK as well.
         jdkHome()?.let { jdk ->
@@ -670,6 +704,16 @@ object OpenCodeBootstrap {
         append("  SSL_CERT_FILE=\"\$PREFIX/etc/tls/cert.pem\"; export SSL_CERT_FILE\n")
         append("  CURL_CA_BUNDLE=\"\$SSL_CERT_FILE\"; export CURL_CA_BUNDLE\n")
         append("  NODE_EXTRA_CA_CERTS=\"\$SSL_CERT_FILE\"; export NODE_EXTRA_CA_CERTS\n")
+        append("fi\n")
+        // The WebView and the terminal use the same server password, so a server started from
+        // the terminal and the one of the app cannot disagree about the credentials.
+        append("if [ -z \"\${OPENCODE_SERVER_PASSWORD:-}\" ] && [ -f \"")
+        append(SERVER_PASSWORD_PATH)
+        append("\" ]; then\n")
+        append("  IFS= read -r OPENCODE_SERVER_PASSWORD < \"")
+        append(SERVER_PASSWORD_PATH)
+        append("\" 2>/dev/null\n")
+        append("  if [ -n \"\$OPENCODE_SERVER_PASSWORD\" ]; then export OPENCODE_SERVER_PASSWORD; fi\n")
         append("fi\n")
         append(":\n")
     }
@@ -889,7 +933,7 @@ object OpenCodeBootstrap {
                         throw InstallException("Could not write the installation markers: ${e.message}")
                     }
                 }
-                writeLaunchers()
+                installEntrypoints()
             } finally {
                 deleteQuietly(tarball)
             }
@@ -935,7 +979,7 @@ object OpenCodeBootstrap {
             patchLoginShellPaths()
             repairNativeInterp()
             refreshNativeMarker()
-            writeLaunchers()
+            installEntrypoints()
         }
 
         private fun installPackages(packages: List<String>, errorPrefix: String) {
@@ -1380,11 +1424,13 @@ object OpenCodeBootstrap {
             setStage(OpenCodeInstallState.STAGE_VERIFY, "Verifying the OpenCode binary...")
             var verify: CmdResult
             if (nativeInterp) {
-                // Same environment as the launcher: no bionic LD_LIBRARY_PATH/LD_PRELOAD.
+                // Same environment as the direct executable: no bionic LD_LIBRARY_PATH/LD_PRELOAD.
                 verify = runNative(listOf(staged.absolutePath, "--version"), VERIFY_TIMEOUT_MS)
                 if (!looksLikeAVersion(verify)) {
                     // The interpreter patch alone is not enough on this build, keep the binary and
-                    // let the launcher/service use the explicit loader instead.
+                    // let the service use the explicit loader instead. The terminal entry point is
+                    // a direct symlink, so a build that cannot start directly only works through
+                    // the app until the next successful repair.
                     status("WARNING: this build does not start directly, falling back to the glibc loader.")
                     verify = run(
                         listOf(loader, "--library-path", GLIBC_LIB_DIR, staged.absolutePath, "--version"),
@@ -1437,8 +1483,8 @@ object OpenCodeBootstrap {
         }
 
         /**
-         * Record whether the installed binary can be started directly. The launcher and the
-         * service compare the fingerprint before they skip the explicit loader.
+         * Record whether the installed binary can be started directly. The service compares the
+         * fingerprint before it skips the explicit loader.
          */
         private fun writeNativeMarker(binary: File, nativeInterp: Boolean) {
             val marker = File(NATIVE_INTERP_MARKER_PATH)
@@ -1455,7 +1501,7 @@ object OpenCodeBootstrap {
 
         /**
          * Drop the marker when the binary behind the symlink changed (eg. the auto updater
-         * replaced it), so the launcher and the service use the explicit loader again.
+         * replaced it), so the service uses the explicit loader again.
          */
         private fun refreshNativeMarker() {
             val marker = File(NATIVE_INTERP_MARKER_PATH)
@@ -1477,7 +1523,7 @@ object OpenCodeBootstrap {
             val binary = resolveLink(File(LINK_PATH))
             if (!binary.isFile || isNativeBinary(binary)) return
 
-            val attempt = "$LAUNCHER_VERSION ${binaryFingerprint(binary)}"
+            val attempt = "$NATIVE_REPAIR_VERSION ${binaryFingerprint(binary)}"
             val repairMarker = File(NATIVE_REPAIR_MARKER_PATH)
             if (attempt == readTrimmed(repairMarker)) return
 
@@ -1586,7 +1632,7 @@ object OpenCodeBootstrap {
             }
         }
 
-        /** Run a byte-patched binary without the bionic library paths, exactly like the launcher. */
+        /** Run a byte-patched binary without the bionic library paths, exactly like the terminal. */
         private fun runNative(cmd: List<String>, timeoutMs: Long): CmdResult {
             val libraryPath = env.remove("LD_LIBRARY_PATH")
             val preload = env.remove("LD_PRELOAD")
@@ -1614,82 +1660,137 @@ object OpenCodeBootstrap {
             }
         }
 
-        /* -------------------------------------------------------------- launchers */
+        /* -------------------------------------------------------------- entry points */
 
         /**
-         * The launcher scripts live in res/raw, so the ~200 lines of shell do not have to be
-         * escaped inside a Kotlin string. They are read once per installation and written with the
-         * markers of this build.
+         * Install the terminal entry points: `opencode` is a symlink to the managed binary and
+         * `pkg`/`oc-install` are symlinks to the Kotlin/Native [BRIDGE_PATH]. Files left behind by
+         * the old shell launchers are replaced in place, so an app update migrates a device
+         * without a reinstall.
          */
-        private fun launcher(rawId: Int): String {
-            val resources = context?.resources ?: return ""
-            return try {
-                resources.openRawResource(rawId).bufferedReader().use { it.readText() }
-            } catch (e: Exception) {
-                Log.w(LOG_TAG, "Could not read the launcher resource", e)
-                ""
+        private fun installEntrypoints() {
+            val bridge = installBridge()
+            // The terminal entry point is a direct symlink, so it only works for a binary whose
+            // interpreter is the glibc loader. A build that failed the patch is still usable by the
+            // app through the explicit loader; keep the working launcher of an older build (if
+            // any) instead of replacing it with a symlink that cannot start. When nothing exists
+            // yet the symlink is created anyway, so runtimeProblems() does not trigger a full
+            // reinstall on every start.
+            if (isNativeBinary(resolveLink(File(LINK_PATH))) || !File(OPENCODE_BIN_PATH).isFile) {
+                replaceSymlink(File(OPENCODE_BIN_PATH), LINK_PATH)
+            }
+
+            if (bridge) {
+                replaceSymlink(File(PKG_PATH), BRIDGE_PATH)
+                replaceSymlink(File(OC_INSTALL_PATH), BRIDGE_PATH)
+            } else {
+                // Keep a regular file of an older build, it still works until the next successful
+                // extraction. The same holds for a symlink whose bridge is still executable; only
+                // a link that would already fail is removed.
+                deleteIfBrokenSymlink(File(PKG_PATH))
+                deleteIfBrokenSymlink(File(OC_INSTALL_PATH))
             }
         }
 
-        private fun withPlaceholders(script: String): String {
-            if (script.isEmpty()) return ""
-            val userId = android.os.Process.myUid() / 100000
-            return script
-                .replace("@MARKER@", LAUNCHER_MARKER)
-                .replace("@PREFIX@", PREFIX)
-                .replace("@HOME@", HOME)
-                .replace("@USER_ID@", userId.toString())
-        }
-
-        private fun writeLaunchers() {
-            restoreLauncher(File(OPENCODE_BIN_PATH), withPlaceholders(launcher(R.raw.launcher_opencode)))
-            restoreLauncher(
-                File(OC_INSTALL_PATH),
-                withPlaceholders(launcher(R.raw.launcher_oc_install)),
-            )
-            restoreLauncher(File(PKG_PATH), withPlaceholders(launcher(R.raw.launcher_pkg)))
+        /** Delete [file] when it is a symlink that no longer points at an executable. */
+        private fun deleteIfBrokenSymlink(file: File) {
+            try {
+                if (!OsConstants.S_ISLNK(Os.lstat(file.absolutePath).st_mode)) return
+                if (!isExecutable(file)) deleteQuietly(file)
+            } catch (e: Exception) {
+                // The file does not exist.
+            }
         }
 
         /**
-         * Write the launcher, but only if the file on disk is not the launcher of this app already.
-         * A launcher written by an older build is replaced, a correct one is kept.
+         * Extract the bridge of the current ABI from the APK. The marker contains the app version
+         * and the stamp of the APK, so a new APK always replaces a bridge from an older build,
+         * even when the version code did not change (debug builds).
          */
-        private fun restoreLauncher(file: File, content: String) {
-            if (content.isEmpty()) return
+        private fun installBridge(): Boolean {
+            val abi = when (getOpenCodeArch()) {
+                "arm64" -> "arm64-v8a"
+                "x64" -> "x86_64"
+                else -> return false
+            }
+            val target = File(BRIDGE_PATH)
+            val marker = File(BRIDGE_MARKER_PATH)
+            val stamp = "$BRIDGE_VERSION ${BuildConfig.VERSION_CODE} $abi ${apkStamp()}"
+            if (readTrimmed(marker) == stamp && isExecutable(target)) return true
+
+            val assets = context?.assets ?: return false
+            val parent = target.parentFile
+            if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
+                Log.w(LOG_TAG, "Could not create the directory $parent")
+                return false
+            }
+
             var temp: File? = null
             try {
-                val current = readTextFile(file)
-                if (current != null && current.contains(LAUNCHER_MARKER)) return
-
-                val parent = file.parentFile
-                if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
-                    throw IOException("Could not create the directory $parent")
-                }
-
-                // Write to a temporary file and rename it, so that a process that starts the
-                // launcher while the maintenance is running never sees a half written script.
-                val created = File.createTempFile(file.name, ".tmp", parent)
+                val created = File.createTempFile(target.name, ".tmp", parent)
                 temp = created
-                writeTextFile(created, content)
-                try {
-                    Os.chmod(created.absolutePath, MODE_755)
-                } catch (e: Exception) {
-                    Log.w(LOG_TAG, "Could not make $created executable", e)
+                assets.open("cli/$abi/oc-bridge").use { input ->
+                    created.outputStream().use { output -> input.copyTo(output) }
                 }
+                Os.chmod(created.absolutePath, MODE_700)
 
-                if (!created.renameTo(file)) {
-                    // Some file systems cannot replace an existing file, write it directly.
-                    writeTextFile(file, content)
-                    try {
-                        Os.chmod(file.absolutePath, MODE_755)
-                    } catch (e: Exception) {
-                        Log.w(LOG_TAG, "Could not make $file executable", e)
+                if (!created.renameTo(target)) {
+                    deleteQuietly(target)
+                    if (!created.renameTo(target)) {
+                        throw IOException("Could not replace $target")
                     }
-                    deleteQuietly(temp)
-                    temp = null
                 }
-            } catch (e: IOException) {
-                Log.w(LOG_TAG, "Could not write the launcher $file", e)
+                temp = null
+                writeTextFileQuietly(marker, stamp + "\n")
+                return true
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not install the CLI bridge for $abi", e)
+                // Keep a bridge of an older build when the new one cannot be extracted; the next
+                // maintenance pass retries and the entry points keep working until then.
+                return isExecutable(target)
+            } finally {
+                temp?.let { deleteQuietly(it) }
+            }
+        }
+
+        /** Stamp of the installed APK, it changes on every update even with the same version code. */
+        private fun apkStamp(): String {
+            val apk = try {
+                context?.applicationInfo?.sourceDir?.let { File(it) }
+            } catch (e: Exception) {
+                null
+            }
+            return if (apk != null && apk.isFile) "${apk.length()}-${apk.lastModified()}" else ""
+        }
+
+        /**
+         * Replace [link] with a symlink to [target]. `rename` is atomic on the app file system, a
+         * running `pkg` therefore keeps its old inode and the next invocation sees the new link.
+         */
+        private fun replaceSymlink(link: File, target: String) {
+            val parent = link.parentFile
+            if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
+                Log.w(LOG_TAG, "Could not create the directory $parent")
+                return
+            }
+
+            var temp: File? = null
+            try {
+                val created = File.createTempFile(".${link.name}", ".link", parent)
+                temp = created
+                // createTempFile creates a regular file; symlink() refuses to overwrite it.
+                deleteQuietly(created)
+                Os.symlink(target, created.absolutePath)
+
+                if (!created.renameTo(link)) {
+                    deleteQuietly(link)
+                    if (!created.renameTo(link)) {
+                        throw IOException("Could not replace $link")
+                    }
+                }
+                temp = null
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not create the symlink $link -> $target", e)
             } finally {
                 temp?.let { deleteQuietly(it) }
             }
@@ -1720,7 +1821,7 @@ object OpenCodeBootstrap {
                 // Not fatal, the directory is already private to the app.
             }
 
-            // The launchers export this password, so the terminal and the app always use the same
+            // The environment exports this password, so the terminal and the app always use the same
             // credentials for the OpenCode server.
             try {
                 val passwordFile = File(SERVER_PASSWORD_PATH)
@@ -2066,7 +2167,7 @@ object OpenCodeBootstrap {
 
     /**
      * @return the fingerprint of an installed binary, it matches the `stat -L -c '%s %Y'` output
-     *     that the launcher scripts compare.
+     *     that the service and the native marker use.
      */
     fun binaryFingerprint(binary: File?): String {
         if (binary == null || !binary.isFile) return ""
@@ -2453,12 +2554,22 @@ object OpenCodeBootstrap {
     }
 
     private fun deleteQuietly(file: File?) {
-        if (file == null || !file.exists()) return
+        if (file == null) return
         try {
-            if (file.isDirectory) {
-                file.listFiles()?.forEach { deleteQuietly(it) }
+            // File.exists() follows a symlink, so a dangling link looks absent. lstat() tells the
+            // difference; a link is removed itself, its target is never touched.
+            val isLink = try {
+                OsConstants.S_ISLNK(Os.lstat(file.absolutePath).st_mode)
+            } catch (e: Exception) {
+                false
             }
-            file.delete()
+            if (!isLink) {
+                if (!file.exists()) return
+                if (file.isDirectory) {
+                    file.listFiles()?.forEach { deleteQuietly(it) }
+                }
+            }
+            if (!file.delete()) Log.w(LOG_TAG, "Could not delete $file")
         } catch (e: Exception) {
             Log.w(LOG_TAG, "Could not delete $file", e)
         }

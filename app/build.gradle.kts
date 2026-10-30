@@ -3,6 +3,37 @@ plugins {
     id("org.jetbrains.kotlin.android") version "2.4.10"
 }
 
+// pkg and oc-install are symlinks to one Kotlin/Native executable. The module is built first and
+// its two Android binaries are packaged as assets, so the APK contains no shell launcher at all.
+val cliBridgeAssets = layout.buildDirectory.dir("generated/cliBridgeAssets")
+val arm64BridgeDir = rootProject.file("cli-bridge/build/bin/androidNativeArm64/releaseExecutable")
+val x64BridgeDir = rootProject.file("cli-bridge/build/bin/androidNativeX64/releaseExecutable")
+val prepareCliBridgeAssets = tasks.register<Sync>("prepareCliBridgeAssets") {
+    dependsOn(":cli-bridge:linkReleaseExecutableAndroidNativeArm64")
+    dependsOn(":cli-bridge:linkReleaseExecutableAndroidNativeX64")
+    into(cliBridgeAssets)
+    from(arm64BridgeDir) {
+        // .kexe on Linux/macOS hosts, .exe on Windows hosts.
+        include("oc-bridge.kexe", "oc-bridge.exe")
+        rename { "oc-bridge" }
+        into("cli/arm64-v8a")
+    }
+    from(x64BridgeDir) {
+        include("oc-bridge.kexe", "oc-bridge.exe")
+        rename { "oc-bridge" }
+        into("cli/x86_64")
+    }
+    doFirst {
+        fun requireBinary(dir: File, abi: String) {
+            val binary = File(dir, "oc-bridge.kexe").takeIf { it.isFile }
+                ?: File(dir, "oc-bridge.exe")
+            check(binary.isFile) { "The $abi oc-bridge executable was not built in $dir" }
+        }
+        requireBinary(arm64BridgeDir, "arm64-v8a")
+        requireBinary(x64BridgeDir, "x86_64")
+    }
+}
+
 android {
     namespace = "com.opencode.android"
     compileSdk = 37
@@ -70,6 +101,7 @@ android {
     sourceSets {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
+            assets.srcDir(cliBridgeAssets.get().asFile)
         }
     }
 
@@ -91,6 +123,16 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
+}
+
+// The asset merge tasks read the generated directory, make sure the two native binaries exist
+// before any variant starts. preBuild is kept as an anchor so a task that does not merge assets
+// still builds them.
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(prepareCliBridgeAssets)
+}
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(prepareCliBridgeAssets)
 }
 
 // The Java sources are gone, but AGP still compares both toolchains: the Kotlin JVM target has to

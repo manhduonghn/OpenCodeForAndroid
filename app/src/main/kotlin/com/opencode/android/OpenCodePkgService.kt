@@ -19,10 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Foreground service that installs Termux packages into the app-private prefix.
  *
  * There is no `apt`, `dpkg` or `pkg` in this prefix: the app installs the Debian archives itself
- * with [OpenCodePackages]. The `pkg` shell script of the terminal has no way to call into the
- * app, so it sends an ordered broadcast that [OpenCodePkgReceiver] turns into a start of this
- * service; the script then follows the result through a small status file. The service is not
- * exported, the request therefore comes from the same UID as the app.
+ * with [OpenCodePackages]. The `pkg` command of the terminal has no way to call into the app, so
+ * it sends an ordered broadcast that [OpenCodePkgReceiver] turns into a start of this service; the
+ * Kotlin/Native bridge (`cli-bridge`) then follows the result through a small status file. The
+ * service is not exported, the request therefore comes from the same UID as the app.
  *
  * Every request carries a session name. The service writes
  * `$HOME/.opencode/<session>.status` (key=value lines) and, for a search,
@@ -244,7 +244,7 @@ class OpenCodePkgService : Service() {
     companion object {
         private const val TAG = "OpenCodePkgService"
 
-        /** Extra accepted from the `pkg` script: install, search. */
+        /** Extra accepted from the `pkg` bridge: install, search. */
         const val EXTRA_ACTION = "action"
         const val EXTRA_PACKAGES = "packages"
         const val EXTRA_QUERY = "query"
@@ -293,7 +293,7 @@ class OpenCodePkgService : Service() {
             writeText(File(job.statusPath), sb.toString())
         }
 
-        /** Write a small text file atomically, the shell polls it while the service fills it. */
+        /** Write a small text file atomically, the bridge polls it while the service fills it. */
         private fun writeText(file: File, text: String) {
             val parent = file.parentFile
             if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
@@ -349,7 +349,7 @@ class OpenCodePkgService : Service() {
         private fun describe(throwable: Throwable): String {
             var message = throwable.message
             if (message.isNullOrBlank()) message = throwable.javaClass.simpleName
-            // The error is printed by the shell, a stack trace of a wrapped exception does not help.
+            // The error is printed by the bridge, a stack trace of a wrapped exception does not help.
             val newline = message.indexOf('\n')
             if (newline >= 0) message = message.substring(0, newline)
             return message.trim()

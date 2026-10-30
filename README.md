@@ -54,9 +54,10 @@ The app combines the two techniques that make this possible:
    (`/data/data/com.opencode.android`) are both 31 characters, so the loader is
    relocated with an in-place, same-length byte replacement and two symlinks
    (`<dataDir>/glibc -> $PREFIX/glibc`, `<dataDir>/etc -> $PREFIX/etc`) make the
-   relocated paths resolve. If the patch fails, the app and the launcher fall
-   back to the explicit `ld-linux --library-path …` invocation, which still runs
-   the TUI (only the self-spawned server is affected).
+   relocated paths resolve. If the patch fails, the app falls back to the
+   explicit `ld-linux --library-path …` invocation for its managed server; the
+   terminal entry point is a direct symlink, so it needs a successfully patched
+   binary.
 
    The same replacement is applied to **every runtime object of the glibc
    directory**, not only to the loader. `libc.so.6` carries 21 compiled-in
@@ -106,15 +107,15 @@ pkg search editor
 pkg list-installed
 ```
 
-`pkg install` starts a short foreground service of the app
-(`OpenCodePkgService`) through `am start-foreground-service` and follows a
-status file, so the terminal shows the "Downloading… / Extracting…" progress
-while the app does the work. The service is not exported; the request comes from
-the same UID as the app, which is also why no root is needed. Dependencies are
-resolved from the package index — including `Provides:` virtual packages
-(`python3` → `python`) and `a | b` alternatives (`nodejs | nodejs-lts`) — the
-archives are extracted directly into `$PREFIX`, and `termux-tools`/`termux-exec`
-are skipped.
+`pkg install` sends an ordered broadcast to the app's
+`OpenCodePkgReceiver`, which starts a short foreground service
+(`OpenCodePkgService`); the Kotlin/Native bridge follows a status file, so the
+terminal shows the "Downloading… / Extracting…" progress while the app does the
+work. The service is not exported; the request comes from the same UID as the
+app, which is also why no root is needed. Dependencies are resolved from the
+package index — including `Provides:` virtual packages (`python3` → `python`)
+and `a | b` alternatives (`nodejs | nodejs-lts`) — the archives are extracted
+directly into `$PREFIX`, and `termux-tools`/`termux-exec` are skipped.
 
 `termux-exec` is not needed because the app targets API 28, so binaries in its
 data directory may be executed directly. That is also why there is no linker
@@ -127,11 +128,12 @@ but whose files are gone is installed again instead of being treated as present.
 The Termux binaries are linked against `$PREFIX/lib` with an absolute RUNPATH
 that points at the com.termux prefix. `$PREFIX/etc/opencode-env.sh` (sourced by
 `etc/profile` and hooked into `etc/bash.bashrc`) exports `PATH`, `TMPDIR`,
-`LD_LIBRARY_PATH`, the npm/pip caches and the CA bundle (`SSL_CERT_FILE`,
-`CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`), and the OpenCode server gets the same
-variables in its environment, so `git`, `gh`, `python`, `node`, … find their
-libraries. The git build additionally has `libexec/git-core` and its template
-directory compiled in for the old prefix; both are re-pointed with
+`LD_LIBRARY_PATH`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_SERVER_PASSWORD`,
+the npm/pip caches and the CA bundle (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+`NODE_EXTRA_CA_CERTS`), and the OpenCode server gets the same variables in its
+environment, so `git`, `gh`, `python`, `node`, … find their libraries. The git
+build additionally has `libexec/git-core` and its template directory compiled in
+for the old prefix; both are re-pointed with
 `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable system git config is
 disabled with `GIT_CONFIG_NOSYSTEM`.
 
@@ -140,7 +142,7 @@ database, so there is nothing to remove from. Clearing the app data is the
 supported way to start over. Reinstalling a core package (`bash`, `coreutils`,
 `glibc`, `patchelf`, `ca-certificates`) is refused as well: the app patches
 their binaries (the login profile path, the relocated glibc loader), so they are
-updated with `oc-install` / `opencode update`.
+updated with `oc-install`.
 
 `bash` and `patchelf` — the two tools the app itself spawns — get their RUNPATH
 rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), so they
@@ -173,7 +175,7 @@ The OpenCode 2.x server requires HTTP Basic auth for its API. A random password
 is generated once and stored in the shared preferences of the app, passed to the
 server as `OPENCODE_SERVER_PASSWORD` and used by the app to mint pairing codes.
 The web UI itself never sees the password: it gets a session cookie through the
-pairing link. The launcher exports the same password from
+pairing link. The environment exports the same password from
 `$HOME/.opencode/server-password`, so the terminal and the app can talk to the
 same server.
 
@@ -200,16 +202,19 @@ good (`ViewModel.onCleared`).
 # any Android shell, no Termux needed
 $PREFIX/bin/opencode --version
 $PREFIX/bin/opencode            # TUI
-$PREFIX/bin/opencode upgrade    # asks the app to re-download the runtime
+oc-install                      # asks the app to re-download the runtime
 ```
 
 with `PREFIX=/data/data/com.opencode.android/files/usr` and
 `HOME=/data/data/com.opencode.android/files/home`.
 
-The three launchers (`opencode`, `oc-install`, `pkg`) are shell scripts kept as
-plain files in `app/src/main/res/raw/` and written to the prefix at install and
-maintenance time (`@PREFIX@`/`@HOME@`/`@USER_ID@` are substituted), so they can
-be read and edited as ordinary shell instead of living inside a Kotlin string.
+There are no shell launchers in the APK. `opencode` is a symlink to the managed
+binary, and `pkg`/`oc-install` are symlinks to one Kotlin/Native executable
+(`$PREFIX/libexec/oc-bridge`, source in `cli-bridge/`). The bridge parses the
+command, sends the same ordered broadcast/receiver request that the old shell
+script used, and follows the status file written by `OpenCodePkgService`. The
+maintenance pass of an app update replaces the launchers of an older build in
+place, so the migration needs no reinstall.
 
 ### Server lifecycle
 
@@ -229,10 +234,10 @@ service waits until the port is free before spawning.
 * **No broad file access in the WebView.** `allowFileAccess` and
   `allowContentAccess` are off; only the loopback origin is loaded.
 * **No exported services.** Both foreground services are `exported="false"`;
-  the `pkg` launcher talks to them from the same UID.
+  the `pkg` bridge talks to them from the same UID.
 * **Secrets stay in the sandbox.** The server password is generated once, kept in
   the app's private preferences and written to `$HOME/.opencode/server-password`
-  with mode `0600` for the launcher.
+  with mode `0600`; only the generated environment reads it.
 * **No analytics, no crash reporting, no diagnostics directory.** Nothing is
   written outside the app's private data directory.
 
@@ -247,7 +252,7 @@ removed `OpenCodeCrashLog` wrote `opencode-install-*.log`,
 `opencode-server-*.log` and `last-error.txt` into the app files directory, which
 mostly duplicated what the platform already provides. Progress and errors are
 shown in the app UI, in the notification, and on stderr of the `pkg`/`oc-install`
-launchers.
+bridge.
 
 When something goes wrong, use logcat:
 
@@ -265,6 +270,12 @@ cd OpenCodeForAndroid
 
 The nightly workflow builds a debug APK on every push, the release workflow
 builds a signed APK for every `v*` tag.
+
+The `cli-bridge` module compiles the `pkg`/`oc-install` executable with
+Kotlin/Native for `androidNativeArm64` and `androidNativeX64`. Kotlin/Native
+downloads its own Android toolchain and sysroot (see `konan.properties`), so no
+separate Android NDK is needed for the bridge; the binaries are packaged under
+`assets/cli/<abi>/oc-bridge` and extracted by the app.
 
 Debug builds are signed with the committed `keystore/debug.keystore` (password
 `android`, alias `androiddebugkey`), so local and CI builds share the same

@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "OpenCodeForAndroid"
 include(":app")
+include(":cli-bridge")

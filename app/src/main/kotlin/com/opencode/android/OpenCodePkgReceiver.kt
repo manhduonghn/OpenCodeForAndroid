@@ -43,7 +43,7 @@ class OpenCodePkgReceiver : BroadcastReceiver() {
             // The service calls startForeground() in onCreate(), which is what the contract of
             // startForegroundService() requires.
             context.startForegroundService(request)
-            // The broadcast is ordered (am sends it with serialized=true), so the script can tell
+            // The broadcast is ordered (am sends it with serialized=true), so the bridge can tell
             // a refused request from an accepted one.
             setResultCode(RESULT_ACCEPTED)
         } catch (e: Exception) {
@@ -55,7 +55,7 @@ class OpenCodePkgReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "OpenCodePkgReceiver"
 
-        /** Action of the ordered broadcast that the `pkg` launcher sends. */
+        /** Action of the ordered broadcast that the `pkg` bridge sends. */
         const val ACTION = "com.opencode.android.pkg.REQUEST"
 
         const val RESULT_ACCEPTED = 1

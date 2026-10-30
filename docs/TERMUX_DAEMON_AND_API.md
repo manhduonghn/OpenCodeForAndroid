@@ -341,19 +341,20 @@ pkg: the app refused the request: Error: Can't start from invalid source: 10233
 1. `OpenCodePkgReceiver`: `exported="true"`, nhưng bảo vệ bằng permission
    `com.opencode.android.permission.PACKAGE_REQUEST` với `protectionLevel="signature"`.
    Chỉ app cùng chữ ký mới gửi được, app khác không thể lợi dụng.
-2. Launcher `pkg` gửi **ordered broadcast** `com.opencode.android.pkg.REQUEST`:
+2. Bridge `pkg` (Kotlin/Native, `cli-bridge/`) gửi **ordered broadcast**
+   `com.opencode.android.pkg.REQUEST`:
    ```sh
    am broadcast --user "$USER_ID" -n "$APP/.OpenCodePkgReceiver" \
        -a com.opencode.android.pkg.REQUEST \
        --es action install --es session "$SESSION" --es packages "$packages"
    ```
    Receiver gọi `startForegroundService(OpenCodePkgService)` (cùng UID) rồi
-   `setResultCode(1)`; launcher đọc `Broadcast completed: result=1` mới coi là app đã nhận,
+   `setResultCode(1)`; bridge đọc `Broadcast completed: result=1` mới coi là app đã nhận,
    `result=0` hoặc `Error` thì báo lỗi rõ ràng thay vì treo.
-3. `wait_for_service` chờ tối đa ~30 giây và nhắc "Bring OpenCode to the foreground" —
+3. Bridge chờ status file tối đa ~30 giây và nhắc "Bring OpenCode to the foreground" —
    broadcast vẫn đánh thức app, nhưng lần cài đầu cần runtime đã sẵn sàng.
 
-Lưu ý: `USER_ID` được launcher sinh ra từ `Process.myUid() / 100000`, không hardcode `0`,
+Lưu ý: `USER_ID` được bridge sinh ra từ `getuid() / 100000`, không hardcode `0`,
 nên multi-user vẫn đúng.
 
 ### 4.7. `pkg bundle`: cài nhanh bộ công cụ cho agent
@@ -413,7 +414,7 @@ javac -version
 > `OpenCodeService.kt`, `OpenCodeWatchdog.kt`, `OpenCodeBootReceiver.kt`,
 > `OpenCodePkgReceiver.kt`, `OpenCodePkgService.kt`, `OpenCodePackages.kt`,
 > `OpenCodeSettings.kt`, `OpenCodeWebActivity.kt`, `OpenCodeSessionTracker.kt`,
-> `launcher_opencode.sh`, `launcher_pkg.sh`, `AndroidManifest.xml` và layout/strings.
+> `cli-bridge/`, `AndroidManifest.xml` và layout/strings.
 > P2 vẫn để ngỏ.
 
 ### P0 — Sống sót khi vuốt recents (đã làm)
@@ -462,11 +463,10 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     Đây đúng là file mà TUI/CLI của OpenCode dùng để discover background service; nó probe
     `/api/info` bằng Basic auth rồi so `pid` + `version`. File được xoá khi server dừng, chết
     hoặc service bị destroy; chỉ xoá khi `pid` trong file vẫn là server của app.
-12. **Launcher `opencode`:** với TUI tương tác (không có subcommand, hoặc `opencode mini`) và
-    khi server của app đang sống (`$HOME/.opencode/server.pid` + `kill -0`), launcher chèn
-    `--server http://127.0.0.1:${OPENCODE_PORT:-49374}`. Các subcommand (`serve`, `service`,
-    `run`, `api`, …) và trường hợp user đã truyền `--server`/`--standalone` thì giữ nguyên.
-    `LAUNCHER_VERSION` tăng lên 8 để bản cài cũ được rewrite.
+12. **Entry point `opencode`:** `$PREFIX/bin/opencode` là symlink trực tiếp tới binary
+    đã patch trong `$HOME/.opencode/bin/opencode`. TUI/CLI tự discover server qua
+    `service.json`; không còn wrapper chèn `--server`. `opencode upgrade` không được
+    chuyển thành cập nhật app nữa, dùng `oc-install` (bridge) hoặc nút Settings.
 13. **Auto-resume:** route `/session/<id>` (do bridge JavaScript và `doUpdateVisitedHistory`
     báo về) được lưu vào `SharedPreferences` (`last_session_id`). Khi activity được tạo lại
     sau khi process chết, `onPageFinished` của trang chủ tự chuyển tới session đó. Việc quay
@@ -478,12 +478,12 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 ### P1.6 — `pkg` dùng được trên Android 13+ (đã làm)
 
 15. **Broadcast thay cho `am start-service`:** `OpenCodePkgReceiver` (signature permission
-    `com.opencode.android.permission.PACKAGE_REQUEST`) nhận ordered broadcast của launcher
+    `com.opencode.android.permission.PACKAGE_REQUEST`) nhận ordered broadcast của bridge
     `pkg`, gọi `startForegroundService(OpenCodePkgService)` trong cùng UID và trả
     `result=1`. Sửa đúng lỗi `Can't start from invalid source: 10233`, xem mục 4.6.
 16. **Alias + bundle:** `openjdk|java|javac|jdk` → `openjdk-17`, `node` → `nodejs`,
     `pip` → `python-pip`; thêm `pkg bundle dev|python|node|java|net|all`, xem mục 4.7.
-    `LAUNCHER_VERSION` tăng lên 10 để bản cài cũ được rewrite.
+    Logic này nằm trong bridge Kotlin/Native (`cli-bridge/`), không còn shell script.
 17. **JDK chạy được:** `configureJdk()` tạo symlink `bin/*` (gói `openjdk-17` chỉ có
     `lib/jvm/java-17-openjdk/bin/java`, không có `bin/java`); env có `JAVA_HOME`,
     `LD_LIBRARY_PATH` (`lib` + `lib/server`) và `PATH` cho JDK, cả trong terminal lẫn env
@@ -516,7 +516,7 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 | Server sống khi vuốt recents | Bỏ `stopSelf()` trong `onTaskRemoved` | Stop service khi task removed |
 | Tự chạy sau reboot | `BOOT_COMPLETED` receiver + start FGS | Dùng runit |
 | Tự restart khi bị kill | JobScheduler watchdog + exit-code 9 handling | Trông chờ `START_STICKY` một mình |
-| WebUI + terminal cùng lúc | `service.json` + launcher chèn `--server` | Để TUI tự spawn server thứ hai |
+| WebUI + terminal cùng lúc | `service.json` (TUI tự attach) | Để TUI tự spawn server thứ hai |
 | Mở lại app giữa chừng | Lưu `last_session_id`, mở `/session/<id>` | Xoá session khi về trang chủ |
 | Chạy sshd/cron | `pkg install openssh`/`runit` (chấp nhận chết cùng app) | Coi runit là systemd |
 | Thoát khỏi app hoàn toàn | Shizuku/root detached process | — |

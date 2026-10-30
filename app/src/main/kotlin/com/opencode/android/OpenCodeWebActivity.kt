@@ -1004,9 +1004,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     /* ------------------------------------------------------------------ web view */
 
     /**
-     * The forced update of 'oc-install' (and of `opencode upgrade`) arrives as an extra of the
-     * intent that starts this activity. When the activity is already on screen the system may
-     * deliver it here instead, so both paths are handled.
+     * The forced update of 'oc-install' arrives as an extra of the intent that starts this
+     * activity. When the activity is already on screen the system may deliver it here instead, so
+     * both paths are handled.
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
