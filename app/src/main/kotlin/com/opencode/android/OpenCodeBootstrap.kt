@@ -824,6 +824,11 @@ object OpenCodeBootstrap {
         // loaded into a glibc process.
         append("OPENCODE_DISABLE_AUTOUPDATE=1; export OPENCODE_DISABLE_AUTOUPDATE\n")
         append("unset LD_PRELOAD\n")
+        // `pkg` is the bionic bridge of the app. The Android linker resolves the platform
+        // libraries it needs (libunwindstack pulls libz and liblzma) through LD_LIBRARY_PATH too,
+        // and the copies of this prefix are not the ones Android ships: without clearing it the
+        // command dies with `cannot locate symbol "Xzs_Construct"`. Clear it for the bridge only.
+        append("pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg \"\$@\"; }\n")
         append("[ -n \"\${SHELL:-}\" ] || { SHELL=\"\$PREFIX/bin/bash\"; export SHELL; }\n")
         // The JDK links its own libraries relative to JAVA_HOME, but its RUNPATH still points at
         // /data/data/com.termux. Point the loader at the relocated JDK as well.
@@ -1150,6 +1155,9 @@ object OpenCodeBootstrap {
             // lookup of the server fails with "getaddrinfo".
             if (loader != null) relocateGlibc(loader)
             ensureTerminalRuntime()
+            // The env script is rewritten on every start, so a fix in it reaches an install that
+            // predates it without reinstalling a package first (the `pkg` wrapper, for example).
+            ensurePackageEnvironment()
             refreshResolvConf(context)
             patchLoginShellPaths()
             repairNativeInterp()

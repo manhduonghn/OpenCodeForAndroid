@@ -159,6 +159,14 @@ for the old prefix; both are re-pointed with
 `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable system git config is
 disabled with `GIT_CONFIG_NOSYSTEM`.
 
+`pkg` is the one exception: it is a bionic program, and the Android linker
+resolves the platform libraries it pulls in (`libunwindstack` needs `libz` and
+`liblzma`) through `LD_LIBRARY_PATH` as well. The copies in this prefix are not
+the ones Android ships, so the command died with
+`cannot locate symbol "Xzs_Construct"`. The env script therefore wraps it:
+`pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg "$@"; }`. The variable is
+cleared for that one command only, `bash` and the other tools still need it.
+
 `pkg remove` is not implemented: packages are extracted without a dpkg
 database, so there is nothing to remove from. Clearing the app data is the
 supported way to start over. Reinstalling a core package (`bash`, `coreutils`,
