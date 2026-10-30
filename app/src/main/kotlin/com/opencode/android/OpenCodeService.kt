@@ -324,12 +324,13 @@ class OpenCodeService : Service() {
             // glibc of the old installation, which cannot resolve a single host name (see
             // ensureGlibcRelocated), and adopting it would keep the broken resolver alive.
             val glibcRewritten = OpenCodeBootstrap.ensureGlibcRelocated()
+            val inherited = findServerPid(binary)
+            val adoptable = inherited > 0 && isPortOpen(port)
             // The environment of a server is fixed when it is spawned, so an orphan that was
             // started by an older app build keeps that build's terminal helper (or none at all).
-            // Replace it when the environment this build would pass has changed.
-            val envCurrent = serverEnvironmentCurrent()
-            val inherited = findServerPid(binary)
-            if (inherited > 0 && isPortOpen(port)) {
+            // Replace it when it does not run with the helper this build exports.
+            val envCurrent = adoptable && serverEnvironmentCurrent(inherited)
+            if (adoptable) {
                 if (!glibcRewritten && envCurrent && acceptsCurrentPassword()) {
                     Log.i(TAG, "Reusing the OpenCode server that is already listening (pid $inherited).")
                     serverPid = inherited
@@ -501,9 +502,30 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * Environment signature of a spawned server. A server keeps the environment it was started
-     * with, so an orphan from an older app build may run without the terminal helper that this
-     * build exports. The signature lets the service notice that and replace it.
+     * True when the running server was started with the environment this build would export.
+     *
+     * A server keeps the environment of its spawn, so an orphan of an older app build runs
+     * without the terminal helper (or with an older one). `/proc/<pid>/environ` answers that
+     * exactly; `$HOME/.opencode/.server-env` is the fallback for devices that hide it.
+     */
+    private fun serverEnvironmentCurrent(pid: Int): Boolean {
+        val helper = OpenCodeBootstrap.terminalRuntimePath() ?: return true
+        val expected = "OPENCODE_PTY_BIN=$helper"
+        val environ = try {
+            File("/proc/$pid/environ").takeIf { it.isFile }?.readBytes()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read the environment of the server $pid", e)
+            null
+        }
+        if (environ != null && environ.isNotEmpty()) {
+            val entries = String(environ, StandardCharsets.ISO_8859_1).split('\u0000')
+            return entries.contains(expected)
+        }
+        return readServerEnvironmentStamp() == serverEnvironmentStamp()
+    }
+
+    /**
+     * Environment signature of a spawned server, the fallback of [serverEnvironmentCurrent].
      */
     private fun serverEnvironmentStamp(): String =
         "pty=" + (OpenCodeBootstrap.terminalRuntimePath() ?: "")
@@ -511,23 +533,19 @@ class OpenCodeService : Service() {
     /** Remember the environment of the server that was just spawned. */
     private fun writeServerEnvironmentStamp() {
         try {
-            val file = File(OpenCodeBootstrap.OC_HOME, ".server-env")
-            file.writeText(serverEnvironmentStamp() + "\n")
+            File(OpenCodeBootstrap.OC_HOME, ".server-env")
+                .writeText(serverEnvironmentStamp() + "\n")
         } catch (e: Exception) {
             Log.w(TAG, "Could not record the environment of the server", e)
         }
     }
 
-    /** True when the running server was started with the environment this build would use. */
-    private fun serverEnvironmentCurrent(): Boolean {
-        val recorded = try {
-            File(OpenCodeBootstrap.OC_HOME, ".server-env")
-                .takeIf { it.isFile }?.readText()?.trim()
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not read the environment of the running server", e)
-            null
-        }
-        return recorded == serverEnvironmentStamp()
+    private fun readServerEnvironmentStamp(): String? = try {
+        File(OpenCodeBootstrap.OC_HOME, ".server-env")
+            .takeIf { it.isFile }?.readText()?.trim()
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not read the recorded environment of the server", e)
+        null
     }
 
     /** Clear the explanation of an earlier phantom kill and publish the new server state. */
