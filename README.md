@@ -283,6 +283,12 @@ server: its cookie and pairing token are stale. A generation counter on the
 service lets the UI notice the replacement on resume, mint a new token and
 reopen the same chat instead of leaving a page that only receives 401s.
 
+A server inherits the environment it is spawned with, which is why
+`$HOME/.opencode/.server-env` records what the last spawn exported: an orphan
+that was started by an older build without the terminal helper is replaced
+instead of adopted, so `OPENCODE_PTY_BIN` cannot stay missing until the next
+reboot.
+
 Once the runtime is installed, a start is cheap: `opencode --version` needs
 ≈0.25 s, `serve` accepts a TCP connection in ≈0.5 s and answers `/api/info` in
 ≈0.7 s. Minting a pairing code (`POST /api/pair`) and redeeming it

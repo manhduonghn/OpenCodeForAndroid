@@ -521,6 +521,11 @@ sau ≈0.5 s và `/api/info` trả 200 sau ≈0.7 s; `POST /api/pair` ≈40 ms v
 ≈47 ms. Activity khởi động server và probe pairing song song (poll 700 ms), nên WebUI hiện sau
 khoảng 1 s. Lần chạy đầu chậm là do tải runtime (~248 MB), không phải server.
 
+**Server cũ không có biến môi trường mới:** tiến trình server giữ nguyên env lúc spawn, nên server
+mồ côi do bản app cũ khởi động sẽ không có `OPENCODE_PTY_BIN` dù app đã cập nhật. Service ghi chữ
+ký env vào `$HOME/.opencode/.server-env` sau mỗi lần spawn và so lại khi adopt; nếu khác (hoặc file
+chưa có) thì kill rồi spawn server mới, thay vì chờ reboot.
+
 ### P1.6 — `pkg` dùng được trên Android 13+ (đã làm)
 
 15. **Broadcast thay cho `am start-service`:** `OpenCodePkgReceiver` (signature permission

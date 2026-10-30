@@ -324,9 +324,13 @@ class OpenCodeService : Service() {
             // glibc of the old installation, which cannot resolve a single host name (see
             // ensureGlibcRelocated), and adopting it would keep the broken resolver alive.
             val glibcRewritten = OpenCodeBootstrap.ensureGlibcRelocated()
+            // The environment of a server is fixed when it is spawned, so an orphan that was
+            // started by an older app build keeps that build's terminal helper (or none at all).
+            // Replace it when the environment this build would pass has changed.
+            val envCurrent = serverEnvironmentCurrent()
             val inherited = findServerPid(binary)
             if (inherited > 0 && isPortOpen(port)) {
-                if (!glibcRewritten && acceptsCurrentPassword()) {
+                if (!glibcRewritten && envCurrent && acceptsCurrentPassword()) {
                     Log.i(TAG, "Reusing the OpenCode server that is already listening (pid $inherited).")
                     serverPid = inherited
                     adopted = true
@@ -337,14 +341,16 @@ class OpenCodeService : Service() {
                     return
                 }
                 // A server of an earlier installation was started with another password, or it
-                // still runs with the glibc of the previous installation (no DNS). The WebView
-                // could never pair with the first one and never resolve a host with the second
-                // one, so replace it with a fresh server.
-                Log.w(
-                    TAG,
-                    "The inherited server was started with another password or an outdated runtime" +
-                        (if (glibcRewritten) " (glibc was just relocated)" else "") + ", restarting it.",
-                )
+                // still runs with the glibc of the previous installation (no DNS), or it does not
+                // know the terminal helper of this build. The WebView could never pair with the
+                // first one, would not resolve a host with the second one and could not open a
+                // terminal with the third one, so replace it with a fresh server.
+                val reason = when {
+                    glibcRewritten -> " (glibc was just relocated)"
+                    !envCurrent -> " (the environment changed, eg. a new terminal helper)"
+                    else -> " (another password)"
+                }
+                Log.w(TAG, "The inherited server is outdated$reason, restarting it.")
                 killIfOurServer(inherited)
                 waitForPortFree(4000)
                 clearPidFile()
@@ -484,6 +490,7 @@ class OpenCodeService : Service() {
         adopted = false
         recoveredFromBusyPort = false
         runningBinaryPath = binary.absolutePath
+        writeServerEnvironmentStamp()
         Log.i(TAG, "The OpenCode server process was started: $port (pid $startedPid)")
         markServerRunning()
 
@@ -491,6 +498,36 @@ class OpenCodeService : Service() {
             isDaemon = true
             start()
         }
+    }
+
+    /**
+     * Environment signature of a spawned server. A server keeps the environment it was started
+     * with, so an orphan from an older app build may run without the terminal helper that this
+     * build exports. The signature lets the service notice that and replace it.
+     */
+    private fun serverEnvironmentStamp(): String =
+        "pty=" + (OpenCodeBootstrap.terminalRuntimePath() ?: "")
+
+    /** Remember the environment of the server that was just spawned. */
+    private fun writeServerEnvironmentStamp() {
+        try {
+            val file = File(OpenCodeBootstrap.OC_HOME, ".server-env")
+            file.writeText(serverEnvironmentStamp() + "\n")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not record the environment of the server", e)
+        }
+    }
+
+    /** True when the running server was started with the environment this build would use. */
+    private fun serverEnvironmentCurrent(): Boolean {
+        val recorded = try {
+            File(OpenCodeBootstrap.OC_HOME, ".server-env")
+                .takeIf { it.isFile }?.readText()?.trim()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read the environment of the running server", e)
+            null
+        }
+        return recorded == serverEnvironmentStamp()
     }
 
     /** Clear the explanation of an earlier phantom kill and publish the new server state. */
