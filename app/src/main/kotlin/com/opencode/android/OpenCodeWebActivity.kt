@@ -81,13 +81,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var statusProgress: ProgressBar
     private lateinit var statusRetry: Button
 
-    private lateinit var topBarSubtitle: TextView
     private lateinit var settingsPanel: View
-    private lateinit var sessionRefresh: Button
-    private lateinit var sessionCurrentTitle: TextView
-    private lateinit var sessionCurrentDetail: TextView
-    private lateinit var sessionStatus: TextView
-    private lateinit var sessionList: LinearLayout
     private lateinit var updatesCurrent: TextView
     private lateinit var updatesStatus: TextView
     private lateinit var updatesCheck: Button
@@ -120,9 +114,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var githubClone: Button
     private lateinit var githubCloneStatus: TextView
     private lateinit var githubRepoSection: View
-    private lateinit var githubRepoRefresh: Button
     private lateinit var githubRepoStatus: TextView
     private lateinit var githubRepoList: LinearLayout
+    private lateinit var webuiHardRefreshButton: Button
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -175,7 +169,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             viewModel.pendingSessionId = value
         }
 
-    private var sessionRefreshing = false
     private var updateChecking = false
     private var storageLinksInFlight = false
     private var githubRefreshing = false
@@ -191,12 +184,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
 
     /** Guards the listeners while the switches are filled from the preferences. */
     private var suppressSettingsCallbacks = false
-
-    private val sessionListener = OpenCodeSessionTracker.Listener {
-        handler.post {
-            if (!destroyed) renderTopBarSubtitle()
-        }
-    }
 
     private val storagePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -239,13 +226,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         setContentView(R.layout.activity_main)
         bindViews()
         bindSettings()
-
-        // Remember the open chat across a process death: the start page is loaded first and
-        // onPageFinished routes to this session, like reopening a TUI reattaches the last one.
-        OpenCodeSessionTracker.attach(applicationContext)
-        if (!viewModel.pageLoaded && pendingSessionId == null) {
-            pendingSessionId = OpenCodeSettings.lastSessionId(this)
-        }
 
         // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
         // the same page: it only has to be moved from the view hierarchy of the previous activity
@@ -304,7 +284,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         } else {
             viewModel.installSessionWatcher()
         }
-        renderTopBarSubtitle()
     }
 
     private fun bindViews() {
@@ -315,13 +294,7 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         statusProgress = findViewById(R.id.status_progress)
         statusRetry = findViewById(R.id.status_retry)
 
-        topBarSubtitle = findViewById(R.id.top_bar_subtitle)
         settingsPanel = findViewById(R.id.settings_panel)
-        sessionRefresh = findViewById(R.id.session_refresh)
-        sessionCurrentTitle = findViewById(R.id.session_current_title)
-        sessionCurrentDetail = findViewById(R.id.session_current_detail)
-        sessionStatus = findViewById(R.id.session_status)
-        sessionList = findViewById(R.id.session_list)
         updatesCurrent = findViewById(R.id.updates_current)
         updatesStatus = findViewById(R.id.updates_status)
         updatesCheck = findViewById(R.id.updates_check)
@@ -354,9 +327,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         githubClone = findViewById(R.id.github_clone)
         githubCloneStatus = findViewById(R.id.github_clone_status)
         githubRepoSection = findViewById(R.id.github_repo_section)
-        githubRepoRefresh = findViewById(R.id.github_repo_refresh)
         githubRepoStatus = findViewById(R.id.github_repo_status)
         githubRepoList = findViewById(R.id.github_repo_list)
+        webuiHardRefreshButton = findViewById(R.id.settings_webui_hard_refresh)
     }
 
     private fun bindSettings() {
@@ -366,7 +339,10 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             FileManagerDialog.show(this) { directory -> openProject(directory) }
         }
 
-        sessionRefresh.setOnClickListener { refreshSessionCard() }
+        webuiHardRefreshButton.setOnClickListener {
+            closeSettings()
+            hardRefreshWebUi()
+        }
         updatesCheck.setOnClickListener { checkForUpdates() }
         updatesUpdate.setOnClickListener { startUpdate() }
         updatesAuto.setOnCheckedChangeListener { _, checked ->
@@ -421,13 +397,11 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
     private fun openSettings() {
         settingsPanel.visibility = View.VISIBLE
         renderSettings()
-        refreshSessionCard()
         refreshGitHub()
     }
 
     private fun closeSettings() {
         settingsPanel.visibility = View.GONE
-        renderTopBarSubtitle()
     }
 
     private fun renderSettings() {
@@ -451,94 +425,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         renderStorage()
     }
 
-    /* ------------------------------------------------------------------ top bar and sessions */
-
-    private fun renderTopBarSubtitle() {
-        val title = OpenCodeSessionTracker.activeSessionTitle
-        topBarSubtitle.text = if (title.isNotEmpty()) title
-        else getString(R.string.opencode_web_subtitle)
-    }
-
-    private fun refreshSessionCard() {
-        if (sessionRefreshing) return
-        sessionRefreshing = true
-        sessionStatus.text = getString(R.string.opencode_session_refreshing)
-        val secret = OpenCodeBootstrap.getServerPassword(this)
-        backgroundExecutor.execute {
-            val sessions = OpenCodeApi.sessionList(PORT, secret, 4500)
-            val activeId = OpenCodeSessionTracker.activeSessionId
-            val active = when {
-                sessions == null -> null
-                activeId == null -> null
-                else -> sessions.firstOrNull { it.id == activeId }
-                    ?: OpenCodeApi.session(PORT, secret, activeId, 4500)
-            }
-            handler.post {
-                if (destroyed) return@post
-                sessionRefreshing = false
-                renderSessionCard(sessions, active)
-            }
-        }
-    }
-
-    private fun renderSessionCard(sessions: List<OpenCodeApi.Session>?, active: OpenCodeApi.Session?) {
-        if (sessions == null) {
-            sessionStatus.text = getString(R.string.opencode_session_failed)
-            sessionCurrentTitle.text = getString(R.string.opencode_session_unknown)
-            sessionCurrentDetail.text = ""
-            sessionList.removeAllViews()
-            return
-        }
-        sessionStatus.text = ""
-
-        if (active != null) {
-            sessionCurrentTitle.text = active.title
-            val directory = active.directory.ifEmpty { OpenCodeBootstrap.HOME }
-            val age = OpenCodeApi.relativeAge(active.updated)
-            sessionCurrentDetail.text = if (age.isEmpty()) directory
-            else getString(R.string.opencode_session_meta, directory, age)
-            OpenCodeSessionTracker.setActiveSession(active.id, active.title)
-        } else if (OpenCodeSessionTracker.activeSessionId != null) {
-            sessionCurrentTitle.text = getString(R.string.opencode_session_unknown)
-            sessionCurrentDetail.text = ""
-        } else {
-            sessionCurrentTitle.text = getString(R.string.opencode_session_none)
-            sessionCurrentDetail.text = ""
-        }
-
-        sessionList.removeAllViews()
-        if (sessions.isEmpty()) {
-            sessionList.addView(listMessage(getString(R.string.opencode_session_empty)))
-            return
-        }
-        for (session in sessions.take(8)) {
-            sessionList.addView(sessionRow(session))
-        }
-    }
-
-    private fun sessionRow(session: OpenCodeApi.Session): View {
-        val row = TextView(this)
-        val directory = session.directory.ifEmpty { OpenCodeBootstrap.HOME }
-        val age = OpenCodeApi.relativeAge(session.updated)
-        row.text = session.title + "\n" +
-            if (age.isEmpty()) directory
-            else getString(R.string.opencode_session_meta, directory, age)
-        row.setTextColor(getColor(R.color.oc_text_muted))
-        row.textSize = 12f
-        row.setLineSpacing(dp(2).toFloat(), 1f)
-        row.setPadding(dp(10), dp(8), dp(10), dp(8))
-        row.background = getDrawable(R.drawable.bg_input)
-        row.isClickable = true
-        row.setOnClickListener { openSession(session.id) }
-        val params = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        )
-        params.topMargin = dp(6)
-        row.layoutParams = params
-        return row
-    }
-
     private fun listMessage(message: String): View {
         val view = TextView(this)
         view.text = message
@@ -547,17 +433,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         view.setPadding(dp(2), dp(8), dp(2), dp(4))
         return view
     }
-
-    private fun openSession(id: String) {
-        closeSettings()
-        if (pageLoaded) {
-            webView.loadUrl(sessionUrl(id))
-        } else {
-            pendingSessionId = id
-        }
-    }
-
-    private fun sessionUrl(id: String): String = "$baseUrl/session/$id"
 
     /* ------------------------------------------------------------------ updates */
 
@@ -1119,9 +994,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
             val status = OpenCodeApi.createSession(PORT, secret, directory.absolutePath)
             handler.post {
                 if (destroyed) return@post
-                if (status in 200..299) {
-                    if (settingsPanel.visibility == View.VISIBLE) refreshSessionCard()
-                }
             }
         }
     }
@@ -1185,12 +1057,9 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         super.onStart()
         // JavaScript dialogs of the web app are shown by the activity of the moment.
         viewModel.ui = this
-        OpenCodeSessionTracker.addListener(sessionListener)
-        renderTopBarSubtitle()
     }
 
     override fun onStop() {
-        OpenCodeSessionTracker.removeListener(sessionListener)
         viewModel.ui = null
         super.onStop()
     }
@@ -1435,6 +1304,47 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         handler.post(poll)
     }
 
+    private fun hardRefreshWebUi() {
+        if (destroyed) return
+
+        Toast.makeText(this, "Đang làm mới WebUI...", Toast.LENGTH_SHORT).show()
+
+        try {
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.removeAllCookies(null)
+            cookieManager.flush()
+            WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword()
+        } catch (e: Exception) {
+            Log.w(TAG, "hardRefreshWebUi: failed to clear cookies/auth", e)
+        }
+
+        try {
+            webView.stopLoading()
+            webView.clearCache(true)
+            webView.clearFormData()
+            webView.clearHistory()
+            webView.clearSslPreferences()
+        } catch (e: Exception) {
+            Log.w(TAG, "hardRefreshWebUi: failed to clear webview", e)
+        }
+
+        pageLoaded = false
+        pairAttempts = 0
+        pendingSessionId = null
+        loadFailures = 0
+        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        statusTitle.setText(R.string.opencode_status_starting)
+        statusDetail.setText(R.string.opencode_status_waiting)
+        statusProgress.visibility = View.VISIBLE
+        statusRetry.visibility = View.GONE
+
+        handler.removeCallbacks(poll)
+        handler.post(poll)
+    }
+
     /** The server accepts connections, replace the progress screen with the paired web UI. */
     private fun loadUi(sessionToken: String?) {
         if (pageLoaded) return
@@ -1604,7 +1514,6 @@ class OpenCodeWebActivity : ComponentActivity(), OpenCodeBootstrap.InstallListen
         backgroundExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)
         OpenCodeBootstrap.removeInstallListener(this)
-        OpenCodeSessionTracker.removeListener(sessionListener)
         viewModel.ui = null
         // The WebView is owned by the ViewModel: here it is only detached from the hierarchy of
         // this activity, and only when it is really attached to it (a configuration change can

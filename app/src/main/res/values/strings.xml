@@ -46,8 +46,6 @@
     <string name="opencode_session_current">Đang mở</string>
     <string name="opencode_session_none">Chưa có phiên nào đang mở</string>
     <string name="opencode_session_unknown">Không đọc được thông tin phiên</string>
-    <string name="opencode_session_refresh">Làm mới phiên</string>
-    <string name="opencode_session_refreshing">Đang tải danh sách phiên…</string>
     <string name="opencode_session_recent">Phiên gần đây</string>
     <string name="opencode_session_empty">Server chưa có phiên chat nào.</string>
     <string name="opencode_session_failed">Không tải được danh sách phiên. Kiểm tra server rồi thử lại.</string>
