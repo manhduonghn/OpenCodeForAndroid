@@ -327,7 +327,9 @@ với `native-assets`; `classify` nhận đúng `go`, vá xong bản vá chạy 
 `SIGSYS` trên thiết bị (Go `linux` thử syscall đó trong `exec.LookPath`), nên stub và helper
 đã được sửa để trả `ENOSYS`/tránh syscall đó. Lần thử tiếp theo phát hiện helper gốc chưa map
 path Termux cho chính input của nó (`oc-run /data/data/com.termux/files/usr/bin/...` báo
-không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mapping đó.
+không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mapping đó. Một binary Go thật
+(`yq` v4.54.1, build bằng Go 1.27.1) tải từ mạng cũng được vá và đọc/ghi `-i` qua path Termux;
+cache được tạo lại theo blob mới thay vì dùng bản vá của APK cũ.
 
 Giới hạn có chủ ý:
 
