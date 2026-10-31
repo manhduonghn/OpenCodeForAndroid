@@ -30,3 +30,6 @@ signing-keys/
 *-private.pem
 id_rsa
 id_ed25519
+
+# Tài liệu nghiên cứu cục bộ (tải từ repo tham chiếu, không commit)
+.research/

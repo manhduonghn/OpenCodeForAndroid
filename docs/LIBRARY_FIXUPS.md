@@ -1,0 +1,218 @@
+# Cách vá cho các thư viện của prefix (nghiên cứu từ AndroidHarness và Cortex)
+
+Tài liệu ghi lại kết quả nghiên cứu hai dự án tham chiếu và đề xuất hướng vá cho các
+thư viện/nhị phân vận hành trong prefix của app:
+
+- **AndroidHarness** (`Sanuu7/AndroidHarness`) — app coding agent chạy toolchain Termux
+  trong private storage, phương pháp gần giống app này, kèm nhiều bản vá riêng đã được
+  kiểm chứng trên thiết bị thật.
+- **Cortex** (`ssfuisu/cortex`) — terminal Ubuntu 24.04 native trên Android bằng một
+  thư viện `LD_PRELOAD` dịch đường dẫn (`libcortex-hook.so`), không ptrace, không root.
+
+## 1. Hiện trạng của app đã làm gì
+
+Các cơ chế đã có trong repo (đánh dấu để so sánh, không cần làm lại):
+
+| Cơ chế | Vị trí trong code |
+| --- | --- |
+| Relocation cùng độ dài `com.termux/files/usr` (31) → `DATA_DIR` (31) trong rodata của ELF | `OpenCodeBootstrap.relocateLoader` / `relocateGlibc`, `ElfStrings` |
+| Patch PT_INTERP về loader glibc của prefix + fallback `ld-linux --library-path` | `installBinary`, `repairNativeInterp` |
+| Alias cấp 1: mọi thư mục top-level của prefix được symlink vào `DATA_DIR` vì không đủ độ dài cho 1 alias duy nhất | `ensurePathAliases` |
+| RUNPATH patch bằng `patchelf` cho bash/patchelf/opencode/JDK | `patchRpath` |
+| Symlink tuyệt đối của Termux → tương đối; shebang → `$PREFIX`; ELF của git mang `SHELL_PATH` được vá | `OpenCodePackages` (extractor + `repair`) |
+| Self-heal: `BINARY_PROOF` + reinstall gói hỏng, glibc loader, cert.pem ngắn | `OpenCodePackages.brokenPackages`, `doMaintenance` |
+| `etc/opencode-env.sh`: PATH/LD_LIBRARY_PATH, wrapper tách môi trường cho `pkg` và lệnh Android, GIT_EXEC_PATH/GIT_TEMPLATE_DIR/GIT_CONFIG_SYSTEM/GIT_ATTR_NOSYSTEM, OPENSSL_CONF/MODULES/ENGINES, SSL_CERT_FILE/CURL_CA_BUNDLE/NODE_EXTRA_CA_CERTS, JAVA_HOME, resolv.conf | `buildPackageEnvironment` |
+| `etc/gitconfig` với `http.sslCAInfo` (Termux libcurl cắm cứng cert.pem của prefix cũ) | `writeGitConfig` |
+| resolv.conf cho glibc (IPv6-only fallback, refresh theo mạng) | `refreshResolvConf` |
+| profile/bashrc login shell | `ensureLoginProfile`, `hookBashrc` |
+
+Kết luận nhanh: nền tảng của app đã bao phủ ~80% những gì AndroidHarness vá, theo đúng
+cùng triết lý (không ptrace, sửa string cùng độ dài, self-heal). Phần dưới liệt kê những
+góc còn thiếu và những cách làm tốt hơn đáng học.
+
+## 2. AndroidHarness vá gì (dữ liệu lấy từ mã nguồn)
+
+Nguồn: `LinuxEnvironment.kt` (~1900 dòng), `NetTls.kt`, `AndroidBuildToolchain.kt`,
+`OpenCodePackages` tương đương của họ là extractor + repair bên trong `LinuxEnvironment`
+và `TermuxShellPath`/`TermuxShebangs`/`TermuxLinkRewrite`.
+
+### 2.1 TLS/CA (Bug 1 của họ)
+
+- **Ship sẵn Mozilla CA bundle trong APK** (`assets/net/mozilla-ca-bundle.pem`), materialize
+  vào prefix `etc/tls/cacert.pem` khi thiếu hoặc checksum lệch → TLS chạy ngay cả khi gói
+  `ca-certificates` chưa cài hoặc trích xuất lỗi. App này hiện chỉ dựa vào gói + kiểm tra
+  `cert.pem > 1024` byte — vốn đã bắt được lỗi, nhưng certificate vẫn cần mạng lần đầu.
+- **Bộ biến môi trường đầy đủ**: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+  `REQUESTS_CA_BUNDLE` (app mình chưa có biến này), `GIT_SSL_CAINFO`,
+  `NODE_EXTRA_CA_CERTS`; nếu không có bundle thì hint `/system/etc/security/cacerts`
+  (Java dùng `JAVAX_NET_SSL_TRUSTSTORE`, được cấp riêng khi có JDK).
+- **OPENSSL_CONF**: cùng lý do với app, họ chỉ ra Node **không khởi động** khi file config
+  trỏ về `/data/data/com.termux/...` mà Termux app có cài (EACCES thay vì missing) —
+  khớp như app đã thấy và đã vá bằng `OPENSSL_CONF`.
+
+### 2.2 Git re-rooting
+
+- KV: `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`
+  (nếu file đọc được) hoặc `GIT_CONFIG_NOSYSTEM=1`, và
+  **`GIT_ATTR_NOSYSTEM=1`** khi `etc/gitattributes` không đọc được — không có biến này,
+  mỗi lần gọi git in 3–5 dòng warning `unable to access .../etc/gitattributes`.
+  App đã có đủ (env script v2), gồm cả gitattributes.
+- Họ patch **SHELL_PATH trong ELF của git** (`/data/data/com.termux/files/usr/bin/sh`
+  → `/system/bin/sh`, cùng độ dài) vì tier Shizuku của họ deploy prefix ở nơi khác.
+  Prefix của app là một, SHELL_PATH sau relocation đã trỏ đúng `$PREFIX/bin/sh`
+  (cùng độ dài 31) — không cần làm gì thêm; chỉ lưu ý: nếu sau này app có tier
+  thứ hai ở đường dẫn khác độ dài, đây là chỗ phải xử lý.
+
+### 2.3 W^X / exec và môi trường runtime
+
+- `libtermux-exec-ld-preload.so` cho bionic tier của họ; với glibc process họ **unset
+  LD_PRELOAD** — app cũng làm y như vậy trong `opencode-env.sh` (`unset LD_PRELOAD` +
+  wrapper `LD_LIBRARY_PATH= LD_PRELOAD= command pkg`).
+- Bài học đáng lấy: nhận xét của họ rằng chỉ định `LD_PRELOAD` trỏ tới file không tồn tại
+  còn tệ hơn **không set** — linker từ chối mọi binary động (`CANNOT LINK EXECUTABLE`),
+  là lý do mọi nơi thiết lập `LD_PRELOAD` đều kiểm tra file tồn tại trước. Áp dụng cho
+  script env của app: hiện `unset LD_PRELOAD` vô điều kiện là an toàn, nhưng các biến
+  phụ thuộc (ví dụ `GIT_TEMPLATE_DIR`, `TZDIR`) nên theo cùng nguyên tắc "chỉ set khi
+  có thật".
+
+### 2.4 JDK/Java (quan trọng cho `openjdk-17`/`21` của Termux)
+
+- **Thứ tự `LD_LIBRARY_PATH`: `libjli` re-exec `/proc/self/exe` nếu `lib/server` KHÔNG
+  đứng đầu**, còn trong app tier `/proc/self/exe` là linker của Android nên một tham số
+  `-version` bị hiểu là file chạy. App hiện để `$JAVA_HOME/lib:$JAVA_HOME/lib/server:…`
+  (lib trước, server sau) — nên **đảo thành `lib/server` đầu tiên** (một dòng env script,
+  rủi ro gần như bằng 0).
+- `javaHome()` được suy luận hai cách cho hai tier; họ lưu ý Android alias
+  `/data/user/0` ↔ `/data/data` và `libjli` so sánh chuỗi với library path đã load.
+  Trong app chỉ có 1 tier nên không cần, nhưng nếu sau này dùng `/data/user/0` thì nhớ.
+- **Launchers d8/r8/apksigner**: shell script của Termux cắm cả jar của prefix cũ;
+  họ viết lại thành `#!/system/bin/sh` + `"\${PREFIX:?…}/share/java/d8.jar"` — pattern
+  `${PREFIX:?}` làm script **tự lỗi rõ ràng** thay vì âm thầm chạy sai khi `PREFIX` chưa
+  được export. Cách viết này đáng dùng cho mọi launcher script app sinh ra.
+
+### 2.5 Tự phục hồi prefix (self-heal) — cấu trúc đáng tham khảo
+
+Vòng repair chạy mỗi lúc app khởi động, từng bước đếm số và tóm tắt cho log/UI:
+
+1. relink symlink Termux hỏng (`bin/`, `bin/applets/`, cả `lib/`).
+2. purge/rewrite shebang Termux trong `bin/` (giữ ELF nguyên, chỉ sửa script).
+3. patch SHELL_PATH trong ELF git.
+4. repair launcher Java (d8/r8/apksigner).
+5. gói "broken theo proof binary" → unmark + reinstall gộp vào vòng cài thường;
+   **lỗi mạng không được hạ trạng thái Ready** (giữ Ready, lần sau thử lại).
+6. drop staging marker khi có sửa để deploy phụ thuộc re-stage lại thay vì tin cache.
+
+App có các mảnh tương đương rải trong `OpenCodePackages.repair` + `doMaintenance`, chỉ
+thiếu (4) — chưa có gói build toolchain nào, nên mới quyết định tính kế hoạch khi thêm
+gói `d8`/`apksigner`.
+
+### 2.6 Cái khác đáng ghi
+
+- **Locale**: `LANG=C.UTF-8` luôn được set (script env của app chưa set; glibc không có
+  locale dir này sẽ warning trên node/gh/editors). Termux glibc thường đi kèm C.UTF-8,
+  nên set mặc định + đắp được nếu trống.
+- **`TZDIR`**: chỉ định `$PREFIX/share/zoneinfo` khi thiếu, tránh Java/Python/GNU time
+  đoán mò `/usr/share/zoneinfo` (không có trên Android).
+- **npm/pip cache ra ngoài prefix** (cùng ý tưởng `npm_config_cache`/`PIP_CACHE_DIR`
+  của app — app đã có).
+- **Scratch exec được**: với họ là `/data/local/tmp` (tier shell) + mirror app-private
+  (tier app); app giữ `/data/data/…` (W^X chỉ gặp từ targetSdk 29+, app target 28) nên
+  không sao chép, chỉ ghi nhận lý do.
+- **Chỉ deploy khi hash khớp**: stage tarball gắn hash nội dung thay vì chỉ hash danh
+  sách gói, tránh deploy một tarball cũ. App không có deploy 2 tầng; ý tưởng "hash
+  nội dung thay vì danh sách" đáng nhớ nếu app sau này cache tarball bootstrap.
+
+## 3. Cortex làm gì (bản đồ kỹ thuật)
+
+Cortex chọn cách khác về bản chất: **không sửa binary**, mà dịch đường dẫn lúc chạy qua
+một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process glibc. 7200 dòng C
+được tổ chức thành các part, mỗi part intercept một nhóm symbol libc:
+
+| Part | Nội dung ứng dụng được |
+| --- | --- |
+| `paths.c` | `rewrite_path()`: rootfs (`/usr`, `/etc`, `/tmp`, `/var`, `/root`) → `$CORTEX_ROOT/...`; thư mục lẻ `/dev/shm` → `$ROOTFS/tmp/shm`; **loại trừ** các mount của Android (`/apex /data /dev /odm /proc /sys /system /sdcard`,…) đúng theo ký tự đầu thứ 2 — nhanh, không snprintf trong hot path |
+| `setup.c` | Seed env lúc init của hook: `TZDIR`, `SSL_CERT_FILE/DIR`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS` … tự phát hiện root bằng `dladdr` của chính hook; `/proc/self/exe` và `getcwd()` được trả lại dạng "mong muốn" |
+| `exec.c` | `execve`/`posix_spawn` hook: ELF của rootfs được chạy qua `ld.so --library-path --preload`; script được spawn qua chính interpreter (nếu trả về kernel, `#!/bin/sh` sẽ chọn shell của Android — họ gặp crash thật); binary của Android được chạy với env sạch không preload |
+| `files.c` | `open/openat/openat2` (kể cả `_FORTIFY_SOURCE` variants của GNU tar), `creat`, `fopen/freopen`, `mkstemp/mkstemps/tmpfile/mkdtemp` — tức là **`TMPDIR` được áp dụng cả cho những program không đọc biến này** |
+| `fileops.c` | `access/faccessat(2)/eaccess`, `chmod/fchmod(at)`, `unlink(at)`, `mkdir/mkdirat` (**điều chỉnh mode để owner luôn rwx**: dpkg tạo thư mục mode 0 rồi chmod sau, nhưng chmod thất bại lại bị báo thành công do `root` giả — kết quả là "Permission denied" trong `/usr/share/applications`), `inotify_add_watch` (tự tạo thư mục config thiếu → hết crash Bun/Node), `readlink`, xattrs, `realpath`, `scandir` |
+| `net.c` | DNS: đọc servers từ resolv.conf của prefix (refresh mỗi 5s), tự gửi truy vấn UDP khi glibc không tìm được gì, **redirect truy vấn tới 127.0.0.1/::1 sang server thật** (trên Android không gì listen ở loopback như vậy), hỗ trợ IPv6-only (fallback AAAA + public resolver) |
+| `identity.c` | **fakeroot**: `getuid/geteuid/getgid/...` trả về 0 cho program của rootfs (app không thể root), `lckpwdf` giả (Android mount `/etc` ro → `EROFS`), `getpwnam`/`getgrnam` + `/etc/shadow` từ file của rootfs, `getgroups` trả lại `ngroups=1` đúng theo check của chương trình được fortify (sshd chết vì lệch số lượng) |
+| `signals.c` + `syscalls.c` | Handler `SIGSYS` (Android seccomp chặn syscall): mở rộng từ syscall gì thì trả gì — `set*id` trả 0 (thành công giả), còn lại `-ENOSYS` để glibc retry theo đường cũ (`clone3` → `clone`) |
+| `static_programs.c` | Binary tĩnh (`gcc -static`): quét và vá **call site `svc #0`** trong file, biến set_robust_list/clone3/rseq/set*id thành 0 hoặc `-ENOSYS`, chuẩn hoá kết quả như handler SIGSYS; kết quả nhớ qua xattr (1 lần quét) |
+| `go_programs.c` + `gosys/` | Go không dùng libc → preload vô hiệu. Vá file Go (Go 1.19+, arm64): chèn code `gosys.c` (độc lập libc, không relocation) vào **padding giữa segments** của Go linker, nối nhánh `svc #0` tới nó; code dịch path + exec qua loader, đúng như hook cho chương trình C |
+| `hardlinks.c`, `compression.c`, `sockets.c` | hardlink/symlink chroot-cross, zstd cho tar, tên unix socket quá 108 byte được hash vào `$ROOTFS/tmp/.ctx_sock_%016llx` một cách deterministic |
+
+### 3.1 Điểm quan trọng nhất với app này
+
+1. **`LD_PRELOAD` translation là "cách vá cho nhiều thư viện" thực sự**: mọi đường dẫn
+   nhúng sai (`/usr`, `/etc`, `/tmp`…) dùng được mà không đụng vào file. Nhược điểm:
+   cost phải trả ở từng call đi qua file path (libcortex-hook tự đo: `stat +3%`,
+   `lstat` của symlink vẫn ~97%), và nhiều bề mặt phải giữ khớp nhau
+   (`openat2`, `posix_spawn`, fortify variants…).
+2. **Triết lý kết hợp**: Cortex shell là binary của Ubuntu **không use relocation** — toàn
+   bộ work nằm ở hook. App này đã chọn relocation (an toàn & không có runtime cost),
+   hai cách có thể **xen kẽ**: giữ relocation cho toolchain chính, dùng hook như một
+   **lưới vét cho binary không nằm trong plan** (binary user tải thêm, static Go…).
+3. **Chi tiết socket 108 byte**: app đã tự đụng vấn đề này với `$PREFIX/run` của
+   `opencode-pty`; hash-truncated socket name như cortex làm có thể dùng ngay trong
+   bridge/pty nếu sau này path hết fit.
+4. **SIGSYS policy table** (`set*id` → 0, còn lại → ENOSYS) của cortex là bản tóm tắt
+   gọn nhất về syscall Android chặn; nếu app sau này chạy glibc không phải build của
+   Termux hoặc binary tĩnh, cần đúng các mặc định này.
+5. Kỹ thuật Go patch khá mạo hiểm, đáng học nhưng không nên làm trước khi có nhu cầu
+   thật: module mỏng, giữ kích thước file, ghi xattr "đã vá với version nào", có logic undo.
+
+## 4. Đề xuất cho app (xếp theo thứ tự đáng làm)
+
+### 4.1 Nhanh — env + data, không đụng native (thực hiện được ngay)
+
+| # | Vá mới | Cụ thể |
+| --- | --- | --- |
+| 1 | Thêm `REQUESTS_CA_BUNDLE` (+ `PIP_CERT`) | python/pip một số đường đi ưu tiên cấu hình qua certifi/requests thay vì `SSL_CERT_FILE` |
+| 2 | `LANG=C.UTF-8` mặc định | 1 dòng trong `buildPackageEnvironment()` |
+| 3 | `TZDIR=$PREFIX/share/zoneinfo` khi có | tránh Java/Python tìm `/usr/share/zoneinfo` |
+| 4 | JAVA: đổi thứ tự `LD_LIBRARY_PATH` | `$JAVA_HOME/lib/server` đứng **trước** `lib` (theo ghi chú libjli của AndroidHarness) |
+| 5 | `GIT_SSL_CAINFO` biến env | App đã dùng `http.sslCAInfo` trong gitconfig; biến env giúp git chạy ngay cả khi không đọc được config |
+| 6 | Hardening env: mọi biến chỉ set khi file/dir tương ứng tồn tại | cùng nguyên tắc với `LD_PRELOAD` của AndroidHarness: biến trỏ tới thứ không có còn tệ hơn biến không được set |
+
+### 4.2 Trung bình — sửa cấu trúc nhỏ trong Kotlin
+
+| # | Vá mới | Cụ thể |
+| --- | --- | --- |
+| 7 | **CA bundle như asset**: ship `cacert.pem` trong `app/src/main/assets/`, materialize vào `etc/tls/cert.pem` như `NetTls.ensureInstalled` của AndroidHarness (checksum SHA-256, idempotent) | TLS sáng ngay lần đầu, kể cả khi trích xuất gói lỗi |
+| 8 | **Proof-binary mở rộng**: bảng `pkg → list file phải có` cho mỗi gói mới được thêm (hiện có `BINARY_PROOF`; chỉ cần thêm dòng khi cài thêm gói) | bắt gói thiếu file thay vì chỉ kiểm tra shell |
+| 9 | **Launcher repair pattern**: nếu app sinh launcher script cho gói build/codegen, dùng `#!/system/bin/sh` + `${PREFIX:?...}` để fail rõ ràng khi env thiếu | học từ AndroidBuildToolchain.rewriteLauncher |
+| 10 | **Bảng libc "blocked syscall"**: đối với glibc, phần chạy static không có; nhưng nếu sau này glibc bị sửa (Ubuntu) hoặc `apt` thành thuật toán chạy trong prefix, reuse SIGSYS-policy của cortex (`set*id=0`, còn lại `ENOSYS`) | tài liệu hóa trong docs, chưa cần code |
+
+### 4.3 Dài hạn — chỉ khi có nhu cầu thật (cân nhắc kỹ)
+
+| # | Ý tưởng | Giải thích |
+| --- | --- | --- |
+| 11 | **Preload path-translation** (tham khảo cortex, không sao chép) | Một `.so` nhỏ (glibc) `liboc-pathmap.so` map `/data/data/com.termux/.../X` → `$PREFIX/X` theo cách của `paths.c`; lợi: binary tải thêm/tự override phần path nhúng được mà không cần vá; hại: phải giữ hot-path đó nhanh (không snprintf) và cover đủ `openat2`, `posix_spawn`, `getcwd`, `/proc/self/exe`, unix socket; lưu ý: nó không giúp binary tĩnh |
+| 12 | **Go static patch** (như `gosys.c`) | `gh`, `fzf`… không dùng libc nên preload vô hiệu; chỉ đáng làm khi người dùng thường tải Go binary trong terminal |
+
+### 4.4 Bảng "thư viện → vấn đề → vá" (trạng thái hiện tại)
+
+| Thư viện / binary | Vấn đề áp lên prefix | Điều kiện xuất hiện | App đã vá? |
+| --- | --- | --- | --- |
+| glibc loader + libc | PT_INTERP / thư viện theo com.termux | mọi pkg cài qua core | ✅ relocation + alias |
+| OpenSSL (node/curl/gh) | config/modules path cũ | cài `openssl`, `nodejs`… | ✅ OPENSSL_CONF/MODULES/ENGINES |
+| libcurl | CA file cứng cert.pem prefix cũ | mọi HTTPS | ✅ GIT_CONFIG sslCAInfo + SSL_CERT_FILE/CURL_CA_BUNDLE (đã đủ) |
+| git | GIT_EXEC_PATH/SHELL_PATH/templates/system config/gitattributes | cài git | ✅ hết |
+| bash | profile shebang + env unset LD_PRELOAD | mọi tty | ✅ |
+| Python | prefix trong sysconfig; pip cache; REQUESTS | cài `python`/`pip` | ⚠️ relocation che phần lớn; **cần thêm REQUESTS_CA_BUNDLE (mục 4.1 #1)** |
+| JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ⚠️ có JAVA_HOME; **cần đổi thứ tự lib/server trước (mục 4.1 #4)** |
+| Node | OPENSSL_CONF fatal nếu EACCES; xattrs/inotify `config` dir thiếu | cài nodejs → opencode | ⚠️ conf đã có; inotify mkdir là bản fix Bun của cortex, không cần cho node thường |
+| dpkg/apt (nếu cài) | fakeroot, mode 0 mkdir, seccomp set*id | cài cùng `glibc` gói glibc | ❌ chưa cần — app dùng `pkg` bridge bionic riêng |
+| Binary tĩnh / Go | syscall tự làm, path sai | kết quả tải thêm trong terminal | ❌ dài hạn (mục 4.3) |
+
+## 5. Hướng kiểm chứng
+
+Môi trường hiện tại không có JDK/SDK để build, vì vậy các bước xác minh khi triển khai:
+
+- 4.1 #1–#5 chỉ sửa `buildPackageEnvironment()` → thiếu bộ test unit; kiểm tra bằng
+  mở `etc/opencode-env.sh` được sinh ra và chạy `sh -n` cho syntax.
+- 4.2 #7 (asset CA) cần xác minh SHA-256 khớp nội dung asset — `sha256sum` chạy được
+  trên máy build, không phụ thuộc Android SDK.
+- 4.3 (preload/Go patch) bắt buộc phải có thiết bị thật + NDK; ngay cả AndroidHarness
+  cũng chạy QA trên thiết bị thật thay vì emulator.
