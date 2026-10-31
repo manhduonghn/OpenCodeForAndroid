@@ -334,9 +334,11 @@ không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mappi
 cache được tạo lại theo blob mới thay vì dùng bản vá của APK cũ.
 
 Đã cài thử bằng `pkg` trên máy thật: `tree jq fzf`, `python python-pip`,
-`nodejs npm ripgrep fd bat sqlite openssh`, `openjdk-17 d8 apksigner` — cài xong chạy được
+`nodejs npm ripgrep fd bat sqlite openssh`, `openjdk-17 d8 apksigner`,
+`clang make cmake ninja pkg-config` — cài xong chạy được
 (`node -e`, `npm --version`, `rg`, `fd`, `bat`, `sqlite3`, `ssh -V`, `java -version`, `javac`,
-`d8`, `apksigner`). Mạng là điểm yếu duy nhất: hai lượt cài hỏng giữa chừng (ở `libicu` và
+`d8`, `apksigner`, `clang hi.c -o hi` rồi chạy, `make 4.4.1`, `cmake 4.4.5`, `ninja 1.13.2`,
+`pkg-config 0.29.2`). Mạng là điểm yếu duy nhất: hai lượt cài hỏng giữa chừng (ở `libicu` và
 `libllvm`) vì `Unable to resolve host "packages.termux.dev"`, chạy lại lệnh thì tiếp tục và
 hoàn tất; các gói đã trích trước đó vẫn dùng được. App giờ thử lại 3 lần cho mỗi mirror với
 backoff khi lỗi là DNS/connect/socket timeout; lỗi HTTP và checksum vẫn chuyển mirror ngay.
