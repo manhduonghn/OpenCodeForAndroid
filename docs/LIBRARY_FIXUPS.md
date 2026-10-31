@@ -336,9 +336,11 @@ cache được tạo lại theo blob mới thay vì dùng bản vá của APK c�
 Đã cài thử bằng `pkg` trên máy thật: `tree jq fzf`, `python python-pip`,
 `nodejs npm ripgrep fd bat sqlite openssh`, `openjdk-17 d8 apksigner` — cài xong chạy được
 (`node -e`, `npm --version`, `rg`, `fd`, `bat`, `sqlite3`, `ssh -V`, `java -version`, `javac`,
-`d8`, `apksigner`). Mạng là điểm yếu duy nhất: một lượt cài hỏng giữa chừng vì
-`Unable to resolve host "packages.termux.dev"`, chạy lại lệnh thì tiếp tục và hoàn tất; các gói
-đã trích trước đó vẫn dùng được. Script do `npm install -g` tạo ra có shebang
+`d8`, `apksigner`). Mạng là điểm yếu duy nhất: hai lượt cài hỏng giữa chừng (ở `libicu` và
+`libllvm`) vì `Unable to resolve host "packages.termux.dev"`, chạy lại lệnh thì tiếp tục và
+hoàn tất; các gói đã trích trước đó vẫn dùng được. App giờ thử lại 3 lần cho mỗi mirror với
+backoff khi lỗi là DNS/connect/socket timeout; lỗi HTTP và checksum vẫn chuyển mirror ngay.
+Script do `npm install -g` tạo ra có shebang
 `#!/usr/bin/env node`, mà Android không có `/usr/bin`, nên chạy trực tiếp báo
 `bad interpreter`; `oc-run cowsay` chạy ngay, còn để gõ thẳng tên lệnh thì cần thêm bước
 `repair` (đã thêm lệnh `pkg repair`, và mỗi `pkg install` cũng chạy lượt repair này). Từ bản này
