@@ -331,6 +331,18 @@ không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mappi
 (`yq` v4.54.1, build bằng Go 1.27.1) tải từ mạng cũng được vá và đọc/ghi `-i` qua path Termux;
 cache được tạo lại theo blob mới thay vì dùng bản vá của APK cũ.
 
+Đã cài thử bằng `pkg` trên máy thật: `tree jq fzf`, `python python-pip`,
+`nodejs npm ripgrep fd bat sqlite openssh`, `openjdk-17 d8 apksigner` — cài xong chạy được
+(`node -e`, `npm --version`, `rg`, `fd`, `bat`, `sqlite3`, `ssh -V`, `java -version`, `javac`,
+`d8`, `apksigner`). Mạng là điểm yếu duy nhất: một lượt cài hỏng giữa chừng vì
+`Unable to resolve host "packages.termux.dev"`, chạy lại lệnh thì tiếp tục và hoàn tất; các gói
+đã trích trước đó vẫn dùng được. Script do `npm install -g` tạo ra có shebang
+`#!/usr/bin/env node`, mà Android không có `/usr/bin`, nên chạy trực tiếp báo
+`bad interpreter`; `oc-run cowsay` chạy ngay, còn để gõ thẳng tên lệnh thì cần thêm bước
+`repair` (đã thêm lệnh `pkg repair`, và mỗi `pkg install` cũng chạy lượt repair này). Từ bản này
+extractor/repair map shebang trỏ tới interpreter không tồn tại trên máy (`#!/usr/bin/env node`,
+`#!/bin/bash`) sang `$PREFIX/bin`, giữ nguyên `/bin/sh` của Android.
+
 Giới hạn có chủ ý:
 
 - chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path

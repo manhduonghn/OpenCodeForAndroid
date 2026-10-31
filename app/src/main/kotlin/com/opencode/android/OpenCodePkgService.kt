@@ -84,7 +84,11 @@ class OpenCodePkgService : Service() {
 
     private fun run(job: Job) {
         try {
-            if (isSearch(job.action)) search(job) else install(job)
+            when {
+                isRepair(job.action) -> repair(job)
+                isSearch(job.action) -> search(job)
+                else -> install(job)
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "The package operation failed", t)
             writeStatus(job, "error", describe(t), -1)
@@ -92,6 +96,30 @@ class OpenCodePkgService : Service() {
             stopForegroundCompat()
             stopSelf()
         }
+    }
+
+    /**
+     * Rewrite the shebangs and links of the prefix on demand. A package manager that runs inside
+     * the terminal (`npm install -g`, …) writes scripts with a shebang of its own after the app's
+     * last repair pass; those scripts fail with "bad interpreter" until this pass runs again.
+     */
+    private fun repair(job: Job) {
+        writeStatus(job, "running", "Checking the package environment...", 0)
+        updateNotification("Repairing the package environment...")
+        val summary = try {
+            OpenCodePackages.repair(File(OpenCodeBootstrap.PREFIX))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not repair the package environment", e)
+            writeStatus(job, "error", describe(e), -1)
+            return
+        }
+        try {
+            OpenCodeBootstrap.ensurePackageEnvironment(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not refresh the shell environment", e)
+        }
+        writeStatus(job, "done", summary ?: "Nothing to repair.", 100)
+        updateNotification("The package environment is repaired.")
     }
 
     private fun install(job: Job) {
@@ -252,6 +280,7 @@ class OpenCodePkgService : Service() {
 
         const val ACTION_INSTALL = "com.opencode.android.pkg.INSTALL"
         const val ACTION_SEARCH = "com.opencode.android.pkg.SEARCH"
+        const val ACTION_REPAIR = "com.opencode.android.pkg.REPAIR"
 
         const val CHANNEL_ID = "opencode_pkg_channel"
         const val NOTIFICATION_ID = 1342
@@ -282,6 +311,9 @@ class OpenCodePkgService : Service() {
 
         /** The terminal sends `search`, an explicit intent may send the full action. */
         private fun isSearch(action: String): Boolean = action == "search" || action == ACTION_SEARCH
+
+        /** The terminal sends `repair`, an explicit intent may send the full action. */
+        private fun isRepair(action: String): Boolean = action == "repair" || action == ACTION_REPAIR
 
         private fun writeStatus(job: Job, state: String, message: String, percent: Int) {
             val sb = StringBuilder()

@@ -56,6 +56,7 @@ Commands:
   bundle <group...>      Install a curated group: dev, python, node, java, net, all
   search <text>          Search the Termux package repository
   list-installed         List the packages of this prefix
+  repair                 Rewrite broken shebangs and Termux links of the prefix
   update, upgrade        Refresh the index (every install uses the live index)
   help                   Show this help
 
@@ -382,6 +383,24 @@ private fun update() {
     line("Run 'pkg install <package>' to install or upgrade a package.")
 }
 
+/**
+ * Ask the app for a repair pass. Commands installed by `npm install -g` or another package
+ * manager inside the terminal write `#!/usr/bin/env …` shebangs, which Android cannot execute;
+ * the app points them at `$PREFIX/bin` the same way it does for the extracted packages.
+ */
+private fun repair() {
+    line("Checking the package environment ...")
+
+    val session = sessionName()
+    try {
+        startService("repair", session, null, null)
+        waitForService(session)
+    } finally {
+        deleteFile(statusPath(session))
+        deleteFile(resultPath(session))
+    }
+}
+
 private fun runPkg(arguments: List<String>) {
     val command = arguments.firstOrNull() ?: "help"
     val rest = if (arguments.isEmpty()) emptyList() else arguments.drop(1)
@@ -391,6 +410,7 @@ private fun runPkg(arguments: List<String>) {
         "bundle", "toolbox" -> bundle(rest)
         "search", "find" -> search(rest)
         "list-installed", "list", "installed" -> listInstalled()
+        "repair", "fix" -> repair()
         "update", "upgrade" -> update()
         "remove", "uninstall", "delete" -> fail(
             "'$command' is not supported: the app installs packages without dpkg, so there " +

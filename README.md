@@ -132,6 +132,7 @@ pkg install npm
 pkg install python-pip
 pkg search editor
 pkg list-installed
+pkg repair
 ```
 
 `pkg install` sends an ordered broadcast to the app's
@@ -149,7 +150,12 @@ data directory may be executed directly. That is also why there is no linker
 shim: a script whose shebang points into this prefix is exec'ed by the kernel
 normally. The app still repairs prefixes installed by older builds on every
 start: dangling Termux symlinks are relinked, dead Termux shebangs are rewritten
-or removed, and git's ELF shell path is patched. A package that the marker lists
+or removed, and git's ELF shell path is patched. A shebang that names an
+interpreter Android does not have (`#!/usr/bin/env node`, `#!/bin/bash`) is
+pointed at the copy in `$PREFIX/bin` when that exists. Scripts written after the
+last repair pass — a global `npm install -g`, for example — need `pkg repair`
+(any `pkg install` also runs the pass) before the new command can be executed
+directly; `oc-run COMMAND` works immediately. A package that the marker lists
 but whose files are gone is installed again instead of being treated as present.
 
 The Termux binaries are linked against `$PREFIX/lib` with an absolute RUNPATH

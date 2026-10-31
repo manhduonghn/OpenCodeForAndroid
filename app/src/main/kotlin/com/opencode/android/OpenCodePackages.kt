@@ -366,12 +366,12 @@ object OpenCodePackages {
                     continue
                 }
                 val firstLine = firstLineOf(file) ?: continue
-                if (!firstLine.startsWith(TERMUX_SHEBANG_MARK)) continue
+                if (!firstLine.startsWith("#!")) continue
                 val repaired = TermuxShebangs.rewrittenFirstLine(firstLine, prefix.absolutePath)
                 val wrapper = isBin && TermuxShebangs.isWrapperScript(name, firstLine)
                 if (repaired != null && !wrapper) {
                     if (rewriteFirstLine(file, repaired)) rewritten++
-                } else if (isBin && file.delete()) {
+                } else if (isBin && firstLine.startsWith(TERMUX_SHEBANG_MARK) && file.delete()) {
                     removed++
                 }
             }
@@ -462,7 +462,7 @@ object OpenCodePackages {
             }
             if (rewritten > 0) {
                 if (isNotEmpty()) append("; ")
-                append("rewrote ").append(rewritten).append(" Termux shebang(s)")
+                append("rewrote ").append(rewritten).append(" shebang(s)")
             }
             if (shellPatched > 0) {
                 if (isNotEmpty()) append("; ")
@@ -947,11 +947,25 @@ object OpenCodePackages {
         /**
          * Rewrite `#!/data/data/com.termux/files/usr/...` into this prefix. The `bin/env`
          * launchers (`#!/…/bin/env node`) are covered too: coreutils installs bin/env.
+         *
+         * A script written by npm or another package manager can say `#!/usr/bin/env node` for
+         * the same reason: Android has no `/usr/bin`. The kernel cannot resolve that interpreter,
+         * so the shebang is pointed at the prefix copy when the named program is missing on the
+         * device but exists in `bin`. `/bin/sh` of Android is left alone: it exists and works.
          */
         fun rewrittenFirstLine(firstLine: String, prefix: String): String? {
-            if (!firstLine.startsWith("#!$TERMUX_USR_ABS")) return null
-            val line = "#!$prefix/" + firstLine.substring("#!$TERMUX_USR_ABS".length)
-            return if (line.contains("/data/data/com.termux")) null else line
+            if (!firstLine.startsWith("#!")) return null
+            if (firstLine.startsWith("#!$TERMUX_USR_ABS")) {
+                val line = "#!$prefix/" + firstLine.substring("#!$TERMUX_USR_ABS".length)
+                return if (line.contains("/data/data/com.termux")) null else line
+            }
+            val rest = firstLine.substring(2).trimStart()
+            val interpreter = rest.substringBefore(' ')
+            if (!interpreter.startsWith("/")) return null
+            if (File(interpreter).exists()) return null
+            val name = interpreter.substringAfterLast('/')
+            if (name.isEmpty() || !File(prefix, "bin/$name").exists()) return null
+            return "#!$prefix/bin/$name" + rest.substring(interpreter.length)
         }
     }
 
