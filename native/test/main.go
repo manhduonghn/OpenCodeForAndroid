@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -31,7 +32,7 @@ func readFile(path string) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: fixture open PATH | getcwd DIR | setuid | clone3 | getgroups")
+		fail("usage: fixture open PATH | getcwd DIR | setuid | clone3 | getgroups | blocked")
 	}
 	switch os.Args[1] {
 	case "open":
@@ -70,6 +71,24 @@ func main() {
 			fail("getgroups: %d groups, first %d", n, list[0])
 		}
 		fmt.Println("getgroups: one empty group")
+	case "blocked":
+		// These syscalls are missing from Android's seccomp allowlist. The
+		// patched program must see ENOSYS and use its fallback instead of
+		// being killed by the SIGSYS trap.
+		path := []byte("/tmp/oc-blocked\x00")
+		p := uintptr(unsafe.Pointer(&path[0]))
+		check := func(name string, nr, a0, a1, a2, a3 uintptr) {
+			_, _, errno := syscall.Syscall6(nr, a0, a1, a2, a3, 0, 0)
+			if errno != syscall.ENOSYS {
+				fail("%s: %v, want ENOSYS", name, errno)
+			}
+		}
+		check("faccessat2", 439, ^uintptr(0), p, 0, 0x200)
+		check("openat2", 437, ^uintptr(0), p, 0, 24)
+		check("name_to_handle_at", 264, ^uintptr(0), p, 0, 0)
+		check("chroot", 51, p, 0, 0, 0)
+		runtime.KeepAlive(path)
+		fmt.Println("blocked: enosys")
 	default:
 		fail("unknown command %q", os.Args[1])
 	}

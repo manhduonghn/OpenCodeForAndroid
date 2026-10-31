@@ -220,7 +220,9 @@ Môi trường hiện tại không có JDK/SDK để build, vì vậy các bư�
   biên dịch chéo `liboc-pathmap.so` cho aarch64/x86_64, chạy test pathmap native (x86_64 và
   aarch64 dưới qemu), build blob `oc-gosys`, build `oc-gopatch` tĩnh cho cả hai ABI, rồi chạy
   test đầu-cuối: một chương trình Go AArch64 chưa vá không thấy prefix, sau khi vá thì mở được
-  path Termux, `getcwd` trả spelling Termux, `setuid` trả 0, `clone3` trả ENOSYS; nhánh glibc
+  path Termux, `getcwd` trả spelling Termux, `setuid` trả 0, `clone3` trả ENOSYS,
+  `getgroups` trả 1 group rỗng, và `faccessat2`/`openat2`/`name_to_handle_at`/`chroot`
+  trả ENOSYS; helper chạy được script `#!/bin/sh` và `#!/usr/bin/env`; nhánh glibc
   được chạy qua loader thật với `--preload`. Không cần thiết bị thật để kiểm tra phần logic;
   phần Android/SELinux vẫn nên thử trên máy thật trước khi phát hành.
 
@@ -264,6 +266,7 @@ chạy glibc ngoài Termux, binary tĩnh, hoặc thêm tier `apt`/`dpkg` thật:
 | `clone3` | `-ENOSYS` | glibc tự fallback sang `clone` |
 | `rseq` | `-ENOSYS` hoặc `0` | kernel Android không đăng ký rseq cho process app |
 | `set_robust_list` | `0` | glibc coi như đã đăng ký |
+| syscall không có trong seccomp allowlist của Android (`faccessat2`, `openat2`, `name_to_handle_at`, `chroot`, `mount`, `io_uring_*`, …) | `-ENOSYS` | filter dùng `SECCOMP_RET_TRAP`; trả `ENOSYS` để libc dùng đường cũ thay vì `SIGSYS` |
 | syscall khác bị chặn | `-ENOSYS` | để libc/gọi lại theo đường cũ thay vì `SIGSYS` |
 
 Với binary tĩnh/Go, bảng này phải được áp ngay tại call site `svc #0` (Cortex làm bằng
@@ -302,10 +305,22 @@ Cơ chế:
 - **Go tĩnh (AArch64, Go ≥ 1.19)**: tìm đúng một chuỗi lệnh của
   `internal/runtime/syscall.Syscall6`, chép blob `oc-gosys` vào khoảng trống zero giữa hai
   `PT_LOAD` (hoặc cuối file nếu không đủ chỗ), nối `svc #0` → thunk → stub. Stub dịch các
-  syscall path (`openat`, `newfstatat`, `execveat`, `statx`, `renameat2`, …) bằng scratch
+  syscall path (`openat`, `newfstatat`, `statx`, `renameat2`, …) bằng scratch
   64 KB được nối vào `p_memsz` của segment dữ liệu, và áp cùng policy set*id/clone3/rseq.
+  Các syscall không có trong seccomp allowlist của Android (`faccessat2`, `openat2`,
+  `name_to_handle_at`, `chroot`, `mount`, `io_uring_*`, …) được trả `ENOSYS`
+  ngay trong stub, để Go/glibc dùng fallback thay vì bị `SIGSYS`. Điều này cần thiết vì Go
+  build cho `linux` (không phải `android`) thử `faccessat2` mỗi lần `exec.LookPath`.
   Bản đã vá được cache ở `~/.opencode/patched/<tên>-<hash>`.
 - **Còn lại**: `exec` nguyên bản; script được chạy qua interpreter (kể cả `#!/usr/bin/env`).
+
+Đã kiểm tra trên máy thật (Android arm64) với đúng artifact của CI: file cài đặt trùng SHA-256
+với `native-assets`; `classify` nhận đúng `go`, vá xong bản vá chạy được `version`; bản vá mở
+được file qua path Termux và `run` exec được binary bionic qua path Termux; `oc-run` chạy
+`glibc/bin/iconv` đọc file qua path Termux (preload); script có shebang
+`/data/data/com.termux/files/usr/bin/sh` chạy được. Lần thử này phát hiện `faccessat2` bị
+`SIGSYS` trên thiết bị (Go `linux` thử syscall đó trong `exec.LookPath`), nên stub và helper
+đã được sửa để trả `ENOSYS`/tránh syscall đó.
 
 Giới hạn có chủ ý:
 

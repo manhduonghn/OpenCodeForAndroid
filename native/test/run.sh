@@ -67,6 +67,7 @@ echo "native-test: paths, getcwd and the syscall policy"
 "${qemu[@]}" "$work/patched" setuid | grep -q 'setuid: ok'
 "${qemu[@]}" "$work/patched" clone3 | grep -q 'clone3: enosys'
 "${qemu[@]}" "$work/patched" getgroups | grep -q 'one empty group'
+"${qemu[@]}" "$work/patched" blocked | grep -q 'blocked: enosys'
 
 echo "native-test: a second patch of a patched program is refused"
 if "$work/oc-gopatch" patch "$work/patched" "$work/patched2" >"$work/second.out" 2>&1; then
@@ -84,5 +85,12 @@ printf 'hello from the preload\n' > "$root/hello"
 OC_PREFIX="$root" OC_USER_HOME="$root/home" \
   "$work/oc-gopatch" run -- "$work/glibc-open" "$termux_prefix/hello" |
   grep -q 'hello from the preload'
+
+echo "native-test: scripts through the helper"
+printf '#!/bin/sh\necho script-ok\n' > "$work/plain.sh"
+printf '#!/usr/bin/env sh\necho env-script-ok\n' > "$work/env.sh"
+chmod 0755 "$work/plain.sh" "$work/env.sh"
+"$work/oc-gopatch" run -- "$work/plain.sh" | grep -q 'script-ok'
+"$work/oc-gopatch" run -- "$work/env.sh" | grep -q 'env-script-ok'
 
 echo "native-test: ok"

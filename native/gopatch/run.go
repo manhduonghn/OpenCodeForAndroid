@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -69,7 +68,25 @@ func resolveProgram(name string) (string, error) {
 		}
 		return abs, nil
 	}
-	return exec.LookPath(name)
+	return lookPath(name)
+}
+
+// lookPath is exec.LookPath without the faccessat2 probe. Android's seccomp
+// allowlist does not contain faccessat2 and the filter traps it with SIGSYS;
+// the android port of Go skips the syscall for that reason, but this helper is
+// built for linux, where Go probes it on every PATH lookup. os.Stat only needs
+// newfstatat, which the filter allows.
+func lookPath(name string) (string, error) {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		if st, err := os.Stat(candidate); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s: executable file not found in $PATH", name)
 }
 
 // patchedCopy returns a cached, patched copy of the Go program [src]. The name
@@ -118,7 +135,7 @@ func startScript(path string, args []string, env []string, detail string) error 
 		extra = extra[1:]
 	}
 	if !filepath.IsAbs(interp) {
-		if resolved, err := exec.LookPath(interp); err == nil {
+		if resolved, err := lookPath(interp); err == nil {
 			interp = resolved
 		} else if fallback := filepath.Join(ocPrefix(), "bin", interp); fileExists(fallback) {
 			interp = fallback

@@ -14,7 +14,8 @@
  *     prefix of the app, like liboc-pathmap.so does for glibc programs;
  *   - it answers the syscalls that Android's seccomp filter rejects with the same
  *     policy as the SIGSYS handler: set*id/setgroups/set_robust_list succeed,
- *     getgroups reports one empty group, clone3 and rseq return ENOSYS.
+ *     getgroups reports one empty group, and the calls missing from Android's
+ *     seccomp allowlist (clone3, rseq, faccessat2, openat2, ...) return ENOSYS.
  *
  * It uses no libc, no relocations, no writable static data and no stack frame
  * larger than the thunk + a few registers. The scratch area for rewritten paths
@@ -90,6 +91,28 @@ enum {
     NR_STATX = 291,
     NR_OPENAT2 = 437,
     NR_FACCESSAT2 = 439,
+    NR_OPEN_BY_HANDLE_AT = 265,
+    NR_UMOUNT2 = 39,
+    NR_MOUNT = 40,
+    NR_QUOTACTL = 60,
+    NR_ACCT = 89,
+    NR_KEXEC_LOAD = 104,
+    NR_INIT_MODULE = 105,
+    NR_DELETE_MODULE = 106,
+    NR_CLOCK_SETTIME = 112,
+    NR_SYSLOG = 116,
+    NR_REBOOT = 142,
+    NR_SETHOSTNAME = 161,
+    NR_SETDOMAINNAME = 162,
+    NR_SETTIMEOFDAY = 170,
+    NR_ADJTIME = 171,
+    NR_SWAPON = 224,
+    NR_SWAPOFF = 225,
+    NR_FINIT_MODULE = 273,
+    NR_CLOCK_ADJTIME = 305,
+    NR_IO_URING_SETUP = 425,
+    NR_IO_URING_ENTER = 426,
+    NR_IO_URING_REGISTER = 427,
     NR_SET_ROBUST_LIST = 99,
     NR_SETGID = 144,
     NR_SETREGID = 143,
@@ -242,8 +265,58 @@ static void unmap_buffer(char *buf, int64_t *length) {
     *length = (int64_t)(n - old_len + new_len);
 }
 
+/*
+ * Syscalls that are missing from Android's seccomp allowlist, which is generated
+ * from the bionic syscall table. The filter kills the process with SIGSYS on
+ * these, so the stub must not forward them. ENOSYS is what an older kernel
+ * returns and what Go and glibc use to select their classic fallback
+ * (faccessat2 -> faccessat, openat2 -> openat, io_uring -> epoll/read/write).
+ * This list matters most for faccessat2: Go's linux/arm64 os/exec probes it on
+ * every exec.LookPath, while the android ports skip it for exactly this reason.
+ * execveat, clone3, futex, perf_event_open and userfaultfd are allowlisted by
+ * Android, so they are forwarded or, for clone3, answered by the policy below.
+ */
+static int unavailable_on_android(int64_t nr) {
+    switch (nr) {
+        case NR_FACCESSAT2:
+        case NR_OPENAT2:
+        case NR_NAME_TO_HANDLE_AT:
+        case NR_OPEN_BY_HANDLE_AT:
+        case NR_CHROOT:
+        case NR_MOUNT:
+        case NR_UMOUNT2:
+        case NR_SWAPON:
+        case NR_SWAPOFF:
+        case NR_REBOOT:
+        case NR_SETHOSTNAME:
+        case NR_SETDOMAINNAME:
+        case NR_INIT_MODULE:
+        case NR_FINIT_MODULE:
+        case NR_DELETE_MODULE:
+        case NR_ACCT:
+        case NR_SYSLOG:
+        case NR_SETTIMEOFDAY:
+        case NR_CLOCK_SETTIME:
+        case NR_CLOCK_ADJTIME:
+        case NR_ADJTIME:
+        case NR_QUOTACTL:
+        case NR_KEXEC_LOAD:
+        case NR_IO_URING_SETUP:
+        case NR_IO_URING_ENTER:
+        case NR_IO_URING_REGISTER:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 /* The calls that Android seccomp blocks. Returns 1 when [nr] was handled. */
 static int policy(int64_t nr, int64_t a0, int64_t a1, struct oc_result *result) {
+    if (unavailable_on_android(nr)) {
+        result->r0 = -38; /* -ENOSYS */
+        result->r1 = 0;
+        return 1;
+    }
     switch (nr) {
         case NR_SET_ROBUST_LIST:
         case NR_SETGID:
@@ -307,10 +380,8 @@ struct oc_result oc_stub_entry(int64_t a0, int64_t a1, int64_t a2, int64_t a3, i
             return result;
         }
         case NR_OPENAT:
-        case NR_OPENAT2:
         case NR_NEWFSTATAT:
         case NR_FACCESSAT:
-        case NR_FACCESSAT2:
         case NR_STATX:
         case NR_MKDIRAT:
         case NR_UNLINKAT:
@@ -318,7 +389,6 @@ struct oc_result oc_stub_entry(int64_t a0, int64_t a1, int64_t a2, int64_t a3, i
         case NR_FCHOWNAT:
         case NR_UTIMENSAT:
         case NR_MKNODAT:
-        case NR_NAME_TO_HANDLE_AT:
         case NR_EXECVEAT: {
             int slot = slot_take();
             const char *path = slot < 0 ? (const char *)a1 : map_path((const char *)a1, slot_path(slot, 0));
@@ -327,7 +397,6 @@ struct oc_result oc_stub_entry(int64_t a0, int64_t a1, int64_t a2, int64_t a3, i
             return result;
         }
         case NR_CHDIR:
-        case NR_CHROOT:
         case NR_TRUNCATE:
         case NR_STATFS:
         case NR_EXECVE: {
