@@ -201,6 +201,24 @@ object OpenCodeBootstrap {
     private const val GLIBC_RELOCATED_PATH = "$OC_HOME/.glibc-relocated"
 
     /**
+     * Configuration file of the OpenSSL package. Termux installs it below `etc/tls`, because
+     * the package also keeps its certificate store there. The compiled-in default still points
+     * at `/data/data/com.termux/files/usr/etc/tls/openssl.cnf`, which belongs to the Termux app
+     * and is unreadable here, so the variable has to be exported explicitly.
+     */
+    const val OPENSSL_CONF_PATH = "$PREFIX/etc/tls/openssl.cnf"
+
+    /**
+     * Provider modules of OpenSSL 3 (`legacy.so`, …). Like the configuration file, the compiled
+     * default points into the Termux app, so a program that loads a provider other than the
+     * built-in default one would fail with "module not found".
+     */
+    const val OPENSSL_MODULES_PATH = "$PREFIX/lib/ossl-modules"
+
+    /** Engines of OpenSSL 3 (`capi.so`, …), also looked up in the unreadable Termux prefix. */
+    const val OPENSSL_ENGINES_PATH = "$PREFIX/lib/engines-3"
+
+    /**
      * Upper bound of a glibc object that is relocated. libstdc++ (22 MB), libasan (11 MB) and the
      * sanitizer runtimes carry only compiler paths, while everything that the resolver and the
      * runtime read at run time stays well below this limit.
@@ -255,10 +273,16 @@ object OpenCodeBootstrap {
     /**
      * Termux packages that are extracted into the app-private prefix before OpenCode is
      * downloaded: a shell, the core utilities (they provide `bin/env`, which the `#!/…/bin/env`
-     * launchers of npm and pip need), the certificate store, the glibc runtime (the loader that
-     * runs OpenCode) and patchelf (it rewrites the RUNPATH of the binaries).
+     * launchers of npm and pip need), the OpenSSL libraries used by git/gh/libcurl, the
+     * certificate store, the glibc runtime (the loader that runs OpenCode) and patchelf (it
+     * rewrites the RUNPATH of the binaries).
+     *
+     * `coreutils` currently pulls `openssl` in as a dependency, but that is an implementation
+     * detail of the repository. Listing it here keeps the TLS libraries installed even if the
+     * dependency graph changes.
      */
-    private val CORE_PACKAGES = listOf("bash", "coreutils", "ca-certificates", "patchelf", "glibc")
+    private val CORE_PACKAGES =
+        listOf("bash", "coreutils", "openssl", "ca-certificates", "patchelf", "glibc")
 
     /** Endpoint telling which OpenCode version is the latest one. */
     private const val VERSION_API_URL = "https://opencode.ai/update/api/latest/cli/npm"
@@ -829,6 +853,19 @@ object OpenCodeBootstrap {
         // and the copies of this prefix are not the ones Android ships: without clearing it the
         // command dies with `cannot locate symbol "Xzs_Construct"`. Clear it for the bridge only.
         append("pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg \"\$@\"; }\n")
+        // The same applies to the Android commands that the extractor deliberately does not
+        // shadow with the termux-tools wrappers. /system/bin/curl, for example, links against
+        // the OpenSSL of the platform and dies with `cannot locate symbol "EVP_MD_CTX_create"`
+        // when it picks up the OpenSSL 3 of this prefix instead.
+        append("for _oc_cmd in am bmgr bu cmd content device_config dpm dumpsys getprop ime input log logcat media mount notify pm settings setprop sm svc uiautomator umount wm start stop; do\n")
+        append("  eval \"\$_oc_cmd() { LD_LIBRARY_PATH= LD_PRELOAD= command \$_oc_cmd \\\"\\\$@\\\"; }\"\n")
+        append("done\n")
+        append("unset _oc_cmd\n")
+        // Only wrap curl while the prefix has no curl of its own: a Termux curl needs the
+        // libraries of the prefix, the Android one must not see them.
+        append("if [ ! -x \"\$PREFIX/bin/curl\" ]; then\n")
+        append("  curl() { LD_LIBRARY_PATH= LD_PRELOAD= command curl \"\$@\"; }\n")
+        append("fi\n")
         append("[ -n \"\${SHELL:-}\" ] || { SHELL=\"\$PREFIX/bin/bash\"; export SHELL; }\n")
         // The JDK links its own libraries relative to JAVA_HOME, but its RUNPATH still points at
         // /data/data/com.termux. Point the loader at the relocated JDK as well.
@@ -861,8 +898,18 @@ object OpenCodeBootstrap {
         append("  GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM\n")
         append("fi\n")
         append("GIT_ATTR_NOSYSTEM=1; export GIT_ATTR_NOSYSTEM\n")
-        append("if [ -f \"\$PREFIX/etc/openssl/openssl.cnf\" ]; then\n")
-        append("  OPENSSL_CONF=\"\$PREFIX/etc/openssl/openssl.cnf\"; export OPENSSL_CONF\n")
+        // OpenSSL was built for the com.termux prefix. Without these variables it looks for its
+        // configuration and provider modules below /data/data/com.termux, which does not belong
+        // to this app. The default provider is built in, but the configuration file is not, and
+        // the legacy provider only loads when OPENSSL_MODULES points at this prefix.
+        append("if [ -f \"\$PREFIX/etc/tls/openssl.cnf\" ]; then\n")
+        append("  OPENSSL_CONF=\"\${OPENSSL_CONF:-\$PREFIX/etc/tls/openssl.cnf}\"; export OPENSSL_CONF\n")
+        append("fi\n")
+        append("if [ -d \"\$PREFIX/lib/ossl-modules\" ]; then\n")
+        append("  OPENSSL_MODULES=\"\${OPENSSL_MODULES:-\$PREFIX/lib/ossl-modules}\"; export OPENSSL_MODULES\n")
+        append("fi\n")
+        append("if [ -d \"\$PREFIX/lib/engines-3\" ]; then\n")
+        append("  OPENSSL_ENGINES=\"\${OPENSSL_ENGINES:-\$PREFIX/lib/engines-3}\"; export OPENSSL_ENGINES\n")
         append("fi\n")
         append("if [ -f \"\$PREFIX/etc/tls/cert.pem\" ]; then\n")
         append("  SSL_CERT_FILE=\"\$PREFIX/etc/tls/cert.pem\"; export SSL_CERT_FILE\n")
@@ -1130,10 +1177,12 @@ object OpenCodeBootstrap {
                 val repaired = OpenCodePackages.repair(File(PREFIX))
                 if (repaired != null) Log.i(LOG_TAG, "Repaired the package environment: $repaired")
                 val broken = OpenCodePackages.brokenPackages(File(PREFIX))
+                val recorded = OpenCodePackages.installed(File(PREFIX))
                 // A prefix installed by an older build predates coreutils: install it, the
-                // `#!/…/bin/env node` launchers of npm need bin/env.
-                val needsCoreutils = !File("$PREFIX/bin/coreutils").exists()
-                if (broken.isNotEmpty() || needsCoreutils) {
+                // `#!/…/bin/env node` launchers of npm need bin/env. The same check makes an
+                // older prefix gain the OpenSSL libraries that are part of the toolchain now.
+                val missingCore = CORE_PACKAGES.any { it !in recorded }
+                if (broken.isNotEmpty() || missingCore) {
                     val repair = (CORE_PACKAGES + broken).distinct()
                     Log.i(LOG_TAG, "Reinstalling broken packages: $repair")
                     installPackages(repair, "Could not repair the Linux toolchain")

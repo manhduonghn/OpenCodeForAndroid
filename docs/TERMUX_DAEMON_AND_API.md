@@ -266,11 +266,14 @@ Luồng trong `LinuxEnvironment`:
    - bỏ wrapper bridge của `termux-tools` (`pm`, `cmd`, `am`, `termux-am`, …) để không
      shadow lệnh hệ thống;
    - patch `SHELL_PATH` trong ELF của `git` thành `/system/bin/sh`;
-   - rewrite path cấu hình compiled-in: `etc/tls/cert.pem`, `openssl.cnf`, `etc/profile`,
-     `bash.bashrc`, git templates.
+   - rewrite path cấu hình compiled-in: `etc/tls/cert.pem`, `etc/profile`,
+     `bash.bashrc`, git templates; OpenSSL (`OPENSSLDIR`, `MODULESDIR`, `ENGINESDIR`)
+     được chuyển bằng `OPENSSL_CONF`, `OPENSSL_MODULES`, `OPENSSL_ENGINES` vì các
+     đường dẫn đó nằm trong `libcrypto.so` và không thể sửa khi thư viện đang chạy;
 6. Xuất env cho mọi process con: `PATH`, `LD_LIBRARY_PATH`, `PREFIX`, `HOME`, `TMPDIR`,
    `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `OPENSSL_CONF`,
-   `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_NOSYSTEM`.
+   `OPENSSL_MODULES`, `OPENSSL_ENGINES`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`,
+   `GIT_CONFIG_NOSYSTEM`.
 7. Với `targetSdk >= 29` (AndroidHarness target cao): thêm `termux-exec` preload
    (`lib/libtermux-exec-ld-preload.so`, `TERMUX__PREFIX`, `TERMUX_APP__DATA_DIR`,
    `TERMUX_APP__LEGACY_DATA_DIR`) và/hoặc **linker shim** cho từng binary

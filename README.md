@@ -107,7 +107,8 @@ Only the minimum the runtime needs (≈20 MB of packages):
 | package | why |
 | --- | --- |
 | `bash` (+ `readline`, `ncurses`, `libiconv`, `libandroid-support`) | shell for OpenCode and scripts |
-| `coreutils` (+ `openssl`, `libgmp`, …) | `bin/env` for `#!/…/bin/env node` launchers and the standard utilities |
+| `coreutils` (+ `libgmp`, …) | `bin/env` for `#!/…/bin/env node` launchers and the standard utilities |
+| `openssl` (+ `zlib`) | `libcrypto`/`libssl` for git, gh and libcurl |
 | `glibc` (+ `linux-api-headers-glibc`) | glibc loader and libraries for the OpenCode binary |
 | `patchelf` (+ `libc++`) | rewrites the RUNPATH of `bash`/`patchelf` themselves |
 | `ca-certificates` | HTTPS trust store (`SSL_CERT_FILE`) |
@@ -115,6 +116,10 @@ Only the minimum the runtime needs (≈20 MB of packages):
 `termux-tools` is deliberately skipped: it is a set of wrappers around the
 Termux app (`am`, `pm`, …) and would pull the Termux app and a dozen extra
 packages.
+
+Termux splits OpenSSL into two packages: `openssl` (the libraries, installed by
+the app) and `openssl-tool` (the `openssl` command). Run `pkg install
+openssl-tool` if you need the command line tool.
 
 Because of that the prefix has **no `apt` or `dpkg`**, and the Termux app is not
 needed either. The app ships its own `pkg` command (`$PREFIX/bin/pkg`) that
@@ -151,11 +156,15 @@ The Termux binaries are linked against `$PREFIX/lib` with an absolute RUNPATH
 that points at the com.termux prefix. `$PREFIX/etc/opencode-env.sh` (sourced by
 `etc/profile` and hooked into `etc/bash.bashrc`) exports `PATH`, `TMPDIR`,
 `LD_LIBRARY_PATH`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_SERVER_PASSWORD`,
-the npm/pip caches and the CA bundle (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
-`NODE_EXTRA_CA_CERTS`), and the OpenCode server gets the same variables in its
-environment, so `git`, `gh`, `python`, `node`, … find their libraries. The git
-build additionally has `libexec/git-core` and its template directory compiled in
-for the old prefix; both are re-pointed with
+the npm/pip caches, the CA bundle (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+`NODE_EXTRA_CA_CERTS`) and OpenSSL's relocated paths (`OPENSSL_CONF`,
+`OPENSSL_MODULES`, `OPENSSL_ENGINES`). The latter are needed because OpenSSL was
+built with `OPENSSLDIR=/data/data/com.termux/files/usr/etc/tls` and
+`MODULESDIR=…/lib/ossl-modules`; without them the configuration file and the
+legacy provider cannot be found. The OpenCode server gets the same variables in
+its environment, so `git`, `gh`, `python`, `node`, … find their libraries. The
+git build additionally has `libexec/git-core` and its template directory
+compiled in for the old prefix; both are re-pointed with
 `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable system git config is
 disabled with `GIT_CONFIG_NOSYSTEM`.
 
@@ -166,6 +175,16 @@ the ones Android ships, so the command died with
 `cannot locate symbol "Xzs_Construct"`. The env script therefore wraps it:
 `pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg "$@"; }`. The variable is
 cleared for that one command only, `bash` and the other tools still need it.
+
+The same conflict affects the Android commands that are used instead of the
+dropped termux-tools wrappers (`am`, `pm`, `cmd`, `settings`, `getprop`, …) and
+`/system/bin/curl` on releases that ship it: they are bionic binaries with their
+own libraries, and loading the OpenSSL 3 of this prefix makes them die with
+`cannot locate symbol "EVP_MD_CTX_create"`. The environment defines small
+functions for those commands that clear `LD_LIBRARY_PATH`/`LD_PRELOAD` for the
+duration of the command. `curl` is only wrapped while the prefix has no `curl`
+of its own; after `pkg install curl`, the Termux binary (which needs the
+libraries of the prefix) is used normally.
 
 `pkg remove` is not implemented: packages are extracted without a dpkg
 database, so there is nothing to remove from. Clearing the app data is the

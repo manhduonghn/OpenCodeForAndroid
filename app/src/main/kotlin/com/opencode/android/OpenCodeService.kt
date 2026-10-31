@@ -490,9 +490,18 @@ class OpenCodeService : Service() {
             }
             put("GIT_ATTR_NOSYSTEM", "1")
             put("CURL_CA_BUNDLE", "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem")
-            File(OpenCodeBootstrap.PREFIX, "etc/openssl/openssl.cnf")
+            // OpenSSL's compiled-in OPENSSLDIR/MODULESDIR point at the com.termux prefix. The
+            // server itself is a glibc binary, but the git and gh processes it spawns load the
+            // bionic OpenSSL of this prefix, so they need the paths of this sandbox.
+            File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
                 .takeIf { it.isFile }
                 ?.let { put("OPENSSL_CONF", it.absolutePath) }
+            File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
+                .takeIf { it.isDirectory }
+                ?.let { put("OPENSSL_MODULES", it.absolutePath) }
+            File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
+                .takeIf { it.isDirectory }
+                ?.let { put("OPENSSL_ENGINES", it.absolutePath) }
             val gitHubToken = System.getenv("GH_TOKEN")?.takeIf { it.isNotEmpty() }
                 ?: OpenCodeGitHub.storedToken()
             gitHubToken?.let { put("GH_TOKEN", it) }
@@ -530,11 +539,21 @@ class OpenCodeService : Service() {
      * exactly; `$HOME/.opencode/.server-env` is the fallback for devices that hide it.
      */
     private fun serverEnvironmentCurrent(pid: Int): Boolean {
-        val helper = OpenCodeBootstrap.terminalRuntimePath() ?: return true
-        val expected = listOf(
-            "OPENCODE_PTY_BIN=$helper",
-            "OPENCODE_PTY_SOCKET_DIR=${OpenCodeBootstrap.PTY_SOCKET_DIR}",
-        )
+        val expected = ArrayList<String>()
+        OpenCodeBootstrap.terminalRuntimePath()?.let { helper ->
+            expected.add("OPENCODE_PTY_BIN=$helper")
+            expected.add("OPENCODE_PTY_SOCKET_DIR=${OpenCodeBootstrap.PTY_SOCKET_DIR}")
+        }
+        File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
+            .takeIf { it.isFile }
+            ?.let { expected.add("OPENSSL_CONF=${it.absolutePath}") }
+        File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
+            .takeIf { it.isDirectory }
+            ?.let { expected.add("OPENSSL_MODULES=${it.absolutePath}") }
+        File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
+            .takeIf { it.isDirectory }
+            ?.let { expected.add("OPENSSL_ENGINES=${it.absolutePath}") }
+        if (expected.isEmpty()) return true
         val environ = try {
             File("/proc/$pid/environ").takeIf { it.isFile }?.readBytes()
         } catch (e: Exception) {
@@ -551,9 +570,21 @@ class OpenCodeService : Service() {
     /**
      * Environment signature of a spawned server, the fallback of [serverEnvironmentCurrent].
      */
-    private fun serverEnvironmentStamp(): String =
-        "pty=" + (OpenCodeBootstrap.terminalRuntimePath() ?: "") +
-            " socket=" + OpenCodeBootstrap.PTY_SOCKET_DIR
+    private fun serverEnvironmentStamp(): String = buildString {
+        append("pty=").append(OpenCodeBootstrap.terminalRuntimePath() ?: "")
+        append(" socket=").append(OpenCodeBootstrap.PTY_SOCKET_DIR)
+        append(" openssl=").append(
+            File(OpenCodeBootstrap.OPENSSL_CONF_PATH).takeIf { it.isFile }?.absolutePath.orEmpty(),
+        )
+        append(" modules=").append(
+            File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
+                .takeIf { it.isDirectory }?.absolutePath.orEmpty(),
+        )
+        append(" engines=").append(
+            File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
+                .takeIf { it.isDirectory }?.absolutePath.orEmpty(),
+        )
+    }
 
     /** Remember the environment of the server that was just spawned. */
     private fun writeServerEnvironmentStamp() {

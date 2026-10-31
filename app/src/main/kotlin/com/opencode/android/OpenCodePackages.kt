@@ -101,6 +101,23 @@ object OpenCodePackages {
         // Termux splits the package: 'openssl' ships the libraries, 'openssl-tool' the command.
         // Proving the library keeps the package from looking broken on every install.
         "openssl" to listOf("lib/libcrypto.so", "lib/libssl.so"),
+        // The TLS stack of git/gh/libcurl. A package marker alone cannot prove that a shared
+        // object survived an interrupted extraction, and a missing libcurl is just as fatal as
+        // a missing bin/git.
+        "libcurl" to listOf("lib/libcurl.so"),
+        "libssh2" to listOf("lib/libssh2.so"),
+        "libnghttp2" to listOf("lib/libnghttp2.so"),
+        "libnghttp3" to listOf("lib/libnghttp3.so"),
+        "libngtcp2" to listOf("lib/libngtcp2.so"),
+        "zlib" to listOf("lib/libz.so"),
+        "libc++" to listOf("lib/libc++_shared.so"),
+        "libgmp" to listOf("lib/libgmp.so"),
+        "libiconv" to listOf("lib/libiconv.so"),
+        "libandroid-support" to listOf("lib/libandroid-support.so"),
+        "libexpat" to listOf("lib/libexpat.so"),
+        "pcre2" to listOf("lib/libpcre2-8.so"),
+        "readline" to listOf("lib/libreadline.so"),
+        "ncurses" to listOf("lib/libncursesw.so"),
         "python" to listOf("bin/python3", "bin/python"),
         "python-pip" to listOf("bin/pip", "bin/pip3"),
         "nodejs" to listOf("bin/node"),
@@ -344,7 +361,16 @@ object OpenCodePackages {
             }
         }
 
-        for (dir in listOf(File(prefix, "bin"), File(prefix, "bin/applets"))) {
+        // The shared libraries carry the same absolute symlinks as bin/ (libcrypto.so ->
+        // /data/data/com.termux/files/usr/lib/libcrypto.so.3, …). A prefix installed by an
+        // older build keeps them dangling, which makes every program that loads OpenSSL or
+        // curl fail until the library happens to be extracted again.
+        for (dir in listOf(
+            File(prefix, "bin"),
+            File(prefix, "bin/applets"),
+            File(prefix, "lib"),
+            File(prefix, "glibc/lib"),
+        )) {
             if (!dir.isDirectory) continue
             val files = dir.listFiles() ?: continue
             for (file in files) {
@@ -437,7 +463,9 @@ object OpenCodePackages {
                 return@filter !cert.isFile || cert.length() < 1024
             }
             val proof = BINARY_PROOF[name] ?: return@filter false
-            proof.none { File(prefix, it).exists() }
+            // Every proof file is required: openssl needs both libcrypto and libssl, and a
+            // truncated extraction that left only one of them must not be trusted.
+            proof.any { !File(prefix, it).exists() }
         }
     }
 

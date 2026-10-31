@@ -390,6 +390,15 @@ object OpenCodeGitHub {
             env["GIT_ATTR_NOSYSTEM"] = "1"
             env["SSL_CERT_FILE"] = "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem"
             env["CURL_CA_BUNDLE"] = "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem"
+            File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
+                .takeIf { it.isFile }
+                ?.let { env["OPENSSL_CONF"] = it.absolutePath }
+            File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
+                .takeIf { it.isDirectory }
+                ?.let { env["OPENSSL_MODULES"] = it.absolutePath }
+            File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
+                .takeIf { it.isDirectory }
+                ?.let { env["OPENSSL_ENGINES"] = it.absolutePath }
             extraEnv?.forEach { (key, value) -> env[key] = value }
             if (persistToken) {
                 // gh refuses to store a token while GH_TOKEN is set.
