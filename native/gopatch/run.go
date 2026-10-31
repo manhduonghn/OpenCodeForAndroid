@@ -119,14 +119,17 @@ func lookPath(name string) (string, error) {
 
 // patchedCopy returns a cached, patched copy of the Go program [src]. The name
 // includes the size and modification time, so a replaced download is patched
-// again and an unchanged one is reused.
+// again and an unchanged one is reused. The stub bytes are part of the key as
+// well: an app update ships a new oc-gosys blob, and copies patched with the old
+// one must not be reused.
 func patchedCopy(src string) (string, error) {
 	st, err := os.Stat(src)
 	if err != nil {
 		return "", err
 	}
 	h := fnv.New64a()
-	fmt.Fprintf(h, "%s\x00%d\x00%d", src, st.Size(), st.ModTime().UnixNano())
+	fmt.Fprintf(h, "%s\x00%d\x00%d\x00", src, st.Size(), st.ModTime().UnixNano())
+	h.Write(gosysBlob)
 	dir := filepath.Join(ocUserHome(), ".opencode", "patched")
 	dst := filepath.Join(dir, fmt.Sprintf("%s-%016x", filepath.Base(src), h.Sum64()))
 	if fileExists(dst) {

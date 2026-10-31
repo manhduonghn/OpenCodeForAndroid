@@ -312,7 +312,8 @@ Cơ chế:
   `name_to_handle_at`, `chroot`, `mount`, `io_uring_*`, …) được trả `ENOSYS`
   ngay trong stub, để Go/glibc dùng fallback thay vì bị `SIGSYS`. Điều này cần thiết vì Go
   build cho `linux` (không phải `android`) thử `faccessat2` mỗi lần `exec.LookPath`.
-  Bản đã vá được cache ở `~/.opencode/patched/<tên>-<hash>`.
+  Bản đã vá được cache ở `~/.opencode/patched/<tên>-<hash>`; hash gồm cả nội dung blob
+  `oc-gosys`, nên bản cache do APK cũ tạo ra không được dùng lại sau khi cập nhật.
 - **Còn lại**: `exec` nguyên bản; script được chạy qua interpreter (kể cả `#!/usr/bin/env`).
   Bản thân helper cũng nhận path Termux cho `run`, `classify` và `patch`: nếu file tương ứng
   tồn tại trong prefix thì nó được map sang trước khi mở/exec, nhờ vậy
