@@ -200,8 +200,8 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | libcurl | CA file cứng cert.pem prefix cũ | mọi HTTPS | ✅ GIT_CONFIG sslCAInfo + SSL_CERT_FILE/CURL_CA_BUNDLE (đã đủ) |
 | git | GIT_EXEC_PATH/SHELL_PATH/templates/system config/gitattributes | cài git | ✅ hết |
 | bash | profile shebang + env unset LD_PRELOAD | mọi tty | ✅ |
-| Python | prefix trong sysconfig; pip cache; REQUESTS | cài `python`/`pip` | ⚠️ relocation che phần lớn; **cần thêm REQUESTS_CA_BUNDLE (mục 4.1 #1)** |
-| JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ⚠️ có JAVA_HOME; **cần đổi thứ tự lib/server trước (mục 4.1 #4)** |
+| Python | prefix trong sysconfig; pip cache; REQUESTS | cài `python`/`pip` | ✅ relocation che phần lớn + `REQUESTS_CA_BUNDLE`/`PIP_CERT` |
+| JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ✅ `JAVA_HOME` + `lib/server` đứng đầu `LD_LIBRARY_PATH` |
 | Node | OPENSSL_CONF fatal nếu EACCES; xattrs/inotify `config` dir thiếu | cài nodejs → opencode | ⚠️ conf đã có; inotify mkdir là bản fix Bun của cortex, không cần cho node thường |
 | dpkg/apt (nếu cài) | fakeroot, mode 0 mkdir, seccomp set*id | cài cùng `glibc` gói glibc | ❌ chưa cần — app dùng `pkg` bridge bionic riêng |
 | Binary tĩnh / Go | syscall tự làm, path sai | kết quả tải thêm trong terminal | ❌ dài hạn (mục 4.3) |
@@ -213,6 +213,53 @@ Môi trường hiện tại không có JDK/SDK để build, vì vậy các bư�
 - 4.1 #1–#5 chỉ sửa `buildPackageEnvironment()` → thiếu bộ test unit; kiểm tra bằng
   mở `etc/opencode-env.sh` được sinh ra và chạy `sh -n` cho syntax.
 - 4.2 #7 (asset CA) cần xác minh SHA-256 khớp nội dung asset — `sha256sum` chạy được
-  trên máy build, không phụ thuộc Android SDK.
+  trên máy build, không phụ thuộc Android SDK. Hash hiện tại:
+  `796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe`; khi thay bundle
+  phải cập nhật cả `CA_BUNDLE_SHA256` trong `OpenCodeBootstrap.kt`.
 - 4.3 (preload/Go patch) bắt buộc phải có thiết bị thật + NDK; ngay cả AndroidHarness
   cũng chạy QA trên thiết bị thật thay vì emulator.
+
+## 6. Trạng thái triển khai
+
+Các mục 4.1 và 4.2 đã được triển khai trong app. 4.3 vẫn để mở đúng như khuyến nghị
+"chỉ khi có nhu cầu thật": nó cần một `.so` biên dịch cho glibc (không phải NDK/bionic)
+và/hoặc vá file Go, không thể xác minh nếu không có thiết bị thật.
+
+| Mục | Trạng thái | Vị trí |
+| --- | --- | --- |
+| 4.1 #1 `REQUESTS_CA_BUNDLE` + `PIP_CERT` | ✅ | `buildPackageEnvironment`, env của server, `OpenCodeGitHub` |
+| 4.1 #2 `LANG=C.UTF-8` mặc định | ✅ | env script, profile, installer, server, gh |
+| 4.1 #3 `TZDIR` khi có `share/zoneinfo` | ✅ | env script, installer, server, gh |
+| 4.1 #4 `lib/server` đứng đầu `LD_LIBRARY_PATH` | ✅ | env script, env của server |
+| 4.1 #5 `GIT_SSL_CAINFO` | ✅ | env script, env của server, `OpenCodeGitHub` |
+| 4.1 #6 chỉ export khi file/dir tồn tại | ✅ | toàn bộ env script + env của server/gh |
+| 4.2 #7 CA bundle trong APK | ✅ | `assets/net/mozilla-ca-bundle.pem`, `OpenCodeBootstrap.ensureCaBundle` |
+| 4.2 #8 proof-binary mở rộng | ✅ | `OpenCodePackages.BINARY_PROOF` (thêm JDK, d8, r8, apksigner) |
+| 4.2 #9 launcher repair pattern | ✅ | `OpenCodePackages.JavaLaunchers` (d8/r8/apksigner) |
+| 4.2 #10 bảng syscall bị chặn | ✅ tài liệu | mục 7 dưới đây |
+| 4.3 #11 preload path translation | ⏸ chưa làm | cần `.so` glibc + thiết bị thật; xem điều kiện ở mục 4.3 |
+| 4.3 #12 Go static patch | ⏸ chưa làm | chỉ khi người dùng thường xuyên tải Go binary |
+
+Ghi chú cho #7: asset được kiểm tra SHA-256 trước khi ghi, ghi nguyên tử vào
+`etc/tls/cert.pem`, và **không** ghi đè một bundle hợp lệ đã có. Như vậy bundle mới hơn
+của gói `ca-certificates` không bị thay bằng bản snapshot cũ của APK; asset chỉ dùng khi
+file thiếu hoặc bị cắt cụt (ví dụ sau khi app bị kill giữa lúc trích xuất).
+
+## 7. Bảng chính sách syscall Android cho binary glibc (4.2 #10)
+
+Chưa cần code vì glibc hiện tại là build của Termux (đã relocation) và mọi process đều
+đi qua loader của prefix. Bảng dưới đây là mặc định tham chiếu của Cortex nếu sau này app
+chạy glibc ngoài Termux, binary tĩnh, hoặc thêm tier `apt`/`dpkg` thật:
+
+| Syscall bị Android seccomp chặn | Hành vi thay thế | Lý do |
+| --- | --- | --- |
+| `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, `setresgid`, `setfsuid`, `setfsgid` | trả `0` (thành công giả) | app không thể đổi uid; `dpkg`/`apt` tin rằng đã hạ quyền |
+| `setgroups`, `getgroups` | `setgroups` → `0`; `getgroups` trả `ngroups=1` | chương trình fortify so sánh số group và chết nếu lệch (sshd) |
+| `clone3` | `-ENOSYS` | glibc tự fallback sang `clone` |
+| `rseq` | `-ENOSYS` hoặc `0` | kernel Android không đăng ký rseq cho process app |
+| `set_robust_list` | `0` | glibc coi như đã đăng ký |
+| syscall khác bị chặn | `-ENOSYS` | để libc/gọi lại theo đường cũ thay vì `SIGSYS` |
+
+Với binary tĩnh/Go, bảng này phải được áp ngay tại call site `svc #0` (Cortex làm bằng
+`static_programs.c`/`gosys.c`); chỉ `LD_PRELOAD` không can thiệp được syscall do chương
+trình tự phát.

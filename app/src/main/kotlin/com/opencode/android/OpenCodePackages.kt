@@ -122,7 +122,22 @@ object OpenCodePackages {
         "python-pip" to listOf("bin/pip", "bin/pip3"),
         "nodejs" to listOf("bin/node"),
         "npm" to listOf("bin/npm"),
+        // Build tools a user may install from the terminal. The JDK packages put the real
+        // launcher below lib/jvm; bin/java is an alternatives link that may not exist yet.
+        "openjdk-17" to listOf("lib/jvm/java-17-openjdk/bin/java"),
+        "openjdk-21" to listOf("lib/jvm/java-21-openjdk/bin/java"),
+        "openjdk-25" to listOf("lib/jvm/java-25-openjdk/bin/java"),
+        "d8" to listOf("bin/d8", "bin/r8", "share/java/d8.jar"),
+        "apksigner" to listOf("bin/apksigner", "share/java/apksigner.jar"),
     )
+
+    /**
+     * Java launcher scripts of the Android build tools. The Termux packages write the absolute
+     * com.termux prefix into the script (`exec java -cp /data/data/com.termux/.../d8.jar`), which
+     * the generic shebang repair does not touch. They are rewritten to a neutral shell and
+     * `${PREFIX:?…}` so a missing environment fails loudly instead of running the wrong JDK.
+     */
+    private val JAVA_LAUNCHERS = setOf("d8", "r8", "apksigner")
 
     private val MAIN_MIRRORS = arrayOf(
         "https://packages-cf.termux.dev/apt/termux-main",
@@ -338,6 +353,7 @@ object OpenCodePackages {
         var removed = 0
         var rewritten = 0
         var shellPatched = 0
+        var launchersRepaired = 0
 
         fun repairShebangs(dir: File, isBin: Boolean) {
             if (!dir.isDirectory) return
@@ -385,6 +401,7 @@ object OpenCodePackages {
         // helpers.
         repairShebangs(File(prefix, "bin"), true)
         repairShebangs(File(prefix, "libexec/git-core"), false)
+        launchersRepaired = JavaLaunchers.rewriteAll(prefix)
 
         // A prefix installed by an older build has node packages whose `#!/…/bin/env node`
         // shebangs were never rewritten (npm, npx, node-gyp, …). Walk that tree once: the new
@@ -432,7 +449,11 @@ object OpenCodePackages {
 
         ensureEnvironmentLinks(prefix)
 
-        if (relinked == 0 && removed == 0 && rewritten == 0 && shellPatched == 0) return null
+        if (relinked == 0 && removed == 0 && rewritten == 0 && shellPatched == 0 &&
+            launchersRepaired == 0
+        ) {
+            return null
+        }
         return buildString {
             if (relinked > 0) append("relinked ").append(relinked).append(" Termux symlink(s)")
             if (removed > 0) {
@@ -446,6 +467,10 @@ object OpenCodePackages {
             if (shellPatched > 0) {
                 if (isNotEmpty()) append("; ")
                 append("patched ").append(shellPatched).append(" git binary(ies)")
+            }
+            if (launchersRepaired > 0) {
+                if (isNotEmpty()) append("; ")
+                append("repaired ").append(launchersRepaired).append(" Java launcher(s)")
             }
         }
     }
@@ -834,6 +859,10 @@ object OpenCodePackages {
         }
         chmod(target, entry.mode)
 
+        // The launchers of the Java build tools carry the Termux prefix in their body, not only
+        // in the shebang. Rewrite them while they are fresh, not on a later repair pass.
+        if (binEntry && name in JAVA_LAUNCHERS) JavaLaunchers.rewrite(target, prefix)
+
         // git's ELFs embed the Termux shell path, no environment variable can redirect it.
         if (TermuxShellPath.appliesTo(rel)) TermuxShellPath.patch(target)
     }
@@ -923,6 +952,56 @@ object OpenCodePackages {
             if (!firstLine.startsWith("#!$TERMUX_USR_ABS")) return null
             val line = "#!$prefix/" + firstLine.substring("#!$TERMUX_USR_ABS".length)
             return if (line.contains("/data/data/com.termux")) null else line
+        }
+    }
+
+    /**
+     * Launcher repair for the Java based build tools (`d8`, `r8`, `apksigner`). See
+     * [JAVA_LAUNCHERS] for the reason and the shape of the rewritten file.
+     */
+    private object JavaLaunchers {
+        private const val NEUTRAL_SHELL = "#!/system/bin/sh"
+        private const val PREFIX_PLACEHOLDER = "\${PREFIX:?PREFIX is not set}"
+
+        fun rewriteAll(prefix: File): Int {
+            val bin = File(prefix, "bin")
+            if (!bin.isDirectory) return 0
+            var repaired = 0
+            for (name in JAVA_LAUNCHERS) {
+                val file = File(bin, name)
+                if (file.isFile && rewrite(file, prefix)) repaired++
+            }
+            return repaired
+        }
+
+        fun rewrite(file: File, prefix: File): Boolean {
+            if (file.name !in JAVA_LAUNCHERS) return false
+            val text = try {
+                file.readText(StandardCharsets.UTF_8)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not read the launcher $file", e)
+                return false
+            }
+            val newline = text.indexOf('\n')
+            val firstLine = if (newline >= 0) text.substring(0, newline) else text
+            if (!firstLine.startsWith("#!")) return false
+            val body = if (newline >= 0) text.substring(newline + 1) else ""
+            var updatedBody = body
+            if (updatedBody.contains(TERMUX_USR_ROOT)) {
+                updatedBody = updatedBody.replace(TERMUX_USR_ROOT, PREFIX_PLACEHOLDER)
+            }
+            if (updatedBody.contains(prefix.absolutePath)) {
+                updatedBody = updatedBody.replace(prefix.absolutePath, PREFIX_PLACEHOLDER)
+            }
+            val updated = "$NEUTRAL_SHELL\n$updatedBody"
+            if (updated == text) return false
+            return try {
+                file.writeText(updated, StandardCharsets.UTF_8)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not rewrite the launcher $file", e)
+                false
+            }
         }
     }
 

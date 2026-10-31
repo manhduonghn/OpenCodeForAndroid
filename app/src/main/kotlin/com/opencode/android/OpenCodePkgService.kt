@@ -160,7 +160,7 @@ class OpenCodePkgService : Service() {
             Log.w(TAG, "Could not repair the package environment", e)
         }
         try {
-            OpenCodeBootstrap.ensurePackageEnvironment()
+            OpenCodeBootstrap.ensurePackageEnvironment(this)
         } catch (e: Exception) {
             Log.w(TAG, "Could not refresh the shell environment", e)
         }

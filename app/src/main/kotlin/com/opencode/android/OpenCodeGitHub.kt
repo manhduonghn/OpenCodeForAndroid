@@ -129,7 +129,7 @@ object OpenCodeGitHub {
                 Log.w(TAG, "Could not repair the package environment", e)
             }
             try {
-                OpenCodeBootstrap.ensurePackageEnvironment()
+                OpenCodeBootstrap.ensurePackageEnvironment(context)
             } catch (e: Exception) {
                 Log.w(TAG, "Could not refresh the shell environment", e)
             }
@@ -378,9 +378,16 @@ object OpenCodeGitHub {
             env["PATH"] = "${OpenCodeBootstrap.PREFIX}/bin:/system/bin"
             env["TMPDIR"] = "${OpenCodeBootstrap.PREFIX}/tmp"
             env["TERM"] = "xterm-256color"
-            env["LANG"] = "en_US.UTF-8"
-            env["LD_LIBRARY_PATH"] = "${OpenCodeBootstrap.PREFIX}/lib"
-            env["GIT_EXEC_PATH"] = "${OpenCodeBootstrap.PREFIX}/libexec/git-core"
+            env["LANG"] = "C.UTF-8"
+            if (File(OpenCodeBootstrap.PREFIX, "share/zoneinfo").isDirectory) {
+                env["TZDIR"] = "${OpenCodeBootstrap.PREFIX}/share/zoneinfo"
+            }
+            File(OpenCodeBootstrap.PREFIX, "lib")
+                .takeIf { it.isDirectory }
+                ?.let { env["LD_LIBRARY_PATH"] = it.absolutePath }
+            File(OpenCodeBootstrap.PREFIX, "libexec/git-core")
+                .takeIf { it.isDirectory }
+                ?.let { env["GIT_EXEC_PATH"] = it.absolutePath }
             File(OpenCodeBootstrap.PREFIX, "share/git-core/templates")
                 .takeIf { it.isDirectory }
                 ?.let { env["GIT_TEMPLATE_DIR"] = it.absolutePath }
@@ -388,8 +395,13 @@ object OpenCodeGitHub {
             if (systemConfig.isFile) env["GIT_CONFIG_SYSTEM"] = systemConfig.absolutePath
             else env["GIT_CONFIG_NOSYSTEM"] = "1"
             env["GIT_ATTR_NOSYSTEM"] = "1"
-            env["SSL_CERT_FILE"] = "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem"
-            env["CURL_CA_BUNDLE"] = "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem"
+            File(OpenCodeBootstrap.CA_BUNDLE_PATH)
+                .takeIf { it.isFile }
+                ?.let { cert ->
+                    env["SSL_CERT_FILE"] = cert.absolutePath
+                    env["CURL_CA_BUNDLE"] = cert.absolutePath
+                    env["GIT_SSL_CAINFO"] = cert.absolutePath
+                }
             File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
                 .takeIf { it.isFile }
                 ?.let { env["OPENSSL_CONF"] = it.absolutePath }

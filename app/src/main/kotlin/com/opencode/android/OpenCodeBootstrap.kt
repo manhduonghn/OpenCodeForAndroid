@@ -219,6 +219,25 @@ object OpenCodeBootstrap {
     const val OPENSSL_ENGINES_PATH = "$PREFIX/lib/engines-3"
 
     /**
+     * CA bundle that every TLS stack of the runtime uses. It is seeded from the APK when the
+     * `ca-certificates` package is missing or left a truncated file behind, see [ensureCaBundle].
+     */
+    const val CA_BUNDLE_PATH = "$PREFIX/etc/tls/cert.pem"
+
+    /** Mozilla CA bundle shipped in the APK, the asset that seeds [CA_BUNDLE_PATH]. */
+    private const val CA_BUNDLE_ASSET = "net/mozilla-ca-bundle.pem"
+
+    /**
+     * SHA-256 of [CA_BUNDLE_ASSET]. The asset is verified before it is materialized, so a broken
+     * APK cannot silently install a corrupt trust store.
+     */
+    private const val CA_BUNDLE_SHA256 =
+        "796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe"
+
+    /** A real bundle is ~200 KB; anything below this is the truncated file seen after a crash. */
+    private const val MIN_CA_BUNDLE_SIZE = 1024L
+
+    /**
      * Upper bound of a glibc object that is relocated. libstdc++ (22 MB), libasan (11 MB) and the
      * sanitizer runtimes carry only compiler paths, while everything that the resolver and the
      * runtime read at run time stays well below this limit.
@@ -784,8 +803,8 @@ object OpenCodeBootstrap {
      * binaries link against `$PREFIX/lib` and the git build has its helper programs below the old
      * Termux prefix. Idempotent, safe to call at any time.
      */
-    fun ensurePackageEnvironment() {
-        writePackageEnvironment()
+    fun ensurePackageEnvironment(context: Context? = null) {
+        writePackageEnvironment(context)
     }
 
     /**
@@ -793,16 +812,99 @@ object OpenCodeBootstrap {
      * replaced when this app wrote it or when it still points at the Termux app; a profile edited
      * by the user is left untouched.
      */
-    private fun writePackageEnvironment() {
+    private fun writePackageEnvironment(context: Context?) {
         val etc = File(PREFIX, "etc")
         if (!etc.isDirectory && !etc.mkdirs()) {
             Log.w(LOG_TAG, "Could not create $etc")
             return
         }
+        // Seed the trust store before the environment and gitconfig are written: the git config
+        // below only points at the bundle when it actually exists.
+        ensureCaBundle(context)
         writeTextFileQuietly(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
         writeGitConfig()
         ensureLoginProfile()
         hookBashrc()
+    }
+
+    /**
+     * Materialize the Mozilla bundle of the APK into `etc/tls/cert.pem` when the prefix has no
+     * usable bundle. This keeps every HTTPS request working on the first start, even when the
+     * `ca-certificates` package has not been downloaded yet or a crash left a truncated file
+     * behind.
+     *
+     * An existing bundle is kept when it is complete. The `ca-certificates` package ships a newer
+     * Mozilla snapshot than the APK, so its file must not be replaced just because the hashes
+     * differ; the SHA-256 of the asset is only used to validate what is about to be written and to
+     * make writing it idempotent.
+     */
+    private fun ensureCaBundle(context: Context?) {
+        val target = File(CA_BUNDLE_PATH)
+        if (isUsableCaBundle(target)) return
+
+        val assets = context?.assets ?: return
+        val data = try {
+            assets.open(CA_BUNDLE_ASSET).use { it.readBytes() }
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not read $CA_BUNDLE_ASSET from the APK", e)
+            return
+        }
+        val digest = try {
+            toHex(MessageDigest.getInstance("SHA-256").digest(data))
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not hash $CA_BUNDLE_ASSET", e)
+            return
+        }
+        if (digest != CA_BUNDLE_SHA256) {
+            Log.e(LOG_TAG, "The CA bundle asset does not match its SHA-256, ignoring it.")
+            return
+        }
+
+        val parent = target.parentFile ?: return
+        if (!parent.isDirectory && !parent.mkdirs()) {
+            Log.w(LOG_TAG, "Could not create the directory $parent")
+            return
+        }
+        var temp: File? = null
+        try {
+            val created = File.createTempFile("cert", ".pem", parent)
+            temp = created
+            FileOutputStream(created).use { output ->
+                output.write(data)
+                output.fd.sync()
+            }
+            try {
+                Os.chmod(created.absolutePath, MODE_644)
+            } catch (e: Exception) {
+                // The prefix is private to the app; the mode is not critical.
+            }
+            if (!created.renameTo(target)) {
+                // Some file systems refuse a rename over an existing file.
+                deleteQuietly(target)
+                if (!created.renameTo(target)) {
+                    throw IOException("Could not replace $target")
+                }
+            }
+            temp = null
+            Log.i(LOG_TAG, "Installed the CA bundle of the app at $target")
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not install the CA bundle", e)
+        } finally {
+            temp?.let { deleteQuietly(it) }
+        }
+    }
+
+    /** True when [file] is a complete PEM bundle, not a missing or truncated file. */
+    private fun isUsableCaBundle(file: File): Boolean {
+        if (!file.isFile || file.length() < MIN_CA_BUNDLE_SIZE) return false
+        return try {
+            val text = file.readText(StandardCharsets.US_ASCII)
+            text.contains("-----BEGIN CERTIFICATE-----") &&
+                text.contains("-----END CERTIFICATE-----")
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not read $file", e)
+            false
+        }
     }
 
     /**
@@ -813,7 +915,7 @@ object OpenCodeBootstrap {
      * clone as well as for a clone from the terminal.
      */
     private fun writeGitConfig() {
-        val cert = File(PREFIX, "etc/tls/cert.pem")
+        val cert = File(CA_BUNDLE_PATH)
         if (!cert.isFile) return
         val text = buildString {
             append("# Managed by the OpenCode for Android app.\n")
@@ -830,7 +932,7 @@ object OpenCodeBootstrap {
      * re-rooted here. The file is sourced by the login profile and by etc/bash.bashrc.
      */
     private fun buildPackageEnvironment(): String = buildString {
-        append("# Managed by the OpenCode for Android app (package environment v2).\n")
+        append("# Managed by the OpenCode for Android app (package environment v3).\n")
         append("# Sourced by etc/profile and etc/bash.bashrc of the runtime.\n")
         append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
         append("export PREFIX\n")
@@ -840,10 +942,20 @@ object OpenCodeBootstrap {
         append("esac\n")
         append("TMPDIR=\"\${TMPDIR:-\$PREFIX/tmp}\"; export TMPDIR\n")
         append("[ -d \"\$TMPDIR\" ] || mkdir -p \"\$TMPDIR\" 2>/dev/null\n")
-        append("case \":\${LD_LIBRARY_PATH:-}:\" in\n")
-        append("  *\":\$PREFIX/lib:\"*) ;;\n")
-        append("  *) LD_LIBRARY_PATH=\"\$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
-        append("esac\n")
+        // Android has no /usr/share/locale; glibc only ships C.UTF-8 in this prefix, and an
+        // unavailable locale makes node, git and the editors print a warning on every start.
+        append("if [ -z \"\${LANG:-}\" ]; then LANG=C.UTF-8; export LANG; fi\n")
+        // Java, Python and the GNU tools look for /usr/share/zoneinfo, which does not exist on
+        // Android. Set TZDIR only when the prefix really has a time zone database.
+        append("if [ -d \"\$PREFIX/share/zoneinfo\" ]; then\n")
+        append("  TZDIR=\"\${TZDIR:-\$PREFIX/share/zoneinfo}\"; export TZDIR\n")
+        append("fi\n")
+        append("if [ -d \"\$PREFIX/lib\" ]; then\n")
+        append("  case \":\${LD_LIBRARY_PATH:-}:\" in\n")
+        append("    *\":\$PREFIX/lib:\"*) ;;\n")
+        append("    *) LD_LIBRARY_PATH=\"\$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
+        append("  esac\n")
+        append("fi\n")
         // The app owns the installed binary, and the bionic preload of Termux must never be
         // loaded into a glibc process.
         append("OPENCODE_DISABLE_AUTOUPDATE=1; export OPENCODE_DISABLE_AUTOUPDATE\n")
@@ -866,19 +978,32 @@ object OpenCodeBootstrap {
         append("if [ ! -x \"\$PREFIX/bin/curl\" ]; then\n")
         append("  curl() { LD_LIBRARY_PATH= LD_PRELOAD= command curl \"\$@\"; }\n")
         append("fi\n")
-        append("[ -n \"\${SHELL:-}\" ] || { SHELL=\"\$PREFIX/bin/bash\"; export SHELL; }\n")
+        append("if [ -z \"\${SHELL:-}\" ] && [ -x \"\$PREFIX/bin/bash\" ]; then\n")
+        append("  SHELL=\"\$PREFIX/bin/bash\"; export SHELL\n")
+        append("fi\n")
         // The JDK links its own libraries relative to JAVA_HOME, but its RUNPATH still points at
-        // /data/data/com.termux. Point the loader at the relocated JDK as well.
+        // /data/data/com.termux. libjli re-executes /proc/self/exe when $JAVA_HOME/lib/server is
+        // not the first entry of LD_LIBRARY_PATH, and on Android /proc/self/exe is the platform
+        // linker, so the loader path has to start with lib/server. Only export paths that exist.
         jdkHome()?.let { jdk ->
             append("JAVA_HOME=\"\${JAVA_HOME:-").append(jdk.absolutePath).append("}\"; export JAVA_HOME\n")
-            append("case \":\${LD_LIBRARY_PATH:-}:\" in\n")
-            append("  *\":\$JAVA_HOME/lib:\"*) ;;\n")
-            append("  *) LD_LIBRARY_PATH=\"\$JAVA_HOME/lib:\$JAVA_HOME/lib/server:\$LD_LIBRARY_PATH\"; export LD_LIBRARY_PATH ;;\n")
-            append("esac\n")
-            append("case \":\${PATH:-}:\" in\n")
-            append("  *\":\$JAVA_HOME/bin:\"*) ;;\n")
-            append("  *) PATH=\"\$JAVA_HOME/bin:\$PATH\"; export PATH ;;\n")
-            append("esac\n")
+            append("if [ -d \"\$JAVA_HOME/lib/server\" ]; then\n")
+            append("  case \":\${LD_LIBRARY_PATH:-}:\" in\n")
+            append("    *\":\$JAVA_HOME/lib/server:\"*) ;;\n")
+            append("    *) LD_LIBRARY_PATH=\"\$JAVA_HOME/lib/server:\$JAVA_HOME/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
+            append("  esac\n")
+            append("elif [ -d \"\$JAVA_HOME/lib\" ]; then\n")
+            append("  case \":\${LD_LIBRARY_PATH:-}:\" in\n")
+            append("    *\":\$JAVA_HOME/lib:\"*) ;;\n")
+            append("    *) LD_LIBRARY_PATH=\"\$JAVA_HOME/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
+            append("  esac\n")
+            append("fi\n")
+            append("if [ -d \"\$JAVA_HOME/bin\" ]; then\n")
+            append("  case \":\${PATH:-}:\" in\n")
+            append("    *\":\$JAVA_HOME/bin:\"*) ;;\n")
+            append("    *) PATH=\"\$JAVA_HOME/bin:\$PATH\"; export PATH ;;\n")
+            append("  esac\n")
+            append("fi\n")
         }
         append("# npm and pip keep their caches in the app HOME, the prefix may be read only for them.\n")
         append("npm_config_cache=\"\${npm_config_cache:-\${HOME:-\$PREFIX}/.npm}\"; export npm_config_cache\n")
@@ -915,6 +1040,11 @@ object OpenCodeBootstrap {
         append("  SSL_CERT_FILE=\"\$PREFIX/etc/tls/cert.pem\"; export SSL_CERT_FILE\n")
         append("  CURL_CA_BUNDLE=\"\$SSL_CERT_FILE\"; export CURL_CA_BUNDLE\n")
         append("  NODE_EXTRA_CA_CERTS=\"\$SSL_CERT_FILE\"; export NODE_EXTRA_CA_CERTS\n")
+        // requests/certifi and pip read their own variables before they consult OpenSSL, so the
+        // generic SSL_CERT_FILE alone does not cover python based tools.
+        append("  REQUESTS_CA_BUNDLE=\"\$SSL_CERT_FILE\"; export REQUESTS_CA_BUNDLE\n")
+        append("  PIP_CERT=\"\$SSL_CERT_FILE\"; export PIP_CERT\n")
+        append("  GIT_SSL_CAINFO=\"\$SSL_CERT_FILE\"; export GIT_SSL_CAINFO\n")
         append("fi\n")
         // The WebView and the terminal use the same server password, so a server started from
         // the terminal and the one of the app cannot disagree about the credentials.
@@ -951,7 +1081,8 @@ object OpenCodeBootstrap {
             ?.filter {
                 it.isDirectory &&
                     it.name.startsWith("java-") &&
-                    it.name.endsWith("-openjdk")
+                    it.name.endsWith("-openjdk") &&
+                    File(it, "bin/java").isFile
             }
             ?.maxByOrNull {
                 it.name.removePrefix("java-").substringBefore('-').toIntOrNull() ?: 0
@@ -974,7 +1105,7 @@ object OpenCodeBootstrap {
             append("export PATH=\"\$PREFIX/bin:/system/bin\"\n")
             append("export TMPDIR=\"\${TMPDIR:-\$PREFIX/tmp}\"\n")
             append("export TERM=\"\${TERM:-xterm-256color}\"\n")
-            append("export LANG=\"\${LANG:-en_US.UTF-8}\"\n")
+            append("export LANG=\"\${LANG:-C.UTF-8}\"\n")
             append("if [ -r \"\$PREFIX/etc/opencode-env.sh\" ]; then . \"\$PREFIX/etc/opencode-env.sh\"; fi\n")
             append("if [ -r \"\$HOME/.bashrc\" ]; then . \"\$HOME/.bashrc\"; fi\n")
         }
@@ -1027,10 +1158,13 @@ object OpenCodeBootstrap {
             env["PATH"] = "$PREFIX/bin"
             env["TMPDIR"] = "$PREFIX/tmp"
             env["TERM"] = "xterm-256color"
-            env["LANG"] = "en_US.UTF-8"
+            env["LANG"] = "C.UTF-8"
             env["COLORTERM"] = "truecolor"
             env["DEBIAN_FRONTEND"] = "noninteractive"
             env["TERMUX_PKG_NO_MIRROR_SELECT"] = "1"
+            if (File(PREFIX, "share/zoneinfo").isDirectory) {
+                env["TZDIR"] = "$PREFIX/share/zoneinfo"
+            }
             // The Termux binaries link their libraries with a hardcoded RUNPATH that points at the
             // com.termux prefix, so the library search path has to be redirected explicitly. The
             // glibc directory is NOT added here: it contains a 'libc.so' linker script that the
@@ -1206,7 +1340,7 @@ object OpenCodeBootstrap {
             ensureTerminalRuntime()
             // The env script is rewritten on every start, so a fix in it reaches an install that
             // predates it without reinstalling a package first (the `pkg` wrapper, for example).
-            ensurePackageEnvironment()
+            ensurePackageEnvironment(context)
             refreshResolvConf(context)
             patchLoginShellPaths()
             repairNativeInterp()
@@ -2058,6 +2192,9 @@ object OpenCodeBootstrap {
                     Log.w(LOG_TAG, "Could not create the directory $dir")
                 }
             }
+            // The trust store has to exist before the first download (the version lookup and the
+            // OpenCode tarball use the platform TLS stack, but git/gh/curl do not).
+            ensureCaBundle(context)
             try {
                 Os.chmod(File(PREFIX, "tmp").absolutePath, MODE_700)
             } catch (e: Exception) {
@@ -2383,6 +2520,7 @@ object OpenCodeBootstrap {
 
     /** Permission bits, Kotlin has no octal literals. */
     private const val MODE_600 = 384 // 0600
+    private const val MODE_644 = 420 // 0644
     private const val MODE_700 = 448 // 0700
     private const val MODE_755 = 493 // 0755
 

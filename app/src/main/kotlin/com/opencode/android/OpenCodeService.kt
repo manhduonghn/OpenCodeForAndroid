@@ -426,11 +426,16 @@ class OpenCodeService : Service() {
             if (javaHome != null) put("JAVA_HOME", javaHome)
             put("TMPDIR", "${OpenCodeBootstrap.PREFIX}/tmp")
             put("TERM", "xterm-256color")
-            put("LANG", "en_US.UTF-8")
+            put("LANG", "C.UTF-8")
+            if (File(OpenCodeBootstrap.PREFIX, "share/zoneinfo").isDirectory) {
+                put("TZDIR", "${OpenCodeBootstrap.PREFIX}/share/zoneinfo")
+            }
             put("COLORTERM", "truecolor")
             // The pty of OpenCode starts "$SHELL -l"; make sure it is the patched bash of this
             // prefix and not the bionic /system/bin/sh, whose login startup files are different.
-            put("SHELL", "${OpenCodeBootstrap.PREFIX}/bin/bash")
+            File(OpenCodeBootstrap.PREFIX, "bin/bash")
+                .takeIf { it.isFile }
+                ?.let { put("SHELL", it.absolutePath) }
             put("DEBIAN_FRONTEND", "noninteractive")
             put("OPENCODE_DISABLE_AUTOUPDATE", "1")
             // The web terminal spawns `opencode-pty`. The copy that OpenCode extracts for itself
@@ -450,33 +455,49 @@ class OpenCodeService : Service() {
             // fixed password from the app preferences is used instead of the random one the
             // server would print, so the WebView can answer the authentication challenge itself.
             put("OPENCODE_SERVER_PASSWORD", OpenCodeBootstrap.getServerPassword(service))
-            // The CA bundle of the ca-certificates package, Bun/Node would otherwise have no
-            // trust store on Android and every HTTPS request of OpenCode would fail.
-            put("SSL_CERT_FILE", "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem")
-            put("NODE_EXTRA_CA_CERTS", "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem")
+            // The CA bundle of the ca-certificates package (or the asset of the app), Bun/Node
+            // would otherwise have no trust store on Android. The bundle is also handed to every
+            // python and git process, each of them consults its own variable first.
+            File(OpenCodeBootstrap.CA_BUNDLE_PATH)
+                .takeIf { it.isFile }
+                ?.let { cert ->
+                    put("SSL_CERT_FILE", cert.absolutePath)
+                    put("CURL_CA_BUNDLE", cert.absolutePath)
+                    put("NODE_EXTRA_CA_CERTS", cert.absolutePath)
+                    put("REQUESTS_CA_BUNDLE", cert.absolutePath)
+                    put("PIP_CERT", cert.absolutePath)
+                    put("GIT_SSL_CAINFO", cert.absolutePath)
+                }
             // The tools OpenCode spawns (bash, rg, …) are Termux binaries whose RUNPATH points at
             // the com.termux prefix. The glibc directory is deliberately not part of this
             // variable: it contains a 'libc.so' linker script that the bionic linker cannot load
             // as an ELF file. For a native (patched) binary the loader still finds libc.so.6 and
             // friends through its own relocated tree; this directory only contains the bionic
             // names.
-            put(
-                "LD_LIBRARY_PATH",
-                buildString {
-                    append(OpenCodeBootstrap.PREFIX).append("/lib")
-                    if (javaHome != null) {
-                        // The JDK was built for /data/data/com.termux: its RUNPATH is unusable,
-                        // the loader finds libjli/libjvm and their dependencies here instead.
-                        append(':').append(javaHome).append("/lib")
-                        append(':').append(javaHome).append("/lib/server")
-                    }
-                },
-            )
+            //
+            // libjli re-executes /proc/self/exe when $JAVA_HOME/lib/server is not the first entry
+            // of LD_LIBRARY_PATH. On Android /proc/self/exe is the platform linker, so `java
+            // -version` would be interpreted as a file name. The JDK directories therefore come
+            // before the prefix libs, and only directories that exist are exported.
+            val libraryPath = ArrayList<String>()
+            if (javaHome != null) {
+                File(javaHome, "lib/server").takeIf { it.isDirectory }
+                    ?.let { libraryPath.add(it.absolutePath) }
+                File(javaHome, "lib").takeIf { it.isDirectory }
+                    ?.let { libraryPath.add(it.absolutePath) }
+            }
+            File(OpenCodeBootstrap.PREFIX, "lib").takeIf { it.isDirectory }
+                ?.let { libraryPath.add(it.absolutePath) }
+            if (libraryPath.isNotEmpty()) {
+                put("LD_LIBRARY_PATH", libraryPath.joinToString(":"))
+            }
             // git from the Termux repository was built for the com.termux prefix: its helper
             // programs (git-remote-https, git-upload-pack, …) and its template directory live
             // below the old prefix, which is unreadable for this app. OpenCode runs git itself
             // for the workspace snapshots, so it needs these even without a shell.
-            put("GIT_EXEC_PATH", "${OpenCodeBootstrap.PREFIX}/libexec/git-core")
+            File(OpenCodeBootstrap.PREFIX, "libexec/git-core")
+                .takeIf { it.isDirectory }
+                ?.let { put("GIT_EXEC_PATH", it.absolutePath) }
             File(OpenCodeBootstrap.PREFIX, "share/git-core/templates")
                 .takeIf { it.isDirectory }
                 ?.let { put("GIT_TEMPLATE_DIR", it.absolutePath) }
@@ -489,7 +510,6 @@ class OpenCodeService : Service() {
                 put("GIT_CONFIG_NOSYSTEM", "1")
             }
             put("GIT_ATTR_NOSYSTEM", "1")
-            put("CURL_CA_BUNDLE", "${OpenCodeBootstrap.PREFIX}/etc/tls/cert.pem")
             // OpenSSL's compiled-in OPENSSLDIR/MODULESDIR point at the com.termux prefix. The
             // server itself is a glibc binary, but the git and gh processes it spawns load the
             // bionic OpenSSL of this prefix, so they need the paths of this sandbox.
@@ -553,6 +573,14 @@ class OpenCodeService : Service() {
         File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
             .takeIf { it.isDirectory }
             ?.let { expected.add("OPENSSL_ENGINES=${it.absolutePath}") }
+        // A server spawned by an older build has no REQUESTS_CA_BUNDLE/GIT_SSL_CAINFO. Requiring
+        // them restarts it once after the update, so python and git pick up the new trust store.
+        File(OpenCodeBootstrap.CA_BUNDLE_PATH)
+            .takeIf { it.isFile }
+            ?.let {
+                expected.add("SSL_CERT_FILE=${it.absolutePath}")
+                expected.add("REQUESTS_CA_BUNDLE=${it.absolutePath}")
+            }
         if (expected.isEmpty()) return true
         val environ = try {
             File("/proc/$pid/environ").takeIf { it.isFile }?.readBytes()
@@ -583,6 +611,10 @@ class OpenCodeService : Service() {
         append(" engines=").append(
             File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
                 .takeIf { it.isDirectory }?.absolutePath.orEmpty(),
+        )
+        append(" cacert=").append(
+            File(OpenCodeBootstrap.CA_BUNDLE_PATH)
+                .takeIf { it.isFile }?.absolutePath.orEmpty(),
         )
     }
 
