@@ -1024,6 +1024,23 @@ object OpenCodeBootstrap {
         append("# npm and pip keep their caches in the app HOME, the prefix may be read only for them.\n")
         append("npm_config_cache=\"\${npm_config_cache:-\${HOME:-\$PREFIX}/.npm}\"; export npm_config_cache\n")
         append("PIP_CACHE_DIR=\"\${PIP_CACHE_DIR:-\${HOME:-\$PREFIX}/.cache/pip}\"; export PIP_CACHE_DIR\n")
+        // Perl was built with @INC under /data/data/com.termux/files/usr, so every module and
+        // the scripts that use them (cowsay, …) fail with "Can't locate …". PERL5LIB prepends
+        // the version and architecture directories of this prefix; the stale entries stay in
+        // @INC and are simply not found.
+        append("if [ -d \"\$PREFIX/lib/perl5\" ]; then\n")
+        append("  _oc_perl=\n")
+        append("  for _oc_ver in \"\$PREFIX\"/lib/perl5/site_perl/* \"\$PREFIX\"/lib/perl5/*; do\n")
+        append("    [ -d \"\$_oc_ver\" ] || continue\n")
+        append("    case \"\${_oc_ver##*/}\" in [0-9]*) ;; *) continue ;; esac\n")
+        append("    _oc_perl=\"\${_oc_perl:+\$_oc_perl:}\$_oc_ver\"\n")
+        append("    for _oc_arch in \"\$_oc_ver\"/*-android; do\n")
+        append("      [ -d \"\$_oc_arch\" ] && _oc_perl=\"\${_oc_perl:+\$_oc_perl:}\$_oc_arch\"\n")
+        append("    done\n")
+        append("  done\n")
+        append("  if [ -n \"\$_oc_perl\" ]; then PERL5LIB=\"\${PERL5LIB:+\$PERL5LIB:}\$_oc_perl\"; export PERL5LIB; fi\n")
+        append("  unset _oc_perl _oc_ver _oc_arch\n")
+        append("fi\n")
         append("# git was built for /data/data/com.termux/files/usr: its helpers would be looked up\n")
         append("# there, which belongs to another app.\n")
         append("if [ -d \"\$PREFIX/libexec/git-core\" ]; then\n")

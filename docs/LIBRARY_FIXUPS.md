@@ -201,6 +201,7 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | git | GIT_EXEC_PATH/SHELL_PATH/templates/system config/gitattributes | cài git | ✅ hết |
 | bash | profile shebang + env unset LD_PRELOAD | mọi tty | ✅ |
 | Python | prefix trong sysconfig; pip cache; REQUESTS | cài `python`/`pip` | ✅ relocation che phần lớn + `REQUESTS_CA_BUNDLE`/`PIP_CERT` |
+| Perl | `@INC` biên dịch cứng theo prefix Termux | cài `perl` (và script như `cowsay`) | ✅ `PERL5LIB` trỏ tới `lib/perl5/<version>` + `/<arch>-android` của prefix |
 | JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ✅ `JAVA_HOME` + `lib/server` đứng đầu `LD_LIBRARY_PATH` |
 | Node | OPENSSL_CONF fatal nếu EACCES; xattrs/inotify `config` dir thiếu | cài nodejs → opencode | ⚠️ conf đã có; inotify mkdir là bản fix Bun của cortex, không cần cho node thường |
 | dpkg/apt (nếu cài) | fakeroot, mode 0 mkdir, seccomp set*id | cài cùng `glibc` gói glibc | ❌ chưa cần — app dùng `pkg` bridge bionic riêng |
@@ -342,6 +343,10 @@ cache được tạo lại theo blob mới thay vì dùng bản vá của APK c�
 `repair` (đã thêm lệnh `pkg repair`, và mỗi `pkg install` cũng chạy lượt repair này). Từ bản này
 extractor/repair map shebang trỏ tới interpreter không tồn tại trên máy (`#!/usr/bin/env node`,
 `#!/bin/bash`) sang `$PREFIX/bin`, giữ nguyên `/bin/sh` của Android.
+
+`pkg install cowsay` (một script Perl) lộ thêm một lỗi: Perl biên dịch cứng `@INC` theo prefix
+Termux nên báo `Can't locate Cwd.pm`. Env script giờ đặt `PERL5LIB` trỏ tới
+`lib/perl5/<version>` và thư mục kiến trúc `<arch>-android` của prefix; `cowsay` chạy được.
 
 Giới hạn có chủ ý:
 

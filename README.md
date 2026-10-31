@@ -163,7 +163,8 @@ that points at the com.termux prefix. `$PREFIX/etc/opencode-env.sh` (sourced by
 `etc/profile` and hooked into `etc/bash.bashrc`) exports `PATH`, `TMPDIR`,
 `LD_LIBRARY_PATH`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_SERVER_PASSWORD`,
 the npm/pip caches, the CA bundle (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
-`NODE_EXTRA_CA_CERTS`) and OpenSSL's relocated paths (`OPENSSL_CONF`,
+`NODE_EXTRA_CA_CERTS`), Perl's `PERL5LIB` (the modules of `lib/perl5` were built
+for the Termux prefix) and OpenSSL's relocated paths (`OPENSSL_CONF`,
 `OPENSSL_MODULES`, `OPENSSL_ENGINES`). The latter are needed because OpenSSL was
 built with `OPENSSLDIR=/data/data/com.termux/files/usr/etc/tls` and
 `MODULESDIR=…/lib/ossl-modules`; without them the configuration file and the
