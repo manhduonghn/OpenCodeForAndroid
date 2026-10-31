@@ -143,7 +143,10 @@ work. The service is not exported; the request comes from the same UID as the
 app, which is also why no root is needed. Dependencies are resolved from the
 package index — including `Provides:` virtual packages (`python3` → `python`)
 and `a | b` alternatives (`nodejs | nodejs-lts`) — the archives are extracted
-directly into `$PREFIX`, and `termux-tools`/`termux-exec` are skipped.
+directly into `$PREFIX`, and `termux-tools`/`termux-exec` are skipped. A
+transient network error (DNS after a network change, a dropped socket) is
+retried three times per mirror before the install gives up; a rerun repeats the
+dependency closure and completes it.
 
 `termux-exec` is not needed because the app targets API 28, so binaries in its
 data directory may be executed directly. That is also why there is no linker

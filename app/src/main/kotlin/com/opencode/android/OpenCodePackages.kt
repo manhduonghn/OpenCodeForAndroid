@@ -16,7 +16,10 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
@@ -229,7 +232,7 @@ object OpenCodePackages {
         var mainMirror: String? = null
         for (mirror in MAIN_MIRRORS) {
             try {
-                parseIndex(fetch(mirror + INDEX_PATH + arch + "/Packages"), mirror, index)
+                parseIndex(withRetries { fetch(mirror + INDEX_PATH + arch + "/Packages") }, mirror, index)
                 mainMirror = mirror
                 break
             } catch (e: Exception) {
@@ -243,7 +246,11 @@ object OpenCodePackages {
         for (mirror in GLIBC_MIRRORS) {
             try {
                 val glibc = LinkedHashMap<String, Pkg>()
-                parseIndex(fetch(mirror + GLIBC_INDEX_PATH + arch + "/Packages"), mirror, glibc)
+                parseIndex(
+                    withRetries { fetch(mirror + GLIBC_INDEX_PATH + arch + "/Packages") },
+                    mirror,
+                    glibc,
+                )
                 for ((name, pkg) in glibc) index.putIfAbsent(name, pkg)
                 break
             } catch (e: Exception) {
@@ -317,7 +324,7 @@ object OpenCodePackages {
         var loaded = false
         for (mirror in MAIN_MIRRORS) {
             try {
-                parseIndex(fetch(mirror + INDEX_PATH + arch + "/Packages"), mirror, index)
+                parseIndex(withRetries { fetch(mirror + INDEX_PATH + arch + "/Packages") }, mirror, index)
                 loaded = true
                 break
             } catch (e: Exception) {
@@ -668,6 +675,37 @@ object OpenCodePackages {
     }
 
     /**
+     * Run a network request again when the failure is transient. A phone that switches between
+     * Wi-Fi and mobile data loses DNS for a moment; an install used to abort at that point and
+     * leave half of the dependency closure behind. HTTP errors and checksum mismatches are not
+     * retried: another mirror is a better answer for those.
+     */
+    private fun <T> withRetries(block: () -> T): T {
+        var last: IOException? = null
+        for (attempt in 1..3) {
+            try {
+                return block()
+            } catch (e: IOException) {
+                if (!isTransient(e)) throw e
+                last = e
+                Log.w(TAG, "Network attempt $attempt of 3 failed: ${e.message}")
+                if (attempt < 3) {
+                    try {
+                        Thread.sleep(1_000L * attempt)
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    }
+                }
+            }
+        }
+        throw last ?: IOException("The network request failed")
+    }
+
+    private fun isTransient(e: IOException): Boolean =
+        e is UnknownHostException || e is SocketTimeoutException || e is SocketException
+
+    /**
      * Download a package from the mirror of its index first, then from every other mirror. A
      * mirror that serves an outdated index or blocks the pool would otherwise break an install
      * that another mirror can serve.
@@ -693,7 +731,7 @@ object OpenCodePackages {
         for (mirror in mirrors) {
             val url = "$mirror/$filename"
             try {
-                downloadVerified(url, dest, pkg.sha256)
+                withRetries { downloadVerified(url, dest, pkg.sha256) }
                 return
             } catch (e: IOException) {
                 lastError = e
