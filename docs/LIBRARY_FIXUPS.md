@@ -340,6 +340,10 @@ cache được tạo lại theo blob mới thay vì dùng bản vá của APK c�
 `d8`, `apksigner`, `clang hi.c -o hi` rồi chạy, `make 4.4.1`, `cmake 4.4.5`, `ninja 1.13.2`,
 `pkg-config 0.29.2`). `pkg install yq` (binary Go trong repo, v4.54.1) cũng chạy trực tiếp
 sau khi relocation — không cần `oc-run`, vì phần vá Go chỉ dành cho binary tải về ngoài repo.
+Một project Android Java thật (WebView + HTTP proxy, build bằng script không Gradle) cũng build
+trọn trên máy: `aapt2` 16.0.0.4-4 (2.20-android-16.0.0_r4), `d8` 9.2.4, `apksigner` 0.9,
+`zip` 3.0, `javac` 21.0.13 và `python3` tạo ra APK 62 KB, ký V3, `aapt2 dump badging` đúng
+package/version/minSdk/targetSdk; project không cần thư viện Java ngoài, chỉ `android-33.jar`.
 Mạng là điểm yếu duy nhất: hai lượt cài hỏng giữa chừng (ở `libicu` và
 `libllvm`) vì `Unable to resolve host "packages.termux.dev"`, chạy lại lệnh thì tiếp tục và
 hoàn tất; các gói đã trích trước đó vẫn dùng được. App giờ thử lại 3 lần cho mỗi mirror với
