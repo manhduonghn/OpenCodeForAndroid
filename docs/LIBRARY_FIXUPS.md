@@ -202,6 +202,7 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | bash | profile shebang + env unset LD_PRELOAD | mọi tty | ✅ |
 | Python | prefix trong sysconfig; pip cache; REQUESTS | cài `python`/`pip` | ✅ relocation che phần lớn + `REQUESTS_CA_BUNDLE`/`PIP_CERT` |
 | Perl | `@INC` biên dịch cứng theo prefix Termux | cài `perl` (và script như `cowsay`) | ✅ `PERL5LIB` trỏ tới `lib/perl5/<version>` + `/<arch>-android` của prefix |
+| Ruby | `$LOAD_PATH` biên dịch cứng; Ruby 4 không tự nạp RubyGems | cài `ruby`, chạy `gem` | ✅ `RUBYLIB` + `RUBYOPT=-rrubygems` |
 | JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ✅ `JAVA_HOME` + `lib/server` đứng đầu `LD_LIBRARY_PATH` |
 | Node | OPENSSL_CONF fatal nếu EACCES; xattrs/inotify `config` dir thiếu | cài nodejs → opencode | ⚠️ conf đã có; inotify mkdir là bản fix Bun của cortex, không cần cho node thường |
 | dpkg/apt (nếu cài) | fakeroot, mode 0 mkdir, seccomp set*id | cài cùng `glibc` gói glibc | ❌ chưa cần — app dùng `pkg` bridge bionic riêng |
@@ -347,6 +348,9 @@ extractor/repair map shebang trỏ tới interpreter không tồn tại trên m�
 `pkg install cowsay` (một script Perl) lộ thêm một lỗi: Perl biên dịch cứng `@INC` theo prefix
 Termux nên báo `Can't locate Cwd.pm`. Env script giờ đặt `PERL5LIB` trỏ tới
 `lib/perl5/<version>` và thư mục kiến trúc `<arch>-android` của prefix; `cowsay` chạy được.
+Ruby 4.0.9 cũng vậy: `require "json"` và `gem` không tìm thấy file vì `$LOAD_PATH` trỏ về prefix
+Termux, và bản Ruby 4 không tự nạp RubyGems. `RUBYLIB` + `RUBYOPT=-rrubygems` trong env script sửa
+cả hai; `gem install colorize` cài vào prefix và `require "colorize"` chạy.
 
 Giới hạn có chủ ý:
 
