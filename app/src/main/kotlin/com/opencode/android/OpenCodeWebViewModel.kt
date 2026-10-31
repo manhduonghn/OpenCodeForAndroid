@@ -73,7 +73,35 @@ class OpenCodeWebViewModel : ViewModel() {
     /** @return the single WebView of this state, created on the first call. */
     fun webView(context: Context): WebView {
         webViewInstance?.let { return it }
+        return createWebView(context)
+    }
 
+    /**
+     * Throw away a WebView whose renderer process was killed and return a fresh one.
+     *
+     * Android may kill the renderer of a backgrounded WebView under memory pressure. The old view
+     * then only shows an empty surface and cannot be reused, so the activity swaps it for the view
+     * this method creates and loads the UI again. The page state is lost, but the session itself
+     * lives in the server, so reopening its route restores the conversation.
+     */
+    fun replaceWebView(context: Context): WebView {
+        val old = webViewInstance
+        webViewInstance = null
+        themeHandler = null
+        pageLoaded = false
+        pairedServerGeneration = 0
+        if (old != null) {
+            (old.parent as? ViewGroup)?.removeView(old)
+            try {
+                old.destroy()
+            } catch (e: Exception) {
+                // The renderer is already gone, there is nothing left to release.
+            }
+        }
+        return createWebView(context)
+    }
+
+    private fun createWebView(context: Context): WebView {
         val view = WebView(context.applicationContext)
         view.settings.apply {
             javaScriptEnabled = true
@@ -201,6 +229,23 @@ class OpenCodeWebViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Tell the single page app that the activity is visible again.
+     *
+     * While the app is in the background Android can drop the event streams (SSE/WebSocket) of the
+     * web UI without the page noticing. The server is still fine, so the page does not have to be
+     * reloaded and lose its scroll position: dispatching the lifecycle events makes the app
+     * reconnect its streams and refetch the state it missed.
+     */
+    fun nudgeWebApp() {
+        val view = webViewInstance ?: return
+        try {
+            view.evaluateJavascript(NUDGE_SCRIPT, null)
+        } catch (e: Exception) {
+            // A destroyed WebView throws here, the next resume creates a new one.
+        }
+    }
+
     /** Report a session from a native URL callback, before the injected script runs. */
     fun reportSessionFromUrl(url: String?) {
         OpenCodeSessionTracker.setActiveSession(sessionIdOf(url))
@@ -275,6 +320,23 @@ class OpenCodeWebViewModel : ViewModel() {
               document.addEventListener('click', function () { setTimeout(report, 40); }, true);
               setInterval(report, 2500);
               report();
+            })();
+        """.trimIndent()
+
+        /**
+         * Events that wake the event streams of the web UI without reloading the page. The
+         * visibility state of a resumed WebView is already `visible`, so the synthetic event makes
+         * the app run the same reconnect path it uses when a tab becomes visible again.
+         */
+        private val NUDGE_SCRIPT = """
+            (function () {
+              try {
+                document.dispatchEvent(new Event('visibilitychange'));
+                window.dispatchEvent(new Event('focus'));
+                window.dispatchEvent(new Event('online'));
+                window.dispatchEvent(new Event('pageshow'));
+                window.dispatchEvent(new CustomEvent('opencode:resume'));
+              } catch (e) {}
             })();
         """.trimIndent()
     }

@@ -507,6 +507,14 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
     báo về) được lưu vào `SharedPreferences` (`last_session_id`). Khi activity được tạo lại
     sau khi process chết, `onPageFinished` của trang chủ tự chuyển tới session đó. Việc quay
     về trang chủ **không** xoá `last_session_id`, giống TUI mở lại phiên gần nhất.
+    Notification của foreground service đọc id này: nếu WebView còn sống thì dùng route
+    đang mở, nếu không thì ưu tiên session đang chạy rồi mới tới `last_session_id`, và gắn
+    `EXTRA_SESSION_ID` vào content intent; activity là `singleTop` nên mở lại đúng WebView
+    đang có thay vì tạo activity/WebView/pairing thứ hai. Khi app quay lại foreground,
+    activity bắn `visibilitychange`/`focus`/`online`/`pageshow` để web app nối lại event
+    stream, và `onRenderProcessGone` dựng WebView mới rồi mở lại session nếu Android đã giết
+    renderer. Một vòng kiểm tra `serverGeneration` mỗi 3 giây tự pair lại khi server bị
+    heartbeat/Restart thay thế sau lưng UI.
 14. **`opencode service stop`:** server của app nhận SIGTERM (exit `143`). Service coi đây là
     Stop chủ động: đặt `user_stopped`, huỷ watchdog, xoá `service.json` và `stopSelf()`, nên
     watchdog không bật lại server sau vài phút.

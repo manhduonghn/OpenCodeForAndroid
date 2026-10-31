@@ -21,6 +21,7 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.JsResult
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -223,6 +224,28 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
     }
 
+    /**
+     * Keep the page paired with the server while the activity is visible.
+     *
+     * The server can be replaced behind the back of the UI at any time: the heartbeat or the
+     * notification's Restart action, a crash, the phantom process killer. The page then holds the
+     * cookie and the pairing token of the old server and only receives 401s, so it has to be
+     * paired again instead of showing a dead chat until the next manual reload.
+     */
+    private val generationWatch: Runnable = object : Runnable {
+        override fun run() {
+            if (destroyed) return
+            if (pageLoaded && !OpenCodeSettings.stoppedByUser(this@OpenCodeWebActivity)) {
+                val generation = OpenCodeService.serverGeneration()
+                if (generation != 0 && generation != viewModel.pairedServerGeneration) {
+                    Log.i(TAG, "The server was replaced while the UI was open, pairing again")
+                    reconnectToRestartedServer()
+                }
+            }
+            handler.postDelayed(this, GENERATION_CHECK_MS)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -265,6 +288,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         OpenCodeBootstrap.restoreState()
         OpenCodeBootstrap.addInstallListener(this)
 
+        // The notification of the foreground service opens the session it was showing. The id is
+        // kept in the ViewModel until the start page finished loading, so a rotation during the
+        // load does not lose it.
+        val requestedSession = consumeSessionIntent(intent)
+        if (requestedSession != null) pendingSessionId = requestedSession
+
         // A rotation only re-attaches the WebView that the ViewModel kept, the UI stays where it
         // was and the poll (which pairs again and reloads the page) is not started at all.
         val pageAlive = viewModel.pageLoaded
@@ -285,7 +314,11 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (!pageAlive) {
             handler.post(poll)
         } else {
-            viewModel.installSessionWatcher()
+            if (requestedSession != null) {
+                openSession(requestedSession)
+            } else {
+                viewModel.installSessionWatcher()
+            }
         }
     }
 
@@ -1014,9 +1047,16 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         OpenCodeSettings.setStoppedByUser(this, false)
         OpenCodeWatchdog.ensureScheduled(this)
         startServerService()
+        // The notification of a running session opens exactly that session. The activity is
+        // `singleTop`, so the WebView that already exists is reused instead of starting a second
+        // one that would talk to the server with a second pairing.
+        val requestedSession = consumeSessionIntent(intent)
         if (!pageLoaded) {
+            if (requestedSession != null) pendingSessionId = requestedSession
             handler.removeCallbacks(poll)
             handler.post(poll)
+        } else if (requestedSession != null) {
+            openSession(requestedSession)
         }
     }
 
@@ -1028,6 +1068,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     override fun onStop() {
         viewModel.ui = null
+        // While the activity is gone the notification keeps the server alive; the page is checked
+        // and woken up again in onResume, so the periodic check is not needed here.
+        handler.removeCallbacks(generationWatch)
         super.onStop()
     }
 
@@ -1042,12 +1085,50 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         val generation = OpenCodeService.serverGeneration()
         if (pageLoaded && generation != 0 && generation != viewModel.pairedServerGeneration) {
             reconnectToRestartedServer()
+        } else if (pageLoaded) {
+            // The server is fine. Android may have dropped the event streams of the page while it
+            // was in the background without the page noticing, so make the single page app run its
+            // own reconnect path and fetch what it missed.
+            viewModel.nudgeWebApp()
         }
+        handler.removeCallbacks(generationWatch)
+        handler.postDelayed(generationWatch, GENERATION_CHECK_MS)
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
             renderStorage()
         }
         offerBatteryOptimizationOnce()
+    }
+
+    /**
+     * Open a chat session of the server in the WebView.
+     *
+     * Called for the session in the notification. If the page is not loaded yet the id waits in
+     * [pendingSessionId] and [WebViewClient.onPageFinished] opens it on top of the start page.
+     */
+    private fun openSession(id: String) {
+        val sessionId = id.trim()
+        if (!sessionId.startsWith("ses_")) return
+        OpenCodeSettings.setLastSessionId(this, sessionId)
+        OpenCodeSessionTracker.setActiveSession(sessionId)
+        if (settingsPanel.visibility == View.VISIBLE) closeSettings()
+        if (!pageLoaded) {
+            pendingSessionId = sessionId
+            return
+        }
+        if (OpenCodeWebViewModel.sessionIdOf(webView.url) == sessionId) return
+        webView.loadUrl("$baseUrl/session/$sessionId")
+    }
+
+    /**
+     * Read and clear the session id of a notification PendingIntent, so a rotation or a second
+     * resume of the same intent does not reopen a session the user already left.
+     */
+    private fun consumeSessionIntent(intent: Intent?): String? {
+        val id = intent?.getStringExtra(EXTRA_SESSION_ID)?.trim()
+            ?.takeIf { it.startsWith("ses_") }
+        intent?.removeExtra(EXTRA_SESSION_ID)
+        return id
     }
 
     /**
@@ -1213,6 +1294,19 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     ),
                 )
             }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?,
+            ): Boolean {
+                // Android can kill the renderer of a backgrounded WebView under memory pressure.
+                // The old view then shows an empty surface, which looks like a dead session. Build
+                // a new WebView, keep the session the user was reading and pair the page with the
+                // running server again instead of letting the system crash the app.
+                if (view !== webView) return true
+                recoverWebView()
+                return true
+            }
         }
 
         webView.settings.apply {
@@ -1224,6 +1318,46 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
         // The Pairing redirect stores the session cookie of the server here.
         CookieManager.getInstance().setAcceptCookie(true)
+    }
+
+    /**
+     * Build a new WebView after the renderer of the old one was killed.
+     *
+     * The session itself lives in the server, so it is not lost: only the page has to be loaded
+     * again. The id is taken from the last route or from the persisted last session, and the
+     * pairing with the running server is repeated.
+     */
+    private fun recoverWebView() {
+        if (destroyed) return
+        Log.w(TAG, "The WebView renderer was killed, creating a new WebView")
+        val sessionId = OpenCodeWebViewModel.sessionIdOf(webView.url)
+            ?: OpenCodeSettings.lastSessionId(this)
+        webView = viewModel.replaceWebView(this)
+        webContainer.removeAllViews()
+        webContainer.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        configureWebView()
+        applyWebTheme()
+        pageLoaded = false
+        waitingForInstall = false
+        pairAttempts = 0
+        loadFailures = 0
+        pendingSessionId = sessionId
+        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        statusTitle.setText(R.string.opencode_status_starting)
+        statusDetail.setText(R.string.opencode_reconnecting)
+        statusProgress.visibility = View.VISIBLE
+        statusProgress.isIndeterminate = true
+        statusRetry.visibility = View.GONE
+        handler.removeCallbacks(poll)
+        handler.post(poll)
     }
 
     /** Report the route to the notification tracker and remember it across a process death. */
@@ -1606,7 +1740,16 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         /** Extra accepted by [OpenCodeService] to know the port it should serve. */
         const val EXTRA_PORT = "port"
 
+        /**
+         * Session that the notification wants to open. The foreground service puts it on the
+         * content intent, so tapping the notification continues exactly the chat it reports.
+         */
+        const val EXTRA_SESSION_ID = "session_id"
+
         /** Endpoint that redeems a pairing code for a session token. */
         private const val PAIR_PATH = "/auth/connect/"
+
+        /** How often the activity checks that the page is paired with the current server. */
+        private const val GENERATION_CHECK_MS = 3000L
     }
 }

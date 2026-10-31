@@ -617,6 +617,19 @@ class OpenCodeService : Service() {
         // port that this service already owns.
         writeServiceRegistration()
         updateNotification("Running on http://127.0.0.1:$port")
+        // Show the sessions of the server that just (re)started without waiting for the next
+        // four-second poll, so the notification never points at a session of the old server.
+        refreshNotificationSessionsSoon()
+    }
+
+    /**
+     * Run the session poll now instead of waiting for the remaining interval. Called after a
+     * server start, when the previous list belongs to a server that no longer exists.
+     */
+    private fun refreshNotificationSessionsSoon() {
+        if (!sessionPolling) return
+        handler.removeCallbacks(sessionPoll)
+        handler.post(sessionPoll)
     }
 
     /**
@@ -987,13 +1000,26 @@ class OpenCodeService : Service() {
     /**
      * The notification identifies the chat session that is open in the WebView, not only the
      * server URL. [OpenCodeSessionTracker] is fed by the injected route watcher, and the service
-     * polls `/api/session` for the title, the project directory and the working state.
+     * polls `/api/session` for the title, the project directory and the working state. When the
+     * WebView is gone the running or the last session is used, so the notification describes the
+     * turn that works in the background and its content intent reopens exactly that chat.
      */
     private fun buildNotification(): Notification {
+        val session = activeSession
+        // Tapping the notification continues the chat it reports. The activity is `singleTop`
+        // and reads the extra in `onNewIntent`, so an existing WebView is reused instead of
+        // stacking a second page that would pair with the server a second time.
         val openIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, OpenCodeWebActivity::class.java),
+            Intent(this, OpenCodeWebActivity::class.java).apply {
+                if (session != null) {
+                    putExtra(OpenCodeWebActivity.EXTRA_SESSION_ID, session.id)
+                }
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val stopIntent = PendingIntent.getService(
@@ -1009,7 +1035,6 @@ class OpenCodeService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val session = activeSession
         val title: String
         val text: String
         if (session != null) {
@@ -1236,8 +1261,16 @@ class OpenCodeService : Service() {
         val currentPort = port
         val secret = OpenCodeBootstrap.getServerPassword(this)
         val sessions = OpenCodeApi.sessionList(currentPort, secret, 3500) ?: return
+        // The WebView reports the open route. When it is gone (the activity was destroyed, the
+        // process was restarted, the user is on the start page) prefer a session that is still
+        // working, then the persisted last session, then the most recently updated one. This is
+        // what makes the notification follow the turn that actually runs in the background.
         val reported = OpenCodeSessionTracker.activeSessionId
         val active = reported?.let { id -> sessions.firstOrNull { it.id == id } }
+            ?: sessions.firstOrNull { it.running }
+            ?: OpenCodeSettings.lastSessionId(this)?.let { id ->
+                sessions.firstOrNull { it.id == id }
+            }
             ?: sessions.firstOrNull()
         val shown = sessionsForNotification(active, sessions)
         val signature = buildString {

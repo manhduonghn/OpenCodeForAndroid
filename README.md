@@ -269,6 +269,16 @@ ViewModel cannot keep a destroyed activity alive; its `alert()`/`confirm()` dial
 to the activity that is on screen. The view is destroyed only when the activity is finished for
 good (`ViewModel.onCleared`).
 
+The activity is `singleTop`, and the notification's content intent carries the id of the session
+it reports. Tapping the notification therefore reuses the running WebView and opens exactly that
+chat (`OpenCodeWebActivity.EXTRA_SESSION_ID`) instead of stacking a second activity with a second
+WebView, a second pairing and a second event stream. While the app is in the background Android can
+drop the event streams of the page or kill its renderer without killing the server; on return the
+activity dispatches the `visibilitychange`/`focus`/`online`/`pageshow` events so the single page
+app reconnects and refetches what it missed, and `onRenderProcessGone` builds a new WebView and
+reopens the last session instead of leaving an empty surface. A three-second generation check
+re-pairs the page when the heartbeat or the notification restarted the server behind its back.
+
 ### Material You
 
 The native screens use `Theme.Material3.DayNight.NoActionBar`. On Android 12+ the app applies
@@ -368,7 +378,11 @@ lists up to five sessions — the active one, then every other working session,
 then the most recently updated ones — so a turn started from the terminal or a
 second tab is visible without opening the app. The service polls `/api/session`
 every four seconds and posts only when the fingerprint changes, plus once a
-minute while something runs so the elapsed time advances.
+minute while something runs so the elapsed time advances. When the WebView is
+gone the notification follows a session that is still working (then the
+persisted last session, then the most recently updated one), and tapping it
+opens that exact session in the existing WebView instead of stacking a second
+one.
 
 ## Security notes
 
