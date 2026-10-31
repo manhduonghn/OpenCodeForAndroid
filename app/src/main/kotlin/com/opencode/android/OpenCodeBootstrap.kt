@@ -1983,7 +1983,7 @@ object OpenCodeBootstrap {
             // The profile and the bashrc are plain text files from the bash package, they are not
             // touched by the ELF rewrite and still point at the real Termux app.
             rewriteTextPaths(File("$PREFIX/etc/bash.bashrc"))
-            writePackageEnvironment()
+            writePackageEnvironment(context)
         }
 
         /** Rewrite the com.termux paths of a text file to this app's prefix and home. */
