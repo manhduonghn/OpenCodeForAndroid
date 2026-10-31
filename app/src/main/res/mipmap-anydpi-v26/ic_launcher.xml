@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon. The launcher supplies the mask (circle, squircle, rounded square, ...)
+  and the device may also animate the layers, so the background is a flat, full-bleed gradient
+  and the mark lives in the 72dp safe zone of the foreground.
+
+  `minSdk` is 26, so every supported Android version understands this file; the layer-list in
+  `mipmap-anydpi` only exists as the default resource for tools that ask for an unqualified
+  variant.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default variant of the launcher icon, used only by tools or launchers that do not understand
+  the adaptive icon of `mipmap-anydpi-v26` (every supported device is API 26+, so Android itself
+  always picks the adaptive one). It composes the same two layers without a mask.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_background" />
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

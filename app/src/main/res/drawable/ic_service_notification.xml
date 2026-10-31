@@ -1,13 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Small icon of the foreground notification: the `>_` mark of the launcher icon.
+
+  Android renders a notification small icon as an alpha mask and tints it with the system color,
+  so this drawable is a single flat white; anything else would be flattened into a disc.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+
     <path
-        android:fillColor="#FF3DDC84"
-        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2z" />
+        android:pathData="M4.5,6.2 L11.3,12 L4.5,17.8"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.1"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
     <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M12,5v14l11,-7z" />
+        android:pathData="M13.4,17.8 L19.5,17.8"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.1"
+        android:strokeLineCap="round" />
 </vector>

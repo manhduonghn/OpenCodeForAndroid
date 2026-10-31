@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Monochrome layer for the themed icons of Android 13+.
+
+  The system tints this drawable with the wallpaper colors, so it must be a single flat color:
+  only the alpha channel is used. The geometry is the same `>_` as the foreground layer.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M31,37 L52,54 L31,71"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="9.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M58,71 L77,71"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="9.5"
+        android:strokeLineCap="round" />
+</vector>
