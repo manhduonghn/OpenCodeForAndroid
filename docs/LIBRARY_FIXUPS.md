@@ -338,7 +338,9 @@ cache được tạo lại theo blob mới thay vì dùng bản vá của APK c�
 `clang make cmake ninja pkg-config` — cài xong chạy được
 (`node -e`, `npm --version`, `rg`, `fd`, `bat`, `sqlite3`, `ssh -V`, `java -version`, `javac`,
 `d8`, `apksigner`, `clang hi.c -o hi` rồi chạy, `make 4.4.1`, `cmake 4.4.5`, `ninja 1.13.2`,
-`pkg-config 0.29.2`). Mạng là điểm yếu duy nhất: hai lượt cài hỏng giữa chừng (ở `libicu` và
+`pkg-config 0.29.2`). `pkg install yq` (binary Go trong repo, v4.54.1) cũng chạy trực tiếp
+sau khi relocation — không cần `oc-run`, vì phần vá Go chỉ dành cho binary tải về ngoài repo.
+Mạng là điểm yếu duy nhất: hai lượt cài hỏng giữa chừng (ở `libicu` và
 `libllvm`) vì `Unable to resolve host "packages.termux.dev"`, chạy lại lệnh thì tiếp tục và
 hoàn tất; các gói đã trích trước đó vẫn dùng được. App giờ thử lại 3 lần cho mỗi mirror với
 backoff khi lỗi là DNS/connect/socket timeout; lỗi HTTP và checksum vẫn chuyển mirror ngay.
