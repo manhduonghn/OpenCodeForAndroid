@@ -215,7 +215,7 @@ func classifyFile(path string) (string, string, error) {
 	// pattern is different and Android devices of that ABI are rare.
 	if img.Machine == emAArch64 {
 		if data, err := os.ReadFile(path); err == nil {
-			if _, err := findGoSite(data, img); err == nil {
+			if _, _, err := findGoSite(data, img); err == nil {
 				return "go", "", nil
 			}
 		}

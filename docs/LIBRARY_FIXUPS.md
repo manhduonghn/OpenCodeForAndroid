@@ -272,7 +272,7 @@ trình tự phát.
 
 ## 8. Helper native của 4.3 (cách dùng và giới hạn)
 
-APK có thêm ba thứ, được trích xuất trong `OpenCodeBootstrap.installNativeTools()`:
+APK có thêm ba thứ, được cài bởi `OpenCodeBootstrap.installNativeTools()`:
 
 | File | Vai trò |
 | --- | --- |

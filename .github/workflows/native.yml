@@ -24,6 +24,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.23"
+          # The modules live in subdirectories, not at the repository root.
+          cache-dependency-path: |
+            native/gopatch/go.mod
+            native/test/go.mod
 
       - name: Install cross compiler and qemu
         run: |
