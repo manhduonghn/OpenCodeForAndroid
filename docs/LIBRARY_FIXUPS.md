@@ -204,7 +204,7 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ✅ `JAVA_HOME` + `lib/server` đứng đầu `LD_LIBRARY_PATH` |
 | Node | OPENSSL_CONF fatal nếu EACCES; xattrs/inotify `config` dir thiếu | cài nodejs → opencode | ⚠️ conf đã có; inotify mkdir là bản fix Bun của cortex, không cần cho node thường |
 | dpkg/apt (nếu cài) | fakeroot, mode 0 mkdir, seccomp set*id | cài cùng `glibc` gói glibc | ❌ chưa cần — app dùng `pkg` bridge bionic riêng |
-| Binary tĩnh / Go | syscall tự làm, path sai | kết quả tải thêm trong terminal | ❌ dài hạn (mục 4.3) |
+| Binary tĩnh / Go | syscall tự làm, path sai | kết quả tải thêm trong terminal | ✅ dùng `oc-run` (vá Go AArch64) hoặc `oc-run` + `liboc-pathmap.so` (glibc) |
 
 ## 5. Hướng kiểm chứng
 
@@ -216,14 +216,20 @@ Môi trường hiện tại không có JDK/SDK để build, vì vậy các bư�
   trên máy build, không phụ thuộc Android SDK. Hash hiện tại:
   `796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe`; khi thay bundle
   phải cập nhật cả `CA_BUNDLE_SHA256` trong `OpenCodeBootstrap.kt`.
-- 4.3 (preload/Go patch) bắt buộc phải có thiết bị thật + NDK; ngay cả AndroidHarness
-  cũng chạy QA trên thiết bị thật thay vì emulator.
+- 4.3 #11/#12 được xây và kiểm tra trong GitHub Actions (workflow `.github/workflows/native.yml`):
+  biên dịch chéo `liboc-pathmap.so` cho aarch64/x86_64, chạy test pathmap native (x86_64 và
+  aarch64 dưới qemu), build blob `oc-gosys`, build `oc-gopatch` tĩnh cho cả hai ABI, rồi chạy
+  test đầu-cuối: một chương trình Go AArch64 chưa vá không thấy prefix, sau khi vá thì mở được
+  path Termux, `getcwd` trả spelling Termux, `setuid` trả 0, `clone3` trả ENOSYS; nhánh glibc
+  được chạy qua loader thật với `--preload`. Không cần thiết bị thật để kiểm tra phần logic;
+  phần Android/SELinux vẫn nên thử trên máy thật trước khi phát hành.
 
 ## 6. Trạng thái triển khai
 
-Các mục 4.1 và 4.2 đã được triển khai trong app. 4.3 vẫn để mở đúng như khuyến nghị
-"chỉ khi có nhu cầu thật": nó cần một `.so` biên dịch cho glibc (không phải NDK/bionic)
-và/hoặc vá file Go, không thể xác minh nếu không có thiết bị thật.
+Các mục 4.1, 4.2 và 4.3 đã được triển khai. Hai helper native của 4.3 được build trong CI
+(workflow `native.yml`) và nhúng vào APK dưới `assets/native/<abi>/`; app trích xuất chúng
+khi cài đặt/bảo trì. Một APK build cục bộ không có asset native vẫn chạy bình thường: `oc-run`
+rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path cũ.
 
 | Mục | Trạng thái | Vị trí |
 | --- | --- | --- |
@@ -237,8 +243,8 @@ và/hoặc vá file Go, không thể xác minh nếu không có thiết bị th�
 | 4.2 #8 proof-binary mở rộng | ✅ | `OpenCodePackages.BINARY_PROOF` (thêm JDK, d8, r8, apksigner) |
 | 4.2 #9 launcher repair pattern | ✅ | `OpenCodePackages.JavaLaunchers` (d8/r8/apksigner) |
 | 4.2 #10 bảng syscall bị chặn | ✅ tài liệu | mục 7 dưới đây |
-| 4.3 #11 preload path translation | ⏸ chưa làm | cần `.so` glibc + thiết bị thật; xem điều kiện ở mục 4.3 |
-| 4.3 #12 Go static patch | ⏸ chưa làm | chỉ khi người dùng thường xuyên tải Go binary |
+| 4.3 #11 preload path translation | ✅ | `native/pathmap`, `OpenCodeBootstrap.installNativeTools`, `oc-gopatch run` |
+| 4.3 #12 Go static patch | ✅ (AArch64) | `native/gosys`, `native/gopatch`, `oc-run` |
 
 Ghi chú cho #7: asset được kiểm tra SHA-256 trước khi ghi, ghi nguyên tử vào
 `etc/tls/cert.pem`, và **không** ghi đè một bundle hợp lệ đã có. Như vậy bundle mới hơn
@@ -263,3 +269,52 @@ chạy glibc ngoài Termux, binary tĩnh, hoặc thêm tier `apt`/`dpkg` thật:
 Với binary tĩnh/Go, bảng này phải được áp ngay tại call site `svc #0` (Cortex làm bằng
 `static_programs.c`/`gosys.c`); chỉ `LD_PRELOAD` không can thiệp được syscall do chương
 trình tự phát.
+
+## 8. Helper native của 4.3 (cách dùng và giới hạn)
+
+APK có thêm ba thứ, được trích xuất trong `OpenCodeBootstrap.installNativeTools()`:
+
+| File | Vai trò |
+| --- | --- |
+| `$PREFIX/lib/liboc-pathmap.so` | thư viện glibc `LD_PRELOAD`, map hai root Termux sang prefix của app |
+| `$PREFIX/libexec/oc-gopatch` | binary Go tĩnh: phân loại ELF, chạy glibc qua loader + preload, vá Go tĩnh rồi chạy |
+| `$PREFIX/bin/oc-run` | vỏ `#!/system/bin/sh` gọi `oc-gopatch run -- "$@"`, fallback chạy trực tiếp |
+
+Người dùng gọi binary tải thêm qua `oc-run`, ví dụ:
+
+```sh
+oc-run ./gh --version
+oc-run ./fzf
+oc-run ./script.sh        # shebang được chạy bằng interpreter trong prefix
+```
+
+`oc-gopatch classify FILE` in ra `glibc`, `bionic`, `go`, `static`, `script`, `foreign` hoặc
+`unknown`; `oc-gopatch patch SRC DST` ghi bản đã vá (dùng cho test/CI).
+
+Cơ chế:
+
+- **glibc**: chạy `$PREFIX/glibc/lib/ld-linux-*.so.* --preload liboc-pathmap.so
+  --library-path $PREFIX/lib:$PREFIX/glibc/lib PROGRAM`. Thư viện hook các entry
+  point open/stat/exec/getcwd/readlink/realpath/inotify/posix_spawn…, map
+  `/data/data/com.termux/files/usr` → `OC_PREFIX` và `/data/data/com.termux/files/home` →
+  `OC_USER_HOME`, đồng thời cài SIGSYS handler cho bảng ở mục 7. Hot path chỉ là `strncmp`,
+  không cấp phát.
+- **Go tĩnh (AArch64, Go ≥ 1.19)**: tìm đúng một chuỗi lệnh của
+  `internal/runtime/syscall.Syscall6`, chép blob `oc-gosys` vào khoảng trống zero giữa hai
+  `PT_LOAD` (hoặc cuối file nếu không đủ chỗ), nối `svc #0` → thunk → stub. Stub dịch các
+  syscall path (`openat`, `newfstatat`, `execveat`, `statx`, `renameat2`, …) bằng scratch
+  64 KB được nối vào `p_memsz` của segment dữ liệu, và áp cùng policy set*id/clone3/rseq.
+  Bản đã vá được cache ở `~/.opencode/patched/<tên>-<hash>`.
+- **Còn lại**: `exec` nguyên bản; script được chạy qua interpreter (kể cả `#!/usr/bin/env`).
+
+Giới hạn có chủ ý:
+
+- chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
+  Termux không được dịch);
+- không dịch path trong `sockaddr_un` của `connect`/`bind`, `/proc/self/exe`, hay path nằm
+  trong `argv`/biến môi trường; các chương trình cần những thứ đó vẫn phải được relocation
+  như gói cài qua `pkg`;
+- binary tĩnh không phải Go (Rust musl, C static…) không được dịch path;
+- patcher cần một khoảng zero đủ lớn giữa các segment hoặc cuối file; nếu không có, nó báo lỗi
+  và `oc-run` chạy binary chưa vá thay vì từ chối;
+- việc vá sửa file đích (bản cache), không sửa file người dùng tải về.

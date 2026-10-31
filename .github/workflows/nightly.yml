@@ -14,9 +14,11 @@ on:
     paths:
       - "app/**"
       - "cli-bridge/**"
+      - "native/**"
       - "settings.gradle.kts"
       - "build.gradle.kts"
       - ".github/workflows/nightly.yml"
+      - ".github/workflows/native.yml"
 
 permissions:
   contents: write
@@ -26,11 +28,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native:
+    uses: ./.github/workflows/native.yml
+
   build:
+    needs: native
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Download native helpers
+        uses: actions/download-artifact@v7
+        with:
+          name: native-assets
+          path: app/src/main/assets/native
 
       - name: Set up JDK 21
         uses: actions/setup-java@v6

@@ -1,0 +1,65 @@
+name: Native helpers
+
+# Builds and tests the two native helpers of the app:
+#   - liboc-pathmap.so (glibc preload, per ABI),
+#   - oc-gopatch and the oc-gosys blob (static Go, per ABI).
+# The debug and release workflows call this workflow and copy the artifact into
+# app/src/main/assets/native before Gradle packages the APK.
+
+on:
+  workflow_call:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.23"
+
+      - name: Install cross compiler and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+
+      - name: Test liboc-pathmap.so
+        run: |
+          chmod +x native/pathmap/*.sh native/gosys/*.sh native/test/*.sh
+          native/pathmap/run-test.sh x86_64
+          native/pathmap/run-test.sh aarch64
+
+      - name: Build the Go stub and the patcher
+        run: |
+          native/gosys/build.sh
+          mkdir -p dist/native/arm64-v8a dist/native/x86_64
+          native/pathmap/build.sh aarch64 dist/native/arm64-v8a/liboc-pathmap.so
+          native/pathmap/build.sh x86_64 dist/native/x86_64/liboc-pathmap.so
+          (
+            cd native/gopatch
+            go vet ./...
+            go test ./...
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false \
+              -ldflags="-s -w" -o "$GITHUB_WORKSPACE/dist/native/arm64-v8a/oc-gopatch" .
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false \
+              -ldflags="-s -w" -o "$GITHUB_WORKSPACE/dist/native/x86_64/oc-gopatch" .
+          )
+
+      - name: End-to-end tests
+        run: native/test/run.sh
+
+      - name: Upload native assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-assets
+          path: dist/native/**
+          if-no-files-found: error
+          retention-days: 30

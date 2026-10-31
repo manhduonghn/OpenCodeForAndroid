@@ -172,8 +172,20 @@ object OpenCodeBootstrap {
     /** Kotlin/Native executable behind `pkg`. */
     const val BRIDGE_PATH = "$PREFIX/libexec/oc-bridge"
 
+    /** glibc preload library that maps the Termux roots into this prefix. */
+    const val PATHMAP_PATH = "$PREFIX/lib/liboc-pathmap.so"
+
+    /** Static helper that patches and starts downloaded programs. */
+    const val GOPATCH_PATH = "$PREFIX/libexec/oc-gopatch"
+
+    /** Entry point for downloaded programs, `oc-run`. */
+    const val OCRUN_PATH = "$PREFIX/bin/oc-run"
+
     /** Records which app build extracted the current bridge. */
     const val BRIDGE_MARKER_PATH = "$OC_HOME/.cli-bridge"
+
+    /** Records which app build extracted the native helpers (`oc-gopatch`, `liboc-pathmap.so`). */
+    private const val NATIVE_TOOLS_MARKER_PATH = "$OC_HOME/.native-tools"
 
     /** Environment snippet that the shell startup files of the runtime source. */
     const val ENV_SCRIPT_PATH = "$PREFIX/etc/opencode-env.sh"
@@ -936,6 +948,10 @@ object OpenCodeBootstrap {
         append("# Sourced by etc/profile and etc/bash.bashrc of the runtime.\n")
         append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
         append("export PREFIX\n")
+        // The two roots of the sandbox, used by liboc-pathmap.so and oc-gopatch when a program
+        // that was downloaded later still contains the Termux paths.
+        append("OC_PREFIX=\"\${OC_PREFIX:-").append(PREFIX).append("}\"; export OC_PREFIX\n")
+        append("OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"; export OC_USER_HOME\n")
         append("case \":\${PATH:-}:\" in\n")
         append("  *\":\$PREFIX/bin:\"*) ;;\n")
         append("  *) PATH=\"\$PREFIX/bin\${PATH:+:\$PATH}\"; export PATH ;;\n")
@@ -2035,6 +2051,7 @@ object OpenCodeBootstrap {
          * reinstall.
          */
         private fun installEntrypoints() {
+            installNativeTools()
             val bridge = installBridge()
             // The terminal entry point is a direct symlink, so it only works for a binary whose
             // interpreter is the glibc loader. A build that failed the patch is still usable by the
@@ -2127,6 +2144,85 @@ object OpenCodeBootstrap {
                 return isExecutable(target)
             } finally {
                 temp?.let { deleteQuietly(it) }
+            }
+        }
+
+        /**
+         * Extract the native helpers of the current ABI: `liboc-pathmap.so`, which translates the
+         * Termux roots for glibc programs, and `oc-gopatch`, which does the same for static Go
+         * programs. Both are optional: an APK built without the native job keeps starting
+         * downloaded programs unmodified, and a helper of an older APK stays in place.
+         */
+        private fun installNativeTools(): Boolean {
+            installOcRun()
+            val abi = when (getOpenCodeArch()) {
+                "arm64" -> "arm64-v8a"
+                "x64" -> "x86_64"
+                else -> return false
+            }
+            val gopatch = File(GOPATCH_PATH)
+            val pathmap = File(PATHMAP_PATH)
+            val installed = isExecutable(gopatch) && pathmap.isFile
+            val stamp = "1 ${BuildConfig.VERSION_CODE} $abi ${apkStamp()}"
+            val state = if (installed) "ok" else "absent"
+            val marker = File(NATIVE_TOOLS_MARKER_PATH)
+            if (readTrimmed(marker) == "$stamp $state") return installed
+
+            val assets = context?.assets ?: return false
+            try {
+                extractAsset(assets, "native/$abi/oc-gopatch", gopatch, MODE_700)
+                extractAsset(assets, "native/$abi/liboc-pathmap.so", pathmap, MODE_600)
+                if (!isExecutable(gopatch)) throw IOException("Could not make $gopatch executable")
+            } catch (e: Exception) {
+                Log.i(LOG_TAG, "This APK has no native helpers for $abi; oc-run starts programs unpatched", e)
+            }
+            val nowInstalled = isExecutable(gopatch) && pathmap.isFile
+            writeTextFileQuietly(marker, "$stamp ${if (nowInstalled) "ok" else "absent"}\n")
+            return nowInstalled
+        }
+
+        /** Replace [target] with the asset [name], atomically and with the given mode. */
+        private fun extractAsset(assets: android.content.res.AssetManager, name: String, target: File, mode: Int) {
+            val parent = target.parentFile ?: throw IOException("No parent directory for $target")
+            if (!parent.isDirectory && !parent.mkdirs()) throw IOException("Could not create $parent")
+            val temp = File.createTempFile(".${target.name}", ".tmp", parent)
+            try {
+                assets.open(name).use { input ->
+                    temp.outputStream().use { output -> input.copyTo(output) }
+                }
+                Os.chmod(temp.absolutePath, mode)
+                if (!temp.renameTo(target)) {
+                    deleteQuietly(target)
+                    if (!temp.renameTo(target)) throw IOException("Could not replace $target")
+                }
+            } finally {
+                deleteQuietly(temp)
+            }
+        }
+
+        /**
+         * Install `oc-run`, the entry point for programs that were downloaded later. It uses the
+         * patcher when this APK shipped one and starts the command unchanged otherwise.
+         */
+        private fun installOcRun() {
+            val script = buildString {
+                append("#!/system/bin/sh\n")
+                append("# Managed by the OpenCode for Android app.\n")
+                append("# Start a downloaded program with the private prefix of this app.\n")
+                append("prefix=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
+                append("helper=\"\$prefix/libexec/oc-gopatch\"\n")
+                append("if [ -x \"\$helper\" ]; then\n")
+                append("  OC_PREFIX=\"\$prefix\" OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"")
+                append(" exec \"\$helper\" run -- \"\$@\"\n")
+                append("fi\n")
+                append("exec \"\$@\"\n")
+            }
+            val file = File(OCRUN_PATH)
+            writeTextFileQuietly(file, script)
+            try {
+                Os.chmod(file.absolutePath, MODE_700)
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not make $OCRUN_PATH executable", e)
             }
         }
 
