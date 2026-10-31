@@ -71,6 +71,34 @@ func resolveProgram(name string) (string, error) {
 	return lookPath(name)
 }
 
+// resolveInputPath maps a path spelled with a Termux root to the private prefix
+// when the mapped file exists. The kernel never sees the Termux roots in this
+// sandbox, and unlike a patched Go program or a glibc program under the preload,
+// the helper has no path translation of its own.
+func resolveInputPath(name string) string {
+	if mapped, ok := mapRoot(name, termuxPrefix, ocPrefix()); ok {
+		return mapped
+	}
+	if mapped, ok := mapRoot(name, termuxHome, ocUserHome()); ok {
+		return mapped
+	}
+	return name
+}
+
+func mapRoot(name, from, to string) (string, bool) {
+	if name == from {
+		return to, true
+	}
+	if !strings.HasPrefix(name, from+"/") {
+		return name, false
+	}
+	mapped := to + strings.TrimPrefix(name, from)
+	if !fileExists(mapped) {
+		return name, false
+	}
+	return mapped, true
+}
+
 // lookPath is exec.LookPath without the faccessat2 probe. Android's seccomp
 // allowlist does not contain faccessat2 and the filter traps it with SIGSYS;
 // the android port of Go skips the syscall for that reason, but this helper is
@@ -225,6 +253,7 @@ func runCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	path = resolveInputPath(path)
 	env := runEnv()
 
 	kind, detail, err := classifyFile(path)

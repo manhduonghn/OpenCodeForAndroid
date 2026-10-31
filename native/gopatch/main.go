@@ -34,7 +34,7 @@ func main() {
 			usage()
 			os.Exit(2)
 		}
-		kind, detail, err := classifyFile(os.Args[2])
+		kind, detail, err := classifyFile(resolveInputPath(os.Args[2]))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "oc-gopatch: %v\n", err)
 			os.Exit(1)
@@ -49,7 +49,7 @@ func main() {
 			usage()
 			os.Exit(2)
 		}
-		if err := patchFile(os.Args[2], os.Args[3]); err != nil {
+		if err := patchFile(resolveInputPath(os.Args[2]), resolveInputPath(os.Args[3])); err != nil {
 			fmt.Fprintf(os.Stderr, "oc-gopatch: %v\n", err)
 			os.Exit(1)
 		}

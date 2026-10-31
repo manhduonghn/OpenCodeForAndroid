@@ -93,4 +93,16 @@ chmod 0755 "$work/plain.sh" "$work/env.sh"
 "$work/oc-gopatch" run -- "$work/plain.sh" | grep -q 'script-ok'
 "$work/oc-gopatch" run -- "$work/env.sh" | grep -q 'env-script-ok'
 
+echo "native-test: Termux spellings for the helper inputs"
+mkdir -p "$app_prefix/bin"
+printf '#!/bin/sh\necho termux-input-ok\n' > "$app_prefix/bin/termux-tool"
+chmod 0755 "$app_prefix/bin/termux-tool"
+cp "$work/fixture" "$app_prefix/bin/termux-go"
+chmod 0755 "$app_prefix/bin/termux-go"
+"$work/oc-gopatch" classify "$termux_prefix/bin/termux-tool" | grep -q '^script'
+[ "$("$work/oc-gopatch" classify "$termux_prefix/bin/termux-go")" = "go" ]
+"$work/oc-gopatch" run -- "$termux_prefix/bin/termux-tool" | grep -q 'termux-input-ok'
+"$work/oc-gopatch" patch "$termux_prefix/bin/termux-go" "$work/from-termux" &&
+  [ "$("$work/oc-gopatch" classify "$work/from-termux")" = "static" ]
+
 echo "native-test: ok"

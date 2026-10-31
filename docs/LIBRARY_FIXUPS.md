@@ -222,7 +222,8 @@ Môi trường hiện tại không có JDK/SDK để build, vì vậy các bư�
   test đầu-cuối: một chương trình Go AArch64 chưa vá không thấy prefix, sau khi vá thì mở được
   path Termux, `getcwd` trả spelling Termux, `setuid` trả 0, `clone3` trả ENOSYS,
   `getgroups` trả 1 group rỗng, và `faccessat2`/`openat2`/`name_to_handle_at`/`chroot`
-  trả ENOSYS; helper chạy được script `#!/bin/sh` và `#!/usr/bin/env`; nhánh glibc
+  trả ENOSYS; helper chạy được script `#!/bin/sh` và `#!/usr/bin/env`, nhận path Termux cho
+  `run`/`classify`/`patch`; nhánh glibc
   được chạy qua loader thật với `--preload`. Không cần thiết bị thật để kiểm tra phần logic;
   phần Android/SELinux vẫn nên thử trên máy thật trước khi phát hành.
 
@@ -313,6 +314,9 @@ Cơ chế:
   build cho `linux` (không phải `android`) thử `faccessat2` mỗi lần `exec.LookPath`.
   Bản đã vá được cache ở `~/.opencode/patched/<tên>-<hash>`.
 - **Còn lại**: `exec` nguyên bản; script được chạy qua interpreter (kể cả `#!/usr/bin/env`).
+  Bản thân helper cũng nhận path Termux cho `run`, `classify` và `patch`: nếu file tương ứng
+  tồn tại trong prefix thì nó được map sang trước khi mở/exec, nhờ vậy
+  `oc-run /data/data/com.termux/files/usr/bin/tool` hoạt động dù helper chưa được vá.
 
 Đã kiểm tra trên máy thật (Android arm64) với đúng artifact của CI: file cài đặt trùng SHA-256
 với `native-assets`; `classify` nhận đúng `go`, vá xong bản vá chạy được `version`; bản vá mở
@@ -320,15 +324,17 @@ với `native-assets`; `classify` nhận đúng `go`, vá xong bản vá chạy 
 `glibc/bin/iconv` đọc file qua path Termux (preload); script có shebang
 `/data/data/com.termux/files/usr/bin/sh` chạy được. Lần thử này phát hiện `faccessat2` bị
 `SIGSYS` trên thiết bị (Go `linux` thử syscall đó trong `exec.LookPath`), nên stub và helper
-đã được sửa để trả `ENOSYS`/tránh syscall đó.
+đã được sửa để trả `ENOSYS`/tránh syscall đó. Lần thử tiếp theo phát hiện helper gốc chưa map
+path Termux cho chính input của nó (`oc-run /data/data/com.termux/files/usr/bin/...` báo
+không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mapping đó.
 
 Giới hạn có chủ ý:
 
 - chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
   Termux không được dịch);
 - không dịch path trong `sockaddr_un` của `connect`/`bind`, `/proc/self/exe`, hay path nằm
-  trong `argv`/biến môi trường; các chương trình cần những thứ đó vẫn phải được relocation
-  như gói cài qua `pkg`;
+  trong `argv`/biến môi trường của chương trình đích (path của chính chương trình thì có);
+  các chương trình cần những thứ đó vẫn phải được relocation như gói cài qua `pkg`;
 - binary tĩnh không phải Go (Rust musl, C static…) không được dịch path;
 - patcher cần một khoảng zero đủ lớn giữa các segment hoặc cuối file; nếu không có, nó báo lỗi
   và `oc-run` chạy binary chưa vá thay vì từ chối;
