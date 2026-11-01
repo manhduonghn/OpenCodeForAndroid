@@ -171,8 +171,7 @@ val checkNativeAssets = tasks.register("checkNativeAssets") {
     doLast {
         val incomplete = listOf("arm64-v8a", "x86_64").filter { abi ->
             val dir = nativeAssets.dir(abi).asFile
-            !java.io.File(dir, "liboc-pathmap.so").isFile ||
-                !java.io.File(dir, "oc-gopatch").isFile
+            !dir.resolve("liboc-pathmap.so").isFile || !dir.resolve("oc-gopatch").isFile
         }
         if (incomplete.isNotEmpty()) {
             logger.warn(
