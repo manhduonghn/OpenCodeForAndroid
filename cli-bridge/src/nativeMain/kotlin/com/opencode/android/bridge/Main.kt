@@ -58,7 +58,7 @@ Commands:
   search <text>          Search the Termux package repository
   list-installed         List the packages of this prefix
   repair [directory]     Rewrite broken shebangs and Termux links of the prefix
-                          (also of an Android SDK directory, eg. $ANDROID_HOME)
+                          (also of an Android SDK directory, eg. \$ANDROID_HOME)
   update, upgrade        Refresh the index (every install uses the live index)
   help                   Show this help
 
