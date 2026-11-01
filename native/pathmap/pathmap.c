@@ -55,6 +55,7 @@
 #include <sys/xattr.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <utime.h>
 
 extern char **environ;
 
@@ -700,6 +701,13 @@ EXPORT int futimesat(int dirfd, const char *path, const struct timeval times[2])
     return real_futimesat(dirfd, map_path(path, buffer, sizeof(buffer)), times);
 }
 
+EXPORT int utime(const char *path, const struct utimbuf *times) {
+    typedef int (*fn_t)(const char *, const struct utimbuf *);
+    RESOLVE(utime, fn_t)
+    char buffer[PATH_MAX];
+    return real_utime(map_path(path, buffer, sizeof(buffer)), times);
+}
+
 /* ------------------------------------------------------------------- xattrs */
 
 EXPORT ssize_t getxattr(const char *path, const char *name, void *value, size_t size) {
@@ -776,6 +784,13 @@ EXPORT int eaccess(const char *path, int mode) {
     return real_eaccess(map_path(path, buffer, sizeof(buffer)), mode);
 }
 
+EXPORT int euidaccess(const char *path, int mode) {
+    typedef int (*fn_t)(const char *, int);
+    RESOLVE(euidaccess, fn_t)
+    char buffer[PATH_MAX];
+    return real_euidaccess(map_path(path, buffer, sizeof(buffer)), mode);
+}
+
 EXPORT int faccessat(int dirfd, const char *path, int mode, int flags) {
     typedef int (*fn_t)(int, const char *, int, int);
     RESOLVE(faccessat, fn_t)
@@ -846,6 +861,14 @@ EXPORT int unlinkat(int dirfd, const char *path, int flags) {
     RESOLVE(unlinkat, fn_t)
     char buffer[PATH_MAX];
     return real_unlinkat(dirfd, map_path(path, buffer, sizeof(buffer)), flags);
+}
+
+/* remove() is unlink() for files and rmdir() for directories. */
+EXPORT int remove(const char *path) {
+    typedef int (*fn_t)(const char *);
+    RESOLVE(remove, fn_t)
+    char buffer[PATH_MAX];
+    return real_remove(map_path(path, buffer, sizeof(buffer)));
 }
 
 EXPORT int rename(const char *old_path, const char *new_path) {
@@ -1022,6 +1045,20 @@ EXPORT char *realpath(const char *path, char *resolved) {
     return result;
 }
 
+/* The glibc variant allocates with malloc; the result is unmapped in place. */
+EXPORT char *canonicalize_file_name(const char *path) {
+    typedef char *(*fn_t)(const char *);
+    RESOLVE_PTR(canonicalize_file_name, fn_t)
+    char buffer[PATH_MAX];
+    char *result = real_canonicalize_file_name(map_path(path, buffer, sizeof(buffer)));
+    if (result != NULL) {
+        size_t length = strlen(result);
+        unmap_buffer(result, &length);
+        result[length] = '\0';
+    }
+    return result;
+}
+
 EXPORT char *getcwd(char *buf, size_t size) {
     typedef char *(*fn_t)(char *, size_t);
     RESOLVE_PTR(getcwd, fn_t)
@@ -1130,11 +1167,33 @@ EXPORT int nftw(const char *path, __nftw_func_t func, int descriptors, int flags
     return real_nftw(map_path(path, buffer, sizeof(buffer)), func, descriptors, flags);
 }
 
+/* The 64-bit variants have their own symbols even where the types match. */
+EXPORT int ftw64(const char *path, __ftw64_func_t func, int descriptors) {
+    typedef int (*fn_t)(const char *, __ftw64_func_t, int);
+    RESOLVE(ftw64, fn_t)
+    char buffer[PATH_MAX];
+    return real_ftw64(map_path(path, buffer, sizeof(buffer)), func, descriptors);
+}
+
+EXPORT int nftw64(const char *path, __nftw64_func_t func, int descriptors, int flags) {
+    typedef int (*fn_t)(const char *, __nftw64_func_t, int, int);
+    RESOLVE(nftw64, fn_t)
+    char buffer[PATH_MAX];
+    return real_nftw64(map_path(path, buffer, sizeof(buffer)), func, descriptors, flags);
+}
+
 EXPORT void *dlopen(const char *file, int flags) {
     typedef void *(*fn_t)(const char *, int);
     RESOLVE_PTR(dlopen, fn_t)
     char buffer[PATH_MAX];
     return real_dlopen(map_path(file, buffer, sizeof(buffer)), flags);
+}
+
+EXPORT void *dlmopen(Lmid_t nsid, const char *file, int mode) {
+    typedef void *(*fn_t)(Lmid_t, const char *, int);
+    RESOLVE_PTR(dlmopen, fn_t)
+    char buffer[PATH_MAX];
+    return real_dlmopen(nsid, map_path(file, buffer, sizeof(buffer)), mode);
 }
 
 /* ---------------------------------------------------------------------- exec */

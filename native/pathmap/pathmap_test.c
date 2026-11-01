@@ -33,6 +33,7 @@
 #include <sys/wait.h>
 #include <sys/xattr.h>
 #include <unistd.h>
+#include <utime.h>
 
 #define TERMUX_PREFIX "/data/data/com.termux/files/usr"
 #define TERMUX_HOME "/data/data/com.termux/files/home"
@@ -80,6 +81,23 @@ static int walk_cb(const char *path, const struct stat *st, int flag, struct FTW
     (void)st;
     (void)flag;
     (void)info;
+    g_walked++;
+    return 0;
+}
+
+static int walk_cb64(const char *path, const struct stat64 *st, int flag, struct FTW *info) {
+    (void)path;
+    (void)st;
+    (void)flag;
+    (void)info;
+    g_walked++;
+    return 0;
+}
+
+static int ftw_cb64(const char *path, const struct stat64 *st, int flag) {
+    (void)path;
+    (void)st;
+    (void)flag;
     g_walked++;
     return 0;
 }
@@ -144,6 +162,7 @@ int main(void) {
     assert(stat(TERMUX_PREFIX "/hello", &st) == 0);
     assert(S_ISREG(st.st_mode));
     assert(access(TERMUX_PREFIX "/hello", R_OK) == 0);
+    assert(euidaccess(TERMUX_PREFIX "/hello", R_OK) == 0);
     char text[16];
     read_file(TERMUX_PREFIX "/hello", text, sizeof(text));
     assert(strcmp(text, "prefix") == 0);
@@ -174,6 +193,10 @@ int main(void) {
     assert(utimes(TERMUX_PREFIX "/hello", tv) == 0);
     assert(stat(TERMUX_PREFIX "/hello", &st) == 0);
     assert(st.st_mtime == 2000);
+    struct utimbuf ub = {3000, 4000};
+    assert(utime(TERMUX_PREFIX "/hello", &ub) == 0);
+    assert(stat(TERMUX_PREFIX "/hello", &st) == 0);
+    assert(st.st_atime == 3000 && st.st_mtime == 4000);
 
     /* Extended attributes: any answer other than ENOENT proves the path was
      * translated; the file system of CI may not support them at all. */
@@ -224,6 +247,14 @@ int main(void) {
     assert(nftw(TERMUX_PREFIX "/dir", walk_cb, 8, 0) == 0);
     assert(g_walked >= 1);
 
+    /* The 64-bit variants are separate symbols and need the same map. */
+    g_walked = 0;
+    assert(nftw64(TERMUX_PREFIX "/dir", walk_cb64, 8, 0) == 0);
+    assert(g_walked >= 1);
+    g_walked = 0;
+    assert(ftw64(TERMUX_PREFIX "/dir", ftw_cb64, 8) == 0);
+    assert(g_walked >= 1);
+
     /* mkfifo / mknod reach the real call with the translated path. */
     assert(mkfifo(TERMUX_PREFIX "/fifo", 0600) == 0);
     assert(stat(TERMUX_PREFIX "/fifo", &st) == 0 && S_ISFIFO(st.st_mode));
@@ -238,6 +269,26 @@ int main(void) {
     int (*plugin_fn)(void) = (int (*)(void))dlsym(plugin, "oc_pathmap_test_plugin");
     assert(plugin_fn != NULL && plugin_fn() == 42);
     assert(dlclose(plugin) == 0);
+
+    /* dlmopen is a separate symbol: it takes a namespace before the path. */
+    void *namespaced =
+        dlmopen(LM_ID_NEWLM, TERMUX_PREFIX "/lib/libpathmap-test-plugin.so", RTLD_NOW);
+    assert(namespaced != NULL);
+    int (*namespaced_fn)(void) = (int (*)(void))dlsym(namespaced, "oc_pathmap_test_plugin");
+    assert(namespaced_fn != NULL && namespaced_fn() == 42);
+    assert(dlclose(namespaced) == 0);
+
+    /* canonicalize_file_name returns a malloc'd path with the Termux spelling. */
+    char *canonical = canonicalize_file_name(TERMUX_PREFIX "/hello");
+    assert(canonical != NULL);
+    assert(strcmp(canonical, TERMUX_PREFIX "/hello") == 0);
+    free(canonical);
+
+    /* remove() has to pick unlink or rmdir on the translated path. */
+    join(physical, sizeof(physical), g_prefix, "/remove-me");
+    write_file(physical, "x");
+    assert(remove(TERMUX_PREFIX "/remove-me") == 0);
+    assert(stat(physical, &st) == -1 && errno == ENOENT);
 
     assert(rename(TERMUX_PREFIX "/hello", TERMUX_PREFIX "/hello2") == 0);
     join(physical, sizeof(physical), g_prefix, "/hello2");
