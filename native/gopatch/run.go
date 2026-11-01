@@ -200,6 +200,11 @@ func startScript(path string, args []string, env []string, detail string) error 
 	if len(args) > 1 {
 		argv = append(argv, args[1:]...)
 	}
+	// A glibc interpreter needs the loader and the preload just like a direct
+	// glibc program; only bionic/static interpreters can be exec'd as they are.
+	if kind, _, err := classifyFile(interp); err == nil && kind == "glibc" {
+		return startGlibc(interp, argv, env)
+	}
 	return syscall.Exec(interp, argv, env)
 }
 
@@ -263,6 +268,22 @@ func runCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if debugEnabled() {
+		strategy := "pass"
+		switch kind {
+		case "script":
+			strategy = "script"
+		case "glibc":
+			strategy = "glibc"
+		case "go":
+			strategy = "go"
+		}
+		extra := ""
+		if detail != "" {
+			extra = " (" + detail + ")"
+		}
+		fmt.Fprintf(os.Stderr, "oc-gopatch: %s strategy=%s%s\n", path, strategy, extra)
+	}
 	switch kind {
 	case "script":
 		return startScript(path, args, env, detail)
@@ -280,4 +301,11 @@ func runCommand(args []string) error {
 	default:
 		return syscall.Exec(path, args, env)
 	}
+}
+
+// debugEnabled reports whether OC_DEBUG asked for the strategy line. It is off by
+// default, so the normal run writes nothing extra to stderr.
+func debugEnabled() bool {
+	value := os.Getenv("OC_DEBUG")
+	return value != "" && value != "0"
 }

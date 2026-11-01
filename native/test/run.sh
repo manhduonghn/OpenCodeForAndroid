@@ -86,12 +86,25 @@ OC_PREFIX="$root" OC_USER_HOME="$root/home" \
   "$work/oc-gopatch" run -- "$work/glibc-open" "$termux_prefix/hello" |
   grep -q 'hello from the preload'
 
+echo "native-test: OC_DEBUG reports the chosen strategy"
+debug_glibc=$(OC_DEBUG=1 OC_PREFIX="$root" OC_USER_HOME="$root/home" \
+  "$work/oc-gopatch" run -- "$work/glibc-open" "$termux_prefix/hello" 2>&1)
+case "$debug_glibc" in
+  *strategy=glibc*) ;;
+  *) echo "native-test: no glibc strategy in: $debug_glibc" >&2; exit 1 ;;
+esac
+
 echo "native-test: scripts through the helper"
 printf '#!/bin/sh\necho script-ok\n' > "$work/plain.sh"
 printf '#!/usr/bin/env sh\necho env-script-ok\n' > "$work/env.sh"
 chmod 0755 "$work/plain.sh" "$work/env.sh"
 "$work/oc-gopatch" run -- "$work/plain.sh" | grep -q 'script-ok'
 "$work/oc-gopatch" run -- "$work/env.sh" | grep -q 'env-script-ok'
+debug_script=$(OC_DEBUG=1 "$work/oc-gopatch" run -- "$work/plain.sh" 2>&1)
+case "$debug_script" in
+  *strategy=script*) ;;
+  *) echo "native-test: no script strategy in: $debug_script" >&2; exit 1 ;;
+esac
 
 echo "native-test: Termux spellings for the helper inputs"
 mkdir -p "$app_prefix/bin"

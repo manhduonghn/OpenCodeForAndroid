@@ -300,11 +300,29 @@ oc-run ./script.sh        # shebang được chạy bằng interpreter trong pre
 Cơ chế:
 
 - **glibc**: chạy `$PREFIX/glibc/lib/ld-linux-*.so.* --preload liboc-pathmap.so
-  --library-path $PREFIX/lib:$PREFIX/glibc/lib PROGRAM`. Thư viện hook các entry
-  point open/stat/exec/getcwd/readlink/realpath/inotify/posix_spawn…, map
-  `/data/data/com.termux/files/usr` → `OC_PREFIX` và `/data/data/com.termux/files/home` →
-  `OC_USER_HOME`, đồng thời cài SIGSYS handler cho bảng ở mục 7. Hot path chỉ là `strncmp`,
-  không cấp phát.
+  --library-path $PREFIX/lib:$PREFIX/glibc/lib PROGRAM`. Thư viện hook open/openat/creat,
+  stdio, stat/statx/statfs/statvfs, access, mkdir/rmdir/unlink/rename/link/symlink,
+  mknod/mkfifo, chmod/chown/truncate, utimensat/utimes/lutimes/futimesat, xattr,
+  readlink/realpath/getcwd, inotify, scandir/scandirat, glob, ftw/nftw, dlopen,
+  execve/execv/execvp/execvpe/execveat/fexecve, execl/execlp/execle,
+  posix_spawn/posix_spawnp và `posix_spawn_file_actions_addopen/addchdir_np`.
+  Nó map `/data/data/com.termux/files/usr` → `OC_PREFIX` và
+  `/data/data/com.termux/files/home` → `OC_USER_HOME`, đồng thời cài SIGSYS handler cho
+  bảng ở mục 7. Hot path chỉ là `strncmp`, không cấp phát.
+  - Khi exec/spawn một **ELF glibc** (hoặc script có interpreter glibc), thư viện chèn
+    `LD_PRELOAD`, `OC_PREFIX`, `OC_USER_HOME` vào môi trường con nếu thiếu, kể cả khi
+    chương trình gọi với `env -i`. Target bionic/tĩnh không bị chèn, vì nạp `.so` glibc vào
+    bionic sẽ abort.
+  - `OC_DEBUG=1` làm handler SIGSYS ghi `oc-pathmap: SIGSYS <nr> emulated|-> ENOSYS` bằng
+    `write(2)` (không `printf`/`malloc` trong signal), và `oc-gopatch run` in
+    `strategy=script|glibc|go|pass` ra stderr.
+  - `openat2`/`faccessat2` vẫn có hook nhưng trên Android syscall bị seccomp trap, nên handler
+    trả `ENOSYS` và libc tự fallback; "có hook" không có nghĩa là syscall chạy được.
+  - Callback của `nftw`/`ftw` nhận path vật lý của prefix (không unmap), vì thư viện không
+    thể thay con trỏ hàm của caller; `glob` thì unmap được vì kết quả nằm trong `gl_pathv`.
+  - Script `#!/usr/bin/env ...` do một chương trình glibc exec sẽ đi qua `env` bionic, nên
+    preload không được truyền tiếp; chạy script qua `oc-run` (như bình thường) thì không gặp
+    giới hạn này.
 - **Go tĩnh (AArch64, Go ≥ 1.19)**: tìm đúng một chuỗi lệnh của
   `internal/runtime/syscall.Syscall6`, chép blob `oc-gosys` vào khoảng trống zero giữa hai
   `PT_LOAD` (hoặc cuối file nếu không đủ chỗ), nối `svc #0` → thunk → stub. Stub dịch các
@@ -332,6 +350,14 @@ path Termux cho chính input của nó (`oc-run /data/data/com.termux/files/usr/
 không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mapping đó. Một binary Go thật
 (`yq` v4.54.1, build bằng Go 1.27.1) tải từ mạng cũng được vá và đọc/ghi `-i` qua path Termux;
 cache được tạo lại theo blob mới thay vì dùng bản vá của APK cũ.
+
+Bộ test mới của `liboc-pathmap.so` (chạy native trên máy arm64 với glibc của prefix, không
+qua qemu) đã qua hết: `statx`, `utimensat`/`utimes`, `statfs`/`statvfs`, `getxattr`/`setxattr`,
+`mkfifo`/`mknod`, `scandir`, `glob` (kết quả được unmap về spelling Termux), `nftw`, `dlopen`
+một plugin nằm trong prefix, và ca quan trọng nhất — `execve` chương trình test với môi trường
+sạch (`chỉ có OC_TEST_CHILD=1`): con vẫn thấy `oc_pathmap_active`, `OC_PREFIX`,
+`OC_USER_HOME` và `stat("/data/data/com.termux/files/usr/child-check")` thành công.
+`OC_DEBUG=1` cũng ghi đúng `oc-pathmap: SIGSYS 437 -> ENOSYS` khi gọi `openat2`.
 
 Đã cài thử bằng `pkg` trên máy thật: `tree jq fzf`, `python python-pip`,
 `nodejs npm ripgrep fd bat sqlite openssh`, `openjdk-17 d8 apksigner`,
