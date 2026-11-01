@@ -56,7 +56,9 @@ struct oc_gosys_hdr {
  */
 __attribute__((section(".hdr"), used))
 const volatile struct oc_gosys_hdr g_hdr = {
-    .magic = "OCGOSYS1",
+    // The header is not NUL terminated: a string literal of 8 bytes plus its terminator no
+    // longer fits in magic[8], and newer GCC rejects that with -Werror.
+    .magic = { 'O', 'C', 'G', 'O', 'S', 'Y', 'S', '1' },
     .version = OC_GOSYS_VERSION,
     .reserved = 0,
     .scratch_rel = 0,
