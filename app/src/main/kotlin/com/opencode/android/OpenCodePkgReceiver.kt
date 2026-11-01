@@ -38,6 +38,10 @@ class OpenCodePkgReceiver : BroadcastReceiver() {
                 OpenCodePkgService.EXTRA_QUERY,
                 intent.getStringExtra(OpenCodePkgService.EXTRA_QUERY),
             )
+            .putExtra(
+                OpenCodePkgService.EXTRA_DIRECTORY,
+                intent.getStringExtra(OpenCodePkgService.EXTRA_DIRECTORY),
+            )
 
         try {
             // The service calls startForeground() in onCreate(), which is what the contract of

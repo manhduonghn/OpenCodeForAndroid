@@ -413,17 +413,33 @@ class OpenCodeService : Service() {
             // know about it: the Termux RUNPATH points at the com.termux prefix, and the package
             // relies on update-alternatives for bin/java.
             val javaHome = OpenCodeBootstrap.javaHome()
+            val sdkHome = OpenCodeBootstrap.androidSdkHome()
+            val pathEntries = ArrayList<String>()
+            pathEntries.add("${OpenCodeBootstrap.PREFIX}/bin")
+            if (javaHome != null) pathEntries.add("$javaHome/bin")
+            if (sdkHome != null) {
+                for (relative in listOf(
+                    "cmdline-tools/latest/bin", "cmdline-tools/bin", "tools/bin", "platform-tools",
+                )) {
+                    File(sdkHome, relative).takeIf { it.isDirectory }
+                        ?.let { pathEntries.add(it.absolutePath) }
+                }
+            }
+            pathEntries.add("/system/bin")
             put("HOME", OpenCodeBootstrap.HOME)
             put("PREFIX", OpenCodeBootstrap.PREFIX)
-            put(
-                "PATH",
-                if (javaHome == null) {
-                    "${OpenCodeBootstrap.PREFIX}/bin:/system/bin"
-                } else {
-                    "${OpenCodeBootstrap.PREFIX}/bin:$javaHome/bin:/system/bin"
-                },
-            )
+            put("PATH", pathEntries.joinToString(":"))
             if (javaHome != null) put("JAVA_HOME", javaHome)
+            // The Termux JDK otherwise uses the home of the Termux app, and Android has no /tmp.
+            // Every JVM the server or its terminal starts (Gradle, the Kotlin daemon, test
+            // workers) inherits this, so no per-project flag is needed.
+            put("JAVA_TOOL_OPTIONS", OpenCodeBootstrap.javaToolOptions())
+            put("GRADLE_USER_HOME", OpenCodeBootstrap.GRADLE_USER_HOME)
+            put("ANDROID_USER_HOME", OpenCodeBootstrap.ANDROID_USER_HOME)
+            if (sdkHome != null) {
+                put("ANDROID_HOME", sdkHome.absolutePath)
+                put("ANDROID_SDK_ROOT", sdkHome.absolutePath)
+            }
             put("TMPDIR", "${OpenCodeBootstrap.PREFIX}/tmp")
             put("TERM", "xterm-256color")
             put("LANG", "C.UTF-8")
@@ -564,6 +580,15 @@ class OpenCodeService : Service() {
             expected.add("OPENCODE_PTY_BIN=$helper")
             expected.add("OPENCODE_PTY_SOCKET_DIR=${OpenCodeBootstrap.PTY_SOCKET_DIR}")
         }
+        // A server spawned by an older build has no Java/Android environment. Requiring it
+        // restarts that server once, so a Gradle build started from its terminal gets the
+        // corrected user.home, the Gradle/Android homes and the native aapt2 override.
+        expected.add("JAVA_TOOL_OPTIONS=${OpenCodeBootstrap.javaToolOptions()}")
+        expected.add("GRADLE_USER_HOME=${OpenCodeBootstrap.GRADLE_USER_HOME}")
+        expected.add("ANDROID_USER_HOME=${OpenCodeBootstrap.ANDROID_USER_HOME}")
+        OpenCodeBootstrap.androidSdkHome()?.let {
+            expected.add("ANDROID_HOME=${it.absolutePath}")
+        }
         File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
             .takeIf { it.isFile }
             ?.let { expected.add("OPENSSL_CONF=${it.absolutePath}") }
@@ -601,6 +626,10 @@ class OpenCodeService : Service() {
     private fun serverEnvironmentStamp(): String = buildString {
         append("pty=").append(OpenCodeBootstrap.terminalRuntimePath() ?: "")
         append(" socket=").append(OpenCodeBootstrap.PTY_SOCKET_DIR)
+        append(" java=").append(OpenCodeBootstrap.javaToolOptions())
+        append(" gradle=").append(OpenCodeBootstrap.GRADLE_USER_HOME)
+        append(" android=").append(OpenCodeBootstrap.ANDROID_USER_HOME)
+        append(" sdk=").append(OpenCodeBootstrap.androidSdkHome()?.absolutePath.orEmpty())
         append(" openssl=").append(
             File(OpenCodeBootstrap.OPENSSL_CONF_PATH).takeIf { it.isFile }?.absolutePath.orEmpty(),
         )

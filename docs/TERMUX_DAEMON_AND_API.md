@@ -397,7 +397,7 @@ và không có cơ chế remove. Thay vào đó là các nhóm chọn lọc:
 | `pkg bundle dev` | `clang make cmake ninja pkg-config autoconf automake libtool patchelf git gh ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop procps lsof ncurses-utils bash-completion sqlite` |
 | `pkg bundle python` | `python python-pip python-cryptography python-numpy python-pillow` |
 | `pkg bundle node` | `nodejs npm yarn pnpm` |
-| `pkg bundle java` | `openjdk-17 ca-certificates-java` |
+| `pkg bundle java` | `openjdk-17 aapt2 ca-certificates-java` |
 | `pkg bundle net` | `curl wget openssh rsync nmap dnsutils whois net-tools socat` |
 | `pkg bundle all` | hợp của tất cả nhóm trên (lớn, nhưng vẫn không phải cả repo) |
 
@@ -423,6 +423,10 @@ này không chạy `postinst`:
   tự thêm gói này. Nó đặt `lib/jvm/java-17-openjdk/lib/security/jssecacerts` (Java ưu
   tiên file này hơn `cacerts`), nhờ vậy HTTPS từ Java/Gradle hoạt động; JDK cũng có sẵn
   `lib/security/cacerts`.
+- `aapt2` được cài kèm `openjdk-*`: AGP tải bản `aapt2` x86_64 từ Maven nên không chạy
+  trên ARM64, còn gói Termux là bản native. App ghi block quản lý
+  `android.aapt2FromMavenOverride=$PREFIX/bin/aapt2` vào `$HOME/.gradle/gradle.properties`
+  (xem `OpenCodeBootstrap.ensureGradleProperties`).
 - `openjdk-17` kéo theo `alsa-plugins` → `pulseaudio` (vài MB) do dependency khai báo;
   không ảnh hưởng JVM nhưng làm lần cài lâu hơn.
 
@@ -559,7 +563,9 @@ chưa có) thì kill rồi spawn server mới, thay vì chờ reboot.
     `lib/jvm/java-17-openjdk/bin/java`, không có `bin/java`); env có `JAVA_HOME`,
     `LD_LIBRARY_PATH` (`lib` + `lib/server`) và `PATH` cho JDK, cả trong terminal lẫn env
     của server. `openjdk-17` là tên gói thật (`openjdk` không tồn tại trong repo).
-    `pkg install openjdk` tự thêm `ca-certificates-java` để có `jssecacerts`.
+    `pkg install openjdk` tự thêm `ca-certificates-java` để có `jssecacerts`, và `aapt2`
+    (bản native) để AGP không tải `aapt2` x86_64 từ Maven; app ghi
+    `android.aapt2FromMavenOverride` vào `$HOME/.gradle/gradle.properties`.
 18. **Chưa kiểm chứng trên máy:** `java -version` trong prefix mới chỉ được suy luận từ
     cấu trúc gói + env, chưa chạy thật vì môi trường build hiện tại không có JDK/Android
     SDK và máy chưa cài APK mới. Sau khi cài APK: mở app một lần, chạy

@@ -190,6 +190,23 @@ object OpenCodeBootstrap {
     /** Environment snippet that the shell startup files of the runtime source. */
     const val ENV_SCRIPT_PATH = "$PREFIX/etc/opencode-env.sh"
 
+    /**
+     * Gradle user home. Gradle normally derives it from the JVM `user.home`, which the Termux JDK
+     * resolves to the home of the Termux app. Exporting it explicitly keeps the build cache,
+     * `gradle.properties` and the wrapper distribution inside this app's sandbox.
+     */
+    const val GRADLE_USER_HOME = "$HOME/.gradle"
+
+    /** Managed file below [GRADLE_USER_HOME] that points AGP at the native `aapt2`. */
+    private const val GRADLE_PROPERTIES_PATH = "$GRADLE_USER_HOME/gradle.properties"
+
+    /** Android user home used by the SDK command-line tools (`sdkmanager`, `avdmanager`). */
+    const val ANDROID_USER_HOME = "$HOME/.android"
+
+    /** Markers of the block that the app manages in [GRADLE_PROPERTIES_PATH]. */
+    private const val GRADLE_BLOCK_BEGIN = "# >>> OpenCode for Android Android SDK >>>"
+    private const val GRADLE_BLOCK_END = "# <<< OpenCode for Android Android SDK <<<"
+
     /** HTTP Basic user name the `opencode serve` of the 2.x line expects. */
     const val SERVER_USER = "opencode"
 
@@ -835,8 +852,67 @@ object OpenCodeBootstrap {
         ensureCaBundle(context)
         writeTextFileQuietly(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
         writeGitConfig()
+        ensureGradleProperties()
         ensureLoginProfile()
         hookBashrc()
+    }
+
+    /**
+     * Point the Android Gradle Plugin at the native `aapt2` of this prefix.
+     *
+     * AGP downloads its own `aapt2` from Maven, and that artifact is an x86_64 glibc executable
+     * even on an ARM64 device. The Termux package installs a real AArch64 build as
+     * `$PREFIX/bin/aapt2`; the project property below is the supported way to select it without
+     * patching every project. The property lives in the Gradle user home instead of a project so
+     * it applies to any Android project the user builds in this sandbox.
+     *
+     * A value that the user already wrote is left alone, and the block is removed again when
+     * `aapt2` is not installed.
+     */
+    private fun ensureGradleProperties() {
+        val file = File(GRADLE_PROPERTIES_PATH)
+        val current = readTextFileQuietly(file)
+        val hasBlock = current.contains(GRADLE_BLOCK_BEGIN)
+        val aapt2 = File(PREFIX, "bin/aapt2").takeIf { it.isFile && it.canExecute() }
+        // Nothing to add and no managed block to remove: leave a user file byte for byte alone.
+        if (!hasBlock && aapt2 == null) return
+
+        val base = stripManagedBlock(current).trimEnd()
+        val hasUserValue = base.lineSequence().any { line ->
+            val trimmed = line.trim()
+            !trimmed.startsWith("#") &&
+                trimmed.substringBefore('=').trim() == "android.aapt2FromMavenOverride"
+        }
+        val block = if (aapt2 != null && !hasUserValue) {
+            buildString {
+                append(GRADLE_BLOCK_BEGIN).append('\n')
+                append("# The Maven artifact is x86_64 and cannot run on this device.\n")
+                append("android.aapt2FromMavenOverride=").append(aapt2.absolutePath).append('\n')
+                append(GRADLE_BLOCK_END).append('\n')
+            }
+        } else {
+            null
+        }
+
+        val updated = buildString {
+            append(base)
+            if (block != null) {
+                if (isNotEmpty()) append("\n\n")
+                append(block)
+            } else if (isNotEmpty()) {
+                append('\n')
+            }
+        }
+        if (updated != current) writeTextFileQuietly(file, updated)
+    }
+
+    /** Remove the block between the Gradle markers, leaving the rest of the file untouched. */
+    private fun stripManagedBlock(text: String): String {
+        val start = text.indexOf(GRADLE_BLOCK_BEGIN)
+        if (start < 0) return text
+        val end = text.indexOf(GRADLE_BLOCK_END, start)
+        if (end < 0) return text.substring(0, start)
+        return text.substring(0, start) + text.substring(end + GRADLE_BLOCK_END.length)
     }
 
     /**
@@ -944,7 +1020,7 @@ object OpenCodeBootstrap {
      * re-rooted here. The file is sourced by the login profile and by etc/bash.bashrc.
      */
     private fun buildPackageEnvironment(): String = buildString {
-        append("# Managed by the OpenCode for Android app (package environment v3).\n")
+        append("# Managed by the OpenCode for Android app (package environment v4).\n")
         append("# Sourced by etc/profile and etc/bash.bashrc of the runtime.\n")
         append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
         append("export PREFIX\n")
@@ -958,6 +1034,42 @@ object OpenCodeBootstrap {
         append("esac\n")
         append("TMPDIR=\"\${TMPDIR:-\$PREFIX/tmp}\"; export TMPDIR\n")
         append("[ -d \"\$TMPDIR\" ] || mkdir -p \"\$TMPDIR\" 2>/dev/null\n")
+        // The Termux JDK resolves user.home to the home of the Termux app, which belongs to
+        // another package and does not exist here. Gradle then fails to create its metrics
+        // directory and Robolectric cannot create its download lock. JAVA_TOOL_OPTIONS is read
+        // by every JVM (the Gradle daemon, the Kotlin compiler daemon and the forked test
+        // workers), so the two paths are fixed in one place. Robolectric's Conscrypt JNI is
+        // x86_64-only; disabling that provider keeps the rest of the test suite usable on
+        // ARM64. Existing options are kept and only the missing -D flags are prepended.
+        append("if [ -z \"\${JAVA_TOOL_OPTIONS:-}\" ]; then\n")
+        append("  JAVA_TOOL_OPTIONS=\"-Duser.home=\$HOME -Djava.io.tmpdir=\$TMPDIR -Drobolectric.conscryptMode=OFF\"; export JAVA_TOOL_OPTIONS\n")
+        append("else\n")
+        append("  case \" \$JAVA_TOOL_OPTIONS \" in *\" -Duser.home=\"*) ;; *) JAVA_TOOL_OPTIONS=\"-Duser.home=\$HOME \$JAVA_TOOL_OPTIONS\" ;; esac\n")
+        append("  case \" \$JAVA_TOOL_OPTIONS \" in *\" -Djava.io.tmpdir=\"*) ;; *) JAVA_TOOL_OPTIONS=\"-Djava.io.tmpdir=\$TMPDIR \$JAVA_TOOL_OPTIONS\" ;; esac\n")
+        append("  case \" \$JAVA_TOOL_OPTIONS \" in *\" -Drobolectric.conscryptMode=\"*) ;; *) JAVA_TOOL_OPTIONS=\"\$JAVA_TOOL_OPTIONS -Drobolectric.conscryptMode=OFF\" ;; esac\n")
+        append("  export JAVA_TOOL_OPTIONS\n")
+        append("fi\n")
+        // Gradle normally derives its user home from the JVM user.home; export it explicitly so
+        // the wrapper distribution, the build cache and the managed gradle.properties stay in
+        // this app's sandbox. sdkmanager/avdmanager use ANDROID_USER_HOME for the same reason.
+        append("GRADLE_USER_HOME=\"\${GRADLE_USER_HOME:-\$HOME/.gradle}\"; export GRADLE_USER_HOME\n")
+        append("ANDROID_USER_HOME=\"\${ANDROID_USER_HOME:-\$HOME/.android}\"; export ANDROID_USER_HOME\n")
+        // The SDK command line tools are normally unpacked below $HOME. Export the first usable
+        // SDK so Gradle and the tools agree on it, and put the tools on PATH. The app repairs
+        // their #!/usr/bin/env shebangs in its maintenance pass (see pkg repair).
+        append("for _oc_sdk in \"\${ANDROID_HOME:-}\" \"\${ANDROID_SDK_ROOT:-}\" \"\$HOME/Android/Sdk\" \"\$HOME/android-sdk\" \"\$HOME/Android/sdk\" \"\$HOME/sdk\" \"\$PREFIX/opt/android-sdk\" \"\$PREFIX/share/android-sdk\"; do\n")
+        append("  [ -n \"\$_oc_sdk\" ] || continue\n")
+        append("  if [ -d \"\$_oc_sdk/cmdline-tools\" ] || [ -d \"\$_oc_sdk/platform-tools\" ] || [ -d \"\$_oc_sdk/build-tools\" ]; then\n")
+        append("    ANDROID_HOME=\"\$_oc_sdk\"; export ANDROID_HOME\n")
+        append("    ANDROID_SDK_ROOT=\"\$_oc_sdk\"; export ANDROID_SDK_ROOT\n")
+        append("    for _oc_sdkbin in \"\$_oc_sdk/cmdline-tools/latest/bin\" \"\$_oc_sdk/cmdline-tools/bin\" \"\$_oc_sdk/tools/bin\" \"\$_oc_sdk/platform-tools\"; do\n")
+        append("      [ -d \"\$_oc_sdkbin\" ] || continue\n")
+        append("      case \":\${PATH:-}:\" in *\":\$_oc_sdkbin:\"*) ;; *) PATH=\"\$PATH:\$_oc_sdkbin\" ;; esac\n")
+        append("    done\n")
+        append("    break\n")
+        append("  fi\n")
+        append("done\n")
+        append("unset _oc_sdk _oc_sdkbin\n")
         // Android has no /usr/share/locale; glibc only ships C.UTF-8 in this prefix, and an
         // unavailable locale makes node, git and the editors print a warning on every start.
         append("if [ -z \"\${LANG:-}\" ]; then LANG=C.UTF-8; export LANG; fi\n")
@@ -1128,6 +1240,64 @@ object OpenCodeBootstrap {
 
     /** Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed. */
     fun javaHome(): String? = jdkHome()?.absolutePath
+
+    /**
+     * Options that every JVM in this sandbox needs.
+     *
+     * The Termux JDK derives `user.home` from the compile time Termux home, so Gradle writes its
+     * metrics below `/data/data/com.termux`, which belongs to the other app, and Robolectric
+     * cannot create its download lock. `java.io.tmpdir` is pointed at the prefix because Android
+     * has no `/tmp`. Robolectric's Conscrypt provider is only published for x86_64, so its JNI
+     * lookup fails on an ARM64 device; disabling that provider is the documented workaround.
+     *
+     * Options that are already present (for example from the user's shell) are kept unchanged.
+     */
+    fun javaToolOptions(): String {
+        val configured = try {
+            System.getenv("JAVA_TOOL_OPTIONS").orEmpty().trim()
+        } catch (e: Exception) {
+            ""
+        }
+        val defaults = listOf(
+            "-Duser.home=$HOME",
+            "-Djava.io.tmpdir=$PREFIX/tmp",
+            "-Drobolectric.conscryptMode=OFF",
+        )
+        val missing = defaults.filterNot { option ->
+            configured.contains(option.substringBefore('=') + "=")
+        }
+        return (missing + listOfNotNull(configured.takeIf { it.isNotEmpty() })).joinToString(" ")
+    }
+
+    /**
+     * Android SDK directories below the sandbox that this app knows about, most specific first.
+     * The environment script checks the same locations, so a shell and the app agree on the SDK
+     * that `sdkmanager`, Gradle and `pkg repair` use.
+     */
+    fun androidSdkRoots(): List<File> {
+        val candidates = LinkedHashSet<File>()
+        for (name in listOf("ANDROID_HOME", "ANDROID_SDK_ROOT")) {
+            try {
+                System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }?.let { candidates.add(File(it)) }
+            } catch (e: Exception) {
+                // A restricted environment is not a reason to skip the fixed locations below.
+            }
+        }
+        for (relative in listOf("Android/Sdk", "android-sdk", "Android/sdk", "sdk")) {
+            candidates.add(File(HOME, relative))
+        }
+        candidates.add(File(PREFIX, "opt/android-sdk"))
+        candidates.add(File(PREFIX, "share/android-sdk"))
+        return candidates.filter { isAndroidSdk(it) }
+    }
+
+    /** First usable Android SDK of [androidSdkRoots], or null. */
+    fun androidSdkHome(): File? = androidSdkRoots().firstOrNull()
+
+    private fun isAndroidSdk(dir: File): Boolean =
+        File(dir, "cmdline-tools").isDirectory ||
+            File(dir, "platform-tools").isDirectory ||
+            File(dir, "build-tools").isDirectory
 
     /**
      * Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed.

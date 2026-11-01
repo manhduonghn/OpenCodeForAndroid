@@ -21,7 +21,7 @@ Các cơ chế đã có trong repo (đánh dấu để so sánh, không cần l�
 | RUNPATH patch bằng `patchelf` cho bash/patchelf/opencode/JDK | `patchRpath` |
 | Symlink tuyệt đối của Termux → tương đối; shebang → `$PREFIX`; ELF của git mang `SHELL_PATH` được vá | `OpenCodePackages` (extractor + `repair`) |
 | Self-heal: `BINARY_PROOF` + reinstall gói hỏng, glibc loader, cert.pem ngắn | `OpenCodePackages.brokenPackages`, `doMaintenance` |
-| `etc/opencode-env.sh`: PATH/LD_LIBRARY_PATH, wrapper tách môi trường cho `pkg` và lệnh Android, GIT_EXEC_PATH/GIT_TEMPLATE_DIR/GIT_CONFIG_SYSTEM/GIT_ATTR_NOSYSTEM, OPENSSL_CONF/MODULES/ENGINES, SSL_CERT_FILE/CURL_CA_BUNDLE/NODE_EXTRA_CA_CERTS, JAVA_HOME, resolv.conf | `buildPackageEnvironment` |
+| `etc/opencode-env.sh`: PATH/LD_LIBRARY_PATH, wrapper tách môi trường cho `pkg` và lệnh Android, GIT_EXEC_PATH/GIT_TEMPLATE_DIR/GIT_CONFIG_SYSTEM/GIT_ATTR_NOSYSTEM, OPENSSL_CONF/MODULES/ENGINES, SSL_CERT_FILE/CURL_CA_BUNDLE/NODE_EXTRA_CA_CERTS, JAVA_HOME/JAVA_TOOL_OPTIONS, GRADLE_USER_HOME/ANDROID_USER_HOME, ANDROID_HOME + SDK PATH, resolv.conf | `buildPackageEnvironment` |
 | `etc/gitconfig` với `http.sslCAInfo` (Termux libcurl cắm cứng cert.pem của prefix cũ) | `writeGitConfig` |
 | resolv.conf cho glibc (IPv6-only fallback, refresh theo mạng) | `refreshResolvConf` |
 | profile/bashrc login shell | `ensureLoginProfile`, `hookBashrc` |
@@ -245,7 +245,7 @@ rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path c�
 | 4.1 #5 `GIT_SSL_CAINFO` | ✅ | env script, env của server, `OpenCodeGitHub` |
 | 4.1 #6 chỉ export khi file/dir tồn tại | ✅ | toàn bộ env script + env của server/gh |
 | 4.2 #7 CA bundle trong APK | ✅ | `assets/net/mozilla-ca-bundle.pem`, `OpenCodeBootstrap.ensureCaBundle` |
-| 4.2 #8 proof-binary mở rộng | ✅ | `OpenCodePackages.BINARY_PROOF` (thêm JDK, d8, r8, apksigner) |
+| 4.2 #8 proof-binary mở rộng | ✅ | `OpenCodePackages.BINARY_PROOF` (thêm JDK, d8, r8, apksigner, aapt2) |
 | 4.2 #9 launcher repair pattern | ✅ | `OpenCodePackages.JavaLaunchers` (d8/r8/apksigner) |
 | 4.2 #10 bảng syscall bị chặn | ✅ tài liệu | mục 7 dưới đây |
 | 4.3 #11 preload path translation | ✅ | `native/pathmap`, `OpenCodeBootstrap.installNativeTools`, `oc-gopatch run` |
@@ -384,6 +384,28 @@ Script do `npm install -g` tạo ra có shebang
 `repair` (đã thêm lệnh `pkg repair`, và mỗi `pkg install` cũng chạy lượt repair này). Từ bản này
 extractor/repair map shebang trỏ tới interpreter không tồn tại trên máy (`#!/usr/bin/env node`,
 `#!/bin/bash`) sang `$PREFIX/bin`, giữ nguyên `/bin/sh` của Android.
+
+Project Android dùng Gradle cần thêm ba thứ, giờ app tự đặt trong env và repair:
+
+- `sdkmanager`/`avdmanager`/`apksigner` của SDK cũng mở đầu bằng `#!/usr/bin/env`; Android không
+  có `/usr/bin`. `pkg repair "$ANDROID_HOME"` (và lượt maintenance khi app khởi động) quét
+  `cmdline-tools/*/bin`, `tools/bin`, `build-tools/*` rồi đổi shebang sang `$PREFIX/bin/env`
+  giống script của gói. Env script tự phát hiện SDK trong `$HOME/Android/Sdk`,
+  `$HOME/android-sdk`, `$HOME/sdk`, `$PREFIX/opt/android-sdk` và export
+  `ANDROID_HOME`/`ANDROID_SDK_ROOT`, thêm `cmdline-tools/latest/bin` + `platform-tools` vào `PATH`.
+- JVM của Termux lấy `user.home` là home của app Termux, nên Gradle không tạo được thư mục
+  metrics và Robolectric không tạo được lock file. Env script đặt `JAVA_TOOL_OPTIONS` gồm
+  `-Duser.home=$HOME -Djava.io.tmpdir=$TMPDIR -Drobolectric.conscryptMode=OFF` (chỉ thêm flag
+  còn thiếu, giữ option của người dùng); `GRADLE_USER_HOME=$HOME/.gradle`,
+  `ANDROID_USER_HOME=$HOME/.android`. Server OpenCode export đúng bộ biến này cho terminal.
+- AGP tải `aapt2` x86_64 từ Maven, không chạy trên ARM64. Gói `aapt2` của Termux được thêm vào
+  `pkg bundle java` và tự cài cùng `openjdk-*`; app ghi block quản lý
+  `android.aapt2FromMavenOverride=$PREFIX/bin/aapt2` vào `$HOME/.gradle/gradle.properties`
+  (giá trị người dùng đã đặt được giữ nguyên). Không cần `-P` trên command line.
+
+Robolectric 4.16.1 vẫn không có native runtime Linux ARM64; `conscryptMode=OFF` chỉ bỏ lỗi JNI
+Conscrypt, test nào nạp `DefaultNativeRuntimeLoader` vẫn hỏng (giới hạn upstream). Gradle trên
+máy ít RAM nên chạy `--max-workers=1` và đặt `org.gradle.jvmargs=-Xmx2g` (xem README).
 
 `pkg install cowsay` (một script Perl) lộ thêm một lỗi: Perl biên dịch cứng `@INC` theo prefix
 Termux nên báo `Can't locate Cwd.pm`. Env script giờ đặt `PERL5LIB` trỏ tới

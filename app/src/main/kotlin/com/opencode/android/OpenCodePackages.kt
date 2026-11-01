@@ -132,6 +132,9 @@ object OpenCodePackages {
         "openjdk-25" to listOf("lib/jvm/java-25-openjdk/bin/java"),
         "d8" to listOf("bin/d8", "bin/r8", "share/java/d8.jar"),
         "apksigner" to listOf("bin/apksigner", "share/java/apksigner.jar"),
+        // AGP downloads an x86_64 aapt2 from Maven; the Termux package is the native build that
+        // `$HOME/.gradle/gradle.properties` points the build at.
+        "aapt2" to listOf("bin/aapt2"),
     )
 
     /**
@@ -354,13 +357,14 @@ object OpenCodePackages {
      * dead Termux shebangs and the git ELF shell path. Cheap enough to run on every start of the
      * app, it returns a summary or null when nothing needed fixing.
      */
-    fun repair(prefix: File): String? {
+    fun repair(prefix: File, extraRoot: File? = null): String? {
         if (!File(prefix, ".packages-installed").isFile) return null
         var relinked = 0
         var removed = 0
         var rewritten = 0
         var shellPatched = 0
         var launchersRepaired = 0
+        var sdkScripts = 0
 
         fun repairShebangs(dir: File, isBin: Boolean) {
             if (!dir.isDirectory) return
@@ -409,6 +413,7 @@ object OpenCodePackages {
         repairShebangs(File(prefix, "bin"), true)
         repairShebangs(File(prefix, "libexec/git-core"), false)
         launchersRepaired = JavaLaunchers.rewriteAll(prefix)
+        sdkScripts = repairAndroidSdkScripts(prefix, extraRoot)
 
         // A prefix installed by an older build has node packages whose `#!/…/bin/env node`
         // shebangs were never rewritten (npm, npx, node-gyp, …). Walk that tree once: the new
@@ -457,7 +462,7 @@ object OpenCodePackages {
         ensureEnvironmentLinks(prefix)
 
         if (relinked == 0 && removed == 0 && rewritten == 0 && shellPatched == 0 &&
-            launchersRepaired == 0
+            launchersRepaired == 0 && sdkScripts == 0
         ) {
             return null
         }
@@ -479,7 +484,65 @@ object OpenCodePackages {
                 if (isNotEmpty()) append("; ")
                 append("repaired ").append(launchersRepaired).append(" Java launcher(s)")
             }
+            if (sdkScripts > 0) {
+                if (isNotEmpty()) append("; ")
+                append("rewrote ").append(sdkScripts).append(" Android SDK script(s)")
+            }
         }
+    }
+
+    /**
+     * Rewrite the `#!/usr/bin/env` shebangs of the Android SDK command line tools.
+     *
+     * The SDK is unpacked by `sdkmanager` outside this prefix, so the package extractor never
+     * sees it. Its launchers (`sdkmanager`, `avdmanager`, `lint`, `apksigner`, …) start with
+     * `#!/usr/bin/env`, and Android has no `/usr/bin`; running them directly fails with
+     * `bad interpreter`. They are pointed at `$PREFIX/bin/env` instead, the same way the
+     * package scripts are repaired. `extraRoot` is the directory passed to `pkg repair`; without
+     * it the common SDK locations below `$HOME` are scanned.
+     */
+    fun repairAndroidSdkScripts(prefix: File, extraRoot: File? = null): Int {
+        val roots = LinkedHashSet<File>()
+        roots.addAll(OpenCodeBootstrap.androidSdkRoots())
+        if (extraRoot != null) roots.add(extraRoot)
+        var rewritten = 0
+        for (root in roots) {
+            for (dir in sdkScriptDirs(root)) {
+                rewritten += repairScriptsIn(dir, prefix)
+            }
+        }
+        return rewritten
+    }
+
+    /** Directories of an SDK that contain executable scripts instead of ELF tools. */
+    private fun sdkScriptDirs(root: File): List<File> {
+        if (!root.isDirectory) return emptyList()
+        val dirs = LinkedHashSet<File>()
+        // `pkg repair .../cmdline-tools/latest/bin` is a valid explicit target.
+        if (root.name == "bin") dirs.add(root)
+        dirs.add(File(root, "bin"))
+        dirs.add(File(root, "tools/bin"))
+        File(root, "cmdline-tools").listFiles()?.sortedBy { it.name }?.forEach { version ->
+            if (version.isDirectory) dirs.add(File(version, "bin"))
+        }
+        File(root, "build-tools").listFiles()?.sortedBy { it.name }?.forEach { version ->
+            if (version.isDirectory) dirs.add(version)
+        }
+        return dirs.filter { it.isDirectory }
+    }
+
+    /** Rewrite broken interpreter lines in the regular files of one directory. */
+    private fun repairScriptsIn(dir: File, prefix: File): Int {
+        val files = dir.listFiles() ?: return 0
+        var rewritten = 0
+        for (file in files) {
+            if (!file.isFile) continue
+            val firstLine = firstLineOf(file) ?: continue
+            if (!firstLine.startsWith("#!")) continue
+            val repaired = TermuxShebangs.rewrittenFirstLine(firstLine, prefix.absolutePath) ?: continue
+            if (rewriteFirstLine(file, repaired)) rewritten++
+        }
+        return rewritten
     }
 
     /** Packages whose marker entry exists but whose proof files are gone. */

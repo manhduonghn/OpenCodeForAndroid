@@ -51,6 +51,7 @@ class OpenCodePkgService : Service() {
         job.action = requested
         job.packages = splitPackages(intent.getStringExtra(EXTRA_PACKAGES))
         job.query = intent.getStringExtra(EXTRA_QUERY)
+        job.directory = intent.getStringExtra(EXTRA_DIRECTORY)
         job.session = sanitizeSession(intent.getStringExtra(EXTRA_SESSION))
         job.statusPath = "$STATUS_DIR/${job.session}.status"
         job.outPath = "$STATUS_DIR/${job.session}.out"
@@ -75,6 +76,7 @@ class OpenCodePkgService : Service() {
         lateinit var action: String
         var packages: List<String> = emptyList()
         var query: String? = null
+        var directory: String? = null
         lateinit var session: String
         lateinit var statusPath: String
         lateinit var outPath: String
@@ -107,7 +109,10 @@ class OpenCodePkgService : Service() {
         writeStatus(job, "running", "Checking the package environment...", 0)
         updateNotification("Repairing the package environment...")
         val summary = try {
-            OpenCodePackages.repair(File(OpenCodeBootstrap.PREFIX))
+            OpenCodePackages.repair(
+                File(OpenCodeBootstrap.PREFIX),
+                job.directory?.let { File(it) },
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Could not repair the package environment", e)
             writeStatus(job, "error", describe(e), -1)
@@ -276,6 +281,7 @@ class OpenCodePkgService : Service() {
         const val EXTRA_ACTION = "action"
         const val EXTRA_PACKAGES = "packages"
         const val EXTRA_QUERY = "query"
+        const val EXTRA_DIRECTORY = "directory"
         const val EXTRA_SESSION = "session"
 
         const val ACTION_INSTALL = "com.opencode.android.pkg.INSTALL"

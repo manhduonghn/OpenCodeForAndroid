@@ -133,6 +133,7 @@ pkg install python-pip
 pkg search editor
 pkg list-installed
 pkg repair
+pkg repair "$ANDROID_HOME"   # also rewrite the SDK command-line tool shebangs
 ```
 
 `pkg install` sends an ordered broadcast to the app's
@@ -178,6 +179,15 @@ git build additionally has `libexec/git-core` and its template directory
 compiled in for the old prefix; both are re-pointed with
 `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`, and the unreadable system git config is
 disabled with `GIT_CONFIG_NOSYSTEM`.
+
+The same script prepares the Java/Android toolchain. The Termux JDK would otherwise derive
+`user.home` from the home of the Termux app, so `JAVA_TOOL_OPTIONS` sets
+`-Duser.home=$HOME -Djava.io.tmpdir=$TMPDIR` (plus `-Drobolectric.conscryptMode=OFF`, see
+[Android SDK, Gradle and Robolectric](#android-sdk-gradle-and-robolectric)) for every JVM,
+including the Gradle daemon, the Kotlin daemon and forked test workers. `GRADLE_USER_HOME` and
+`ANDROID_USER_HOME` are pinned below `$HOME`, a usable SDK below `$HOME` is exported as
+`ANDROID_HOME`/`ANDROID_SDK_ROOT`, and its `cmdline-tools`/`platform-tools` directories are added
+to `PATH`.
 
 `pkg` is the one exception: it is a bionic program, and the Android linker
 resolves the platform libraries it pulls in (`libunwindstack` needs `libz` and
@@ -449,6 +459,83 @@ separate Android NDK is needed for the bridge; the binaries are packaged under
 Debug builds are signed with the committed `keystore/debug.keystore` (password
 `android`, alias `androiddebugkey`), so local and CI builds share the same
 signature and can be installed as an update without uninstalling first.
+
+## Android SDK, Gradle and Robolectric
+
+A normal Android project can be built from the shell, but the SDK and AGP need a few
+adjustments that the app now makes automatically. The terminal of an older session must source
+the refreshed environment once: `. "$PREFIX/etc/opencode-env.sh"`.
+
+### SDK command-line tools
+
+Android has no `/usr/bin/env`, while the launchers of the SDK command-line tools start with
+`#!/usr/bin/env`. The package repair pass rewrites such shebangs to `$PREFIX/bin/env`; it scans
+the common SDK locations (`$HOME/Android/Sdk`, `$HOME/android-sdk`, `$HOME/sdk`,
+`$PREFIX/opt/android-sdk`, …) on every maintenance run. After unpacking a new SDK, run the pass
+once for its directory (or use `bash sdkmanager` for the very first call):
+
+```sh
+pkg repair "$ANDROID_HOME"       # or: pkg repair "$HOME/Android/Sdk"
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list
+```
+
+### Native `aapt2`
+
+AGP downloads an x86_64 `aapt2` from Maven, even on an ARM64 device, and fails with
+`AAPT2 … Daemon startup failed`. `pkg install openjdk` (and `pkg bundle java`) now also installs
+the native Termux `aapt2`. The app writes a managed block to `$HOME/.gradle/gradle.properties`:
+
+```properties
+android.aapt2FromMavenOverride=/data/data/com.opencode.android/files/usr/bin/aapt2
+```
+
+A value that the user already put in that file wins, and the block is removed again when
+`aapt2` is not installed. No `-P` flag is needed on the command line.
+
+### Java environment
+
+`$PREFIX/etc/opencode-env.sh` exports `JAVA_TOOL_OPTIONS` for every JVM:
+
+```sh
+-Duser.home=$HOME -Djava.io.tmpdir=$TMPDIR -Drobolectric.conscryptMode=OFF
+```
+
+The first two fix Gradle's metrics directory and Robolectric's download lock (both otherwise
+point at `/data/data/com.termux/files/home`, which does not exist here). The third disables the
+Conscrypt provider, whose JNI library is only published for x86_64. Existing options are kept;
+only missing `-D` flags are added. The OpenCode server starts its terminal with the same
+environment, so a build launched from the web terminal needs no extra flags either. A Gradle
+daemon that was started before this update keeps its old JVM; stop it once with
+`./gradlew --stop`.
+
+### Memory
+
+A first `assembleDebug` downloads a large dependency graph and can be killed by the Android
+low-memory killer. Limit the workers and set a modest Gradle heap, either on the command line or
+in the project's `gradle.properties`:
+
+```sh
+./gradlew :app:assembleDebug --max-workers=1 \
+  -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
+```
+
+```properties
+org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m
+org.gradle.workers.max=1
+```
+
+On a device with 4 GB of RAM or less, start with `-Xmx1536m` and raise it only if the build
+reports `OutOfMemoryError`.
+
+### Robolectric on ARM64
+
+Robolectric 4.16.1 has no Linux ARM64 native runtime. The `conscryptMode=OFF` flag removes the
+first failure (`UnsatisfiedLinkError: no conscrypt_openjdk_jni-linux-aarch_64`), and tests that
+do not load the native runtime then pass. A test that still needs it fails with
+`AssertionError at DefaultNativeRuntimeLoader.ensureLoaded(...)`. That is an upstream ARM64 gap,
+not project code, and `-Drobolectric.graphicsMode=LEGACY` does not avoid it. Pure JVM tests and
+`assembleDebug` are unaffected; run the Robolectric resource tests on an x86_64 CI runner until
+upstream publishes an ARM64 runtime.
 
 ## License
 

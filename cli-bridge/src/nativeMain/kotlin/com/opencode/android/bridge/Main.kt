@@ -16,6 +16,7 @@ import platform.posix.fclose
 import platform.posix.fgets
 import platform.posix.fopen
 import platform.posix.getenv
+import platform.posix.getcwd
 import platform.posix.getpid
 import platform.posix.getuid
 import platform.posix.mkdir
@@ -56,7 +57,8 @@ Commands:
   bundle <group...>      Install a curated group: dev, python, node, java, net, all
   search <text>          Search the Termux package repository
   list-installed         List the packages of this prefix
-  repair                 Rewrite broken shebangs and Termux links of the prefix
+  repair [directory]     Rewrite broken shebangs and Termux links of the prefix
+                          (also of an Android SDK directory, eg. $ANDROID_HOME)
   update, upgrade        Refresh the index (every install uses the live index)
   help                   Show this help
 
@@ -79,7 +81,7 @@ private const val BUNDLE_DEV =
         "procps lsof ncurses-utils bash-completion sqlite"
 private const val BUNDLE_PYTHON = "python python-pip python-cryptography python-numpy python-pillow"
 private const val BUNDLE_NODE = "nodejs npm yarn pnpm"
-private const val BUNDLE_JAVA = "openjdk-17 ca-certificates-java"
+private const val BUNDLE_JAVA = "openjdk-17 aapt2 ca-certificates-java"
 private const val BUNDLE_NET = "curl wget openssh rsync nmap dnsutils whois net-tools socat"
 
 private class CliError(message: String, val code: Int = 1) : Exception(message)
@@ -154,6 +156,20 @@ private fun deleteFile(path: String) {
 private fun executable(path: String): Boolean = access(path, X_OK) == 0
 private fun exists(path: String): Boolean = access(path, F_OK) == 0
 
+/**
+ * The app resolves a relative path against its own working directory, not the shell that sent
+ * the request, so a directory argument is made absolute here while the cwd is still the one of
+ * the terminal.
+ */
+private fun absolutePath(path: String): String {
+    if (path.startsWith("/")) return path
+    val cwd = memScoped {
+        val buffer = allocArray<ByteVar>(4096)
+        getcwd(buffer, 4096.convert())?.toKString()
+    } ?: return path
+    return if (cwd.endsWith("/")) "$cwd$path" else "$cwd/$path"
+}
+
 private fun ensureStateDir() {
     mkdir(stateDir(), 448u) // 0700, ignored when it already exists
 }
@@ -176,7 +192,13 @@ private fun field(text: String?, key: String): String {
  * shell command sends `com.android.shell` as its calling package and Android rejects the request
  * when the real caller is this app ("Can't start from invalid source").
  */
-private fun startService(action: String, session: String, packages: String?, query: String?) {
+private fun startService(
+    action: String,
+    session: String,
+    packages: String?,
+    query: String?,
+    directory: String? = null,
+) {
     ensureStateDir()
     val status = statusPath(session)
     val result = resultPath(session)
@@ -198,6 +220,10 @@ private fun startService(action: String, session: String, packages: String?, que
             }
             if (query != null) {
                 append(" --es ").append(shellQuote("query")).append(' ').append(shellQuote(query))
+            }
+            if (directory != null) {
+                append(" --es ").append(shellQuote("directory")).append(' ')
+                    .append(shellQuote(directory))
             }
             append(" > ").append(shellQuote(outputFile)).append(" 2>&1")
         }
@@ -298,8 +324,13 @@ private fun install(arguments: List<String>) {
         if (!validName(name)) fail("install: '$argument' is not a valid package name")
         packages.add(name)
         // The JDK ships a trust store that is empty for real CAs; ca-certificates-java adds
-        // lib/security/jssecacerts, which Java prefers.
-        if (name.startsWith("openjdk-")) packages.add("ca-certificates-java")
+        // lib/security/jssecacerts, which Java prefers. AGP's Maven aapt2 is x86_64-only, so the
+        // native Termux build comes with every JDK install and is selected automatically by the
+        // managed Gradle properties.
+        if (name.startsWith("openjdk-")) {
+            packages.add("ca-certificates-java")
+            packages.add("aapt2")
+        }
     }
 
     if (packages.isEmpty()) fail("install: no package name given. Try: pkg install git gh")
@@ -386,14 +417,25 @@ private fun update() {
 /**
  * Ask the app for a repair pass. Commands installed by `npm install -g` or another package
  * manager inside the terminal write `#!/usr/bin/env …` shebangs, which Android cannot execute;
- * the app points them at `$PREFIX/bin` the same way it does for the extracted packages.
+ * the app points them at `$PREFIX/bin` the same way it does for the extracted packages. An
+ * optional directory (usually `$ANDROID_HOME`) repairs the Android SDK command line tools too.
  */
-private fun repair() {
-    line("Checking the package environment ...")
+private fun repair(arguments: List<String>) {
+    if (arguments.size > 1) {
+        fail("repair: expected at most one directory. Try: pkg repair \"\$ANDROID_HOME\"")
+    }
+    val directory = arguments.firstOrNull()?.takeIf { it.isNotEmpty() }?.let(::absolutePath)
+    if (directory != null && !exists(directory)) {
+        fail("repair: no such directory: $directory")
+    }
+    line(
+        if (directory == null) "Checking the package environment ..."
+        else "Checking the package environment and $directory ...",
+    )
 
     val session = sessionName()
     try {
-        startService("repair", session, null, null)
+        startService("repair", session, null, null, directory)
         waitForService(session)
     } finally {
         deleteFile(statusPath(session))
@@ -410,7 +452,7 @@ private fun runPkg(arguments: List<String>) {
         "bundle", "toolbox" -> bundle(rest)
         "search", "find" -> search(rest)
         "list-installed", "list", "installed" -> listInstalled()
-        "repair", "fix" -> repair()
+        "repair", "fix" -> repair(rest)
         "update", "upgrade" -> update()
         "remove", "uninstall", "delete" -> fail(
             "'$command' is not supported: the app installs packages without dpkg, so there " +
