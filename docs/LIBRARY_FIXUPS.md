@@ -301,11 +301,13 @@ Cơ chế:
 
 - **glibc**: chạy `$PREFIX/glibc/lib/ld-linux-*.so.* --preload liboc-pathmap.so
   --library-path $PREFIX/lib:$PREFIX/glibc/lib PROGRAM`. Thư viện hook open/openat/creat,
-  stdio, stat/statx/statfs/statvfs, access, mkdir/rmdir/unlink/rename/link/symlink,
-  mknod/mkfifo, chmod/chown/truncate, utimensat/utimes/lutimes/futimesat, xattr,
-  readlink/realpath/getcwd, inotify, scandir/scandirat, glob, ftw/nftw, dlopen,
+  stdio, stat/statx/statfs/statvfs, access, mkdir/rmdir/unlink/remove/rename/link/symlink,
+  mknod/mkfifo, chmod/chown/truncate, utimensat/utimes/utime/lutimes/futimesat, xattr,
+  readlink/realpath/canonicalize_file_name/getcwd, inotify, scandir/scandirat,
+  glob, ftw/ftw64/nftw/nftw64, dlopen/dlmopen,
   execve/execv/execvp/execvpe/execveat/fexecve, execl/execlp/execle,
   posix_spawn/posix_spawnp và `posix_spawn_file_actions_addopen/addchdir_np`.
+  Danh sách đầy đủ theo nhóm ở mục 8.1.
   Nó map `/data/data/com.termux/files/usr` → `OC_PREFIX` và
   `/data/data/com.termux/files/home` → `OC_USER_HOME`, đồng thời cài SIGSYS handler cho
   bảng ở mục 7. Hot path chỉ là `strncmp`, không cấp phát.
@@ -352,11 +354,13 @@ không thấy file), nên `run`/`classify`/`patch` đã được bổ sung mappi
 cache được tạo lại theo blob mới thay vì dùng bản vá của APK cũ.
 
 Bộ test mới của `liboc-pathmap.so` (chạy native trên máy arm64 với glibc của prefix, không
-qua qemu) đã qua hết: `statx`, `utimensat`/`utimes`, `statfs`/`statvfs`, `getxattr`/`setxattr`,
-`mkfifo`/`mknod`, `scandir`, `glob` (kết quả được unmap về spelling Termux), `nftw`, `dlopen`
-một plugin nằm trong prefix, và ca quan trọng nhất — `execve` chương trình test với môi trường
-sạch (`chỉ có OC_TEST_CHILD=1`): con vẫn thấy `oc_pathmap_active`, `OC_PREFIX`,
-`OC_USER_HOME` và `stat("/data/data/com.termux/files/usr/child-check")` thành công.
+qua qemu) đã qua hết: `statx`, `utimensat`/`utimes`/`utime`, `statfs`/`statvfs`,
+`getxattr`/`setxattr`, `euidaccess`, `canonicalize_file_name`, `remove`,
+`mkfifo`/`mknod`, `scandir`, `glob` (kết quả được unmap về spelling Termux),
+`ftw`/`ftw64`/`nftw`/`nftw64`, `dlopen` và `dlmopen` một plugin nằm trong prefix, và ca quan
+trọng nhất — `execve` chương trình test với môi trường sạch (`chỉ có OC_TEST_CHILD=1`): con vẫn
+thấy `oc_pathmap_active`, `OC_PREFIX`, `OC_USER_HOME` và
+`stat("/data/data/com.termux/files/usr/child-check")` thành công.
 `OC_DEBUG=1` cũng ghi đúng `oc-pathmap: SIGSYS 437 -> ENOSYS` khi gọi `openat2`.
 
 Đã cài thử bằng `pkg` trên máy thật: `tree jq fzf`, `python python-pip`,
@@ -388,7 +392,53 @@ Ruby 4.0.9 cũng vậy: `require "json"` và `gem` không tìm thấy file vì `
 Termux, và bản Ruby 4 không tự nạp RubyGems. `RUBYLIB` + `RUBYOPT=-rrubygems` trong env script sửa
 cả hai; `gem install colorize` cài vào prefix và `require "colorize"` chạy.
 
-Giới hạn có chủ ý:
+### 8.1 Hàm đã hook và hàm cố ý bỏ qua
+
+Thư viện chỉ có thể dịch path tại các **entry point của libc mà chương trình gọi**; nó
+không nhìn thấy syscall do chương trình tự phát, path nằm trong `argv`/biến môi trường, hay
+path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (101 symbol export,
+trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
+
+| Nhóm | Hàm đã hook |
+| --- | --- |
+| Mở / tạo file | `open`, `open64`, `openat`, `openat64`, `openat2`, `__open_2`, `__open64_2`, `__openat_2`, `__openat64_2`, `creat`, `creat64`, `fopen`, `fopen64`, `freopen`, `freopen64`, `opendir` |
+| stat / metadata | `stat`, `stat64`, `lstat`, `lstat64`, `fstatat`, `fstatat64`, `statx`, `statfs`, `statfs64`, `statvfs`, `statvfs64` |
+| Kiểm tra quyền | `access`, `eaccess`, `euidaccess`, `faccessat` |
+| Thời gian | `utimensat`, `utimes`, `lutimes`, `futimesat`, `utime` |
+| xattr | `getxattr`, `lgetxattr`, `setxattr`, `lsetxattr`, `listxattr`, `llistxattr`, `removexattr`, `lremovexattr` |
+| Thao tác file / thư mục | `mkdir`, `mkdirat`, `mknod`, `mknodat`, `mkfifo`, `mkfifoat`, `rmdir`, `unlink`, `unlinkat`, `remove`, `rename`, `renameat`, `renameat2`, `chdir`, `chmod`, `fchmodat`, `chown`, `lchown`, `fchownat`, `truncate`, `truncate64`, `link`, `linkat`, `symlink`, `symlinkat` |
+| Đường dẫn trả về | `readlink`, `readlinkat`, `realpath`, `canonicalize_file_name`, `getcwd`, `inotify_add_watch` |
+| Duyệt thư mục | `scandir`, `scandir64`, `scandirat`, `scandirat64`, `glob`, `glob64`, `ftw`, `ftw64`, `nftw`, `nftw64` |
+| Nạp thư viện | `dlopen`, `dlmopen` |
+| exec / spawn | `execve`, `execv`, `execvp`, `execvpe`, `execveat`, `fexecve`, `execl`, `execlp`, `execle`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_addopen`, `posix_spawn_file_actions_addchdir_np` |
+
+Các hàm trả path (`realpath`, `canonicalize_file_name`, `getcwd`, `glob`, `readlink`) được
+**unmap tại chỗ** về spelling Termux trước khi trả cho caller; các hàm nhận path thì map
+trước khi gọi hàm thật. `ftw`/`nftw` (và bản 64-bit) chỉ map path gốc, không map path trong
+callback — xem lý do bên dưới.
+
+Hàm **cố ý bỏ qua**:
+
+| Hàm / cơ chế | Lý do |
+| --- | --- |
+| `fstat`, `fstat64`, `fchmod`, `fchown`, `fchdir`, `ftruncate`, `ftruncate64`, `futimens`, `fallocate`, `posix_fadvise`, `posix_fallocate`, `sendfile`, `splice`, `mmap` | nhận fd, không có path để dịch; fd đó đã được tạo qua một hook ở trên |
+| `posix_spawn_file_actions_addfchdir_np`, `open_by_handle_at`, `name_to_handle_at` | fd/handle-based, không có path; `open_by_handle_at` còn cần quyền mà app không có |
+| `mount`, `umount2`, `chroot`, `pivot_root`, `mount_setattr`, `open_tree`, `move_mount`, `fsopen`, `fsmount`, `fspick` | Android seccomp chặn và app không có `CAP_SYS_ADMIN`; dịch path không làm các call này chạy được |
+| `syscall(...)` | variadic, nhận số hiệu syscall; hook sẽ phải chặn **mọi** syscall (kể cả syscall nội bộ của libc), tăng chi phí và nguy cơ đệ quy. Path do chương trình tự phát không dịch được; Go tĩnh AArch64 được xử lý riêng bằng `oc-gosys` |
+| binary tĩnh không phải Go (Rust musl, C static, …) | không nạp được `LD_PRELOAD`; muốn dịch path phải vá tại call site như `oc-gosys` |
+| Go tĩnh x86_64 | `oc-gosys` mới hỗ trợ AArch64; Go x86_64 vẫn chạy nhưng path Termux không được dịch |
+| `system`, `popen`, `wordexp` | nhận chuỗi lệnh, không phải path; chúng chạy `/bin/sh` của Android (bionic), nên preload cũng không được truyền. Dùng `oc-run` hoặc gọi chương trình trực tiếp |
+| callback của `ftw`/`ftw64`/`nftw`/`nftw64` | thư viện không thể thay con trỏ hàm của caller, nên callback vẫn thấy path vật lý của prefix; chỉ path gốc được map |
+| `sockaddr_un` trong `connect`/`bind`/`sendto` | path nằm trong `struct sockaddr`, không phải tham số path của libc; muốn hỗ trợ phải hook riêng từng họ socket |
+| `updwtmp`, `setutent`/`pututline` | đường dẫn utmp/wtmp cố định hoặc rất hiếm dùng trong app Android; có thể thêm nếu có nhu cầu thật |
+| script `#!/usr/bin/env ...` khi được exec từ một chương trình glibc | đi qua `env` của bionic nên chuỗi `LD_PRELOAD`/`OC_*` bị mất; chạy qua `oc-run` thì không gặp giới hạn này |
+| path trong `argv`, biến môi trường, nội dung file cấu hình, `/proc/self/exe` | không phải tham số của hàm libc; chỉ chương trình đích mới biết ý nghĩa, nên phải relocation gói hoặc sửa cấu hình |
+
+Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Android: `openat2` và
+`faccessat2` bị seccomp trap, SIGSYS handler trả `ENOSYS` để libc fallback sang
+`openat`/`faccessat`. Vì vậy "có hook" không đồng nghĩa với "syscall đó thực thi được".
+
+### 8.2 Giới hạn có chủ ý
 
 - chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
   Termux không được dịch);
