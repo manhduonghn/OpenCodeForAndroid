@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/vfs.h>
 #include <sys/wait.h>
