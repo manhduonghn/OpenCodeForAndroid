@@ -16,10 +16,8 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Base64
 import android.util.Log
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedReader
@@ -27,9 +25,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStream
 import java.io.InputStreamReader
-import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.Inet6Address
@@ -324,7 +320,6 @@ object OpenCodeBootstrap {
     private const val HTTP_READ_TIMEOUT_MS = 60_000L
     private const val VERIFY_TIMEOUT_MS = 90_000L
     private const val PATCH_TIMEOUT_MS = 300_000L
-    private const val EXTRACT_TIMEOUT_MS = 180_000L
     private const val PROCESS_POLL_INTERVAL_MS = 100L
 
     /** Maximum number of characters of a single command output kept in memory. */
@@ -338,14 +333,6 @@ object OpenCodeBootstrap {
 
     /** Home directory that is baked into the Termux profile scripts. */
     private const val HOME_TERMUX = "/data/data/com.termux/files/home"
-
-    /** Mirrors of the main Termux repository, tried in order. */
-    private val MAIN_MIRRORS = arrayOf(
-        "https://packages-cf.termux.dev/apt/termux-main",
-        "https://packages.termux.dev/apt/termux-main",
-        "https://grimler.se/termux-main",
-        "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main",
-    )
 
     /**
      * Termux packages that are extracted into the app-private prefix before OpenCode is
@@ -410,6 +397,9 @@ object OpenCodeBootstrap {
 
     /** True while the silent maintenance of the runtime runs in the background. */
     private var sMaintenanceRunning = false
+
+    /** An update request that arrived while maintenance held the runtime. */
+    private var sUpdatePending = false
 
     /** The listeners that want to know about the progress of the installation. */
     private val sListeners = CopyOnWriteArrayList<InstallListener>()
@@ -502,6 +492,13 @@ object OpenCodeBootstrap {
                 Log.i(LOG_TAG, "An installation is already running, ignoring the update request.")
                 return
             }
+            if (sMaintenanceRunning) {
+                // A deep maintenance pass may be repairing the same files; run the update right
+                // after it instead of racing it.
+                sUpdatePending = true
+                Log.i(LOG_TAG, "Maintenance is running, queueing the update request.")
+                return
+            }
             installer = Installer(context, true)
             sInstaller = installer
         }
@@ -564,7 +561,13 @@ object OpenCodeBootstrap {
             } catch (e: Exception) {
                 Log.e(LOG_TAG, "Failed to maintain the OpenCode runtime", e)
             } finally {
-                synchronized(sLock) { sMaintenanceRunning = false }
+                var updateQueued = false
+                synchronized(sLock) {
+                    sMaintenanceRunning = false
+                    updateQueued = sUpdatePending
+                    sUpdatePending = false
+                }
+                if (updateQueued) requestUpdate(context)
             }
         }, "opencode-maintenance").start()
     }
@@ -635,7 +638,7 @@ object OpenCodeBootstrap {
             try {
                 // The glibc copy is usually a symlink to the prefix copy; write the real target so
                 // the link itself survives the atomic rename.
-                writeTextFileAtomically(file.canonicalFile, content)
+                OpenCodeFiles.writeTextAtomically(file.canonicalFile, content)
             } catch (e: IOException) {
                 Log.w(LOG_TAG, "Could not write $path", e)
             }
@@ -750,30 +753,6 @@ object OpenCodeBootstrap {
     private fun Inet6Address.isGlobalIpv6Address(): Boolean =
         !isAnyLocalAddress && !isLoopbackAddress && !isLinkLocalAddress && !isSiteLocalAddress &&
             !isMulticastAddress
-
-    /**
-     * Write the file through a sibling temporary file and rename it over the destination, so a
-     * server that resolves a name in the middle of a network handover never reads half a file.
-     */
-    private fun writeTextFileAtomically(file: File, content: String) {
-        val directory = file.parentFile
-        if (directory != null && !directory.isDirectory && !directory.mkdirs()) {
-            throw IOException("Could not create the directory $directory")
-        }
-        val temporary = File(directory, "${file.name}.tmp")
-        FileOutputStream(temporary).use { stream ->
-            stream.write(content.toByteArray(Charsets.UTF_8))
-            stream.flush()
-        }
-        if (!temporary.renameTo(file)) {
-            // rename(2) replaces the destination atomically; the fallback keeps FAT-style storages
-            // working, where rename refuses to overwrite an existing file.
-            if (!file.delete() || !temporary.renameTo(file)) {
-                temporary.delete()
-                throw IOException("Could not replace $file")
-            }
-        }
-    }
 
     /**
      * The password of the local OpenCode server.
@@ -1581,8 +1560,9 @@ object OpenCodeBootstrap {
                 doDeepMaintenance()
             }
             // Write the stamp at the end: a full pass changes files in bin/ and etc/, so only the
-            // state after the pass describes a repaired prefix.
-            writeTextFileQuietly(File(MAINTENANCE_STAMP_PATH), maintenanceStamp() + "\n")
+            // state after the pass describes a repaired prefix. Writing it only when it changed
+            // keeps the lock file untouched when a quick pass repairs nothing.
+            writeTextFileIfChanged(File(MAINTENANCE_STAMP_PATH), maintenanceStamp() + "\n")
             Log.i(
                 LOG_TAG,
                 "Maintenance finished in ${SystemClock.uptimeMillis() - started} ms " +
@@ -2859,6 +2839,8 @@ object OpenCodeBootstrap {
         }
 
         private fun notifyFinished(title: String, text: String) {
+            // Maintenance runs silently on every start; it must never post a result notification.
+            if (logOnly) return
             val ctx = context ?: return
             val manager = notificationManager() ?: return
             ensureNotificationChannel(manager)
@@ -3161,7 +3143,7 @@ object OpenCodeBootstrap {
         if (target.isFile && target.canExecute() && readTextFileQuietly(target) == wrapper) return
 
         try {
-            writeTextFileAtomically(target, wrapper)
+            OpenCodeFiles.writeTextAtomically(target, wrapper)
             Os.chmod(target.absolutePath, MODE_755)
         } catch (e: Exception) {
             Log.w(LOG_TAG, "Could not install the ripgrep wrapper at $target", e)

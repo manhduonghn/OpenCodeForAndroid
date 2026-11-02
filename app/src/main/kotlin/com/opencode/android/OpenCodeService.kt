@@ -20,8 +20,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
-import android.system.Os
-import android.util.Base64
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -29,8 +27,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
@@ -954,10 +950,9 @@ class OpenCodeService : Service() {
                     connection.connectTimeout = 1500
                     connection.readTimeout = 2500
                     connection.useCaches = false
-                    val credentials = "${OpenCodeBootstrap.SERVER_USER}:${OpenCodeBootstrap.getServerPassword(this)}"
                     connection.setRequestProperty(
                         "Authorization",
-                        "Basic " + Base64.encodeToString(credentials.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP),
+                        OpenCodeHttp.basicAuth(OpenCodeBootstrap.getServerPassword(this)),
                     )
                     when (connection.responseCode) {
                         HttpURLConnection.HTTP_OK -> return true
@@ -1474,12 +1469,7 @@ class OpenCodeService : Service() {
         @JvmStatic
         fun isRunning(): Boolean = sInstance != null
 
-        private fun isPortOpen(port: Int): Boolean = try {
-            Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 500) }
-            true
-        } catch (e: Exception) {
-            false
-        }
+        private fun isPortOpen(port: Int): Boolean = OpenCodeHttp.isPortOpen(port)
 
         /** True when the command line belongs to the server we start. */
         private fun isOurCmdline(cmdline: String?): Boolean =
@@ -1569,9 +1559,7 @@ class OpenCodeService : Service() {
         val version = OpenCodeBootstrap.getInstalledVersion()
         if (version.isEmpty()) return
 
-        val directory = File(SERVICE_STATE_DIR)
         try {
-            directory.mkdirs()
             val json = JSONObject()
                 .put("id", SERVICE_CHANNEL)
                 .put("version", version)
@@ -1580,19 +1568,7 @@ class OpenCodeService : Service() {
                 .put("password", OpenCodeBootstrap.getServerPassword(this))
                 .toString()
             // Write next to the target and rename, so a reader never sees a half written file.
-            val temporary = File.createTempFile("service", ".json", directory)
-            temporary.writeText(json)
-            Os.chmod(temporary.absolutePath, SERVICE_FILE_MODE)
-            val target = File(SERVICE_FILE)
-            if (!temporary.renameTo(target)) {
-                target.delete()
-                if (!temporary.renameTo(target)) {
-                    temporary.delete()
-                    Log.w(TAG, "Could not move the service registration to $SERVICE_FILE")
-                    return
-                }
-            }
-            Os.chmod(target.absolutePath, SERVICE_FILE_MODE)
+            OpenCodeFiles.writeTextAtomically(File(SERVICE_FILE), json, SERVICE_FILE_MODE)
             Log.i(TAG, "Registered the server for the terminal in $SERVICE_FILE")
         } catch (e: Exception) {
             Log.w(TAG, "Could not write the service registration", e)

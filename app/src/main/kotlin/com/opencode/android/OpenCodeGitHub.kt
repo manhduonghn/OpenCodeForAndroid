@@ -2,7 +2,6 @@ package com.opencode.android
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -370,13 +369,10 @@ object OpenCodeGitHub {
         // instead, the request is authenticated before git asks a helper. An empty helper also
         // keeps the unusable one out of the way when the token was revoked.
         storedToken()?.let { token ->
-            val basic = Base64.encodeToString(
-                "x-access-token:$token".toByteArray(StandardCharsets.UTF_8),
-                Base64.NO_WRAP,
-            )
             extraEnv["GIT_CONFIG_COUNT"] = "2"
             extraEnv["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
-            extraEnv["GIT_CONFIG_VALUE_0"] = "Authorization: Basic $basic"
+            extraEnv["GIT_CONFIG_VALUE_0"] =
+                "Authorization: ${OpenCodeHttp.basicAuth("x-access-token", token)}"
             extraEnv["GIT_CONFIG_KEY_1"] = "credential.helper"
             extraEnv["GIT_CONFIG_VALUE_1"] = ""
         }

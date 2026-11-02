@@ -333,26 +333,10 @@ class OpenCodePkgService : Service() {
 
         /** Write a small text file atomically, the bridge polls it while the service fills it. */
         private fun writeText(file: File, text: String) {
-            val parent = file.parentFile
-            if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
-                Log.w(TAG, "Could not create $parent")
-                return
-            }
-            val temp = File(file.absolutePath + ".tmp")
             try {
-                temp.outputStream().use {
-                    it.write(text.toByteArray(Charsets.UTF_8))
-                    it.flush()
-                }
+                OpenCodeFiles.writeTextAtomically(file, text)
             } catch (e: Exception) {
                 Log.w(TAG, "Could not write $file", e)
-                return
-            }
-            if (!temp.renameTo(file)) {
-                if (!file.delete() || !temp.renameTo(file)) {
-                    // A failed rename must not leave a half written status behind.
-                    temp.delete()
-                }
             }
         }
 

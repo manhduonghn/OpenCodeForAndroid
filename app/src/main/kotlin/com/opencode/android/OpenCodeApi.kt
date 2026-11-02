@@ -1,6 +1,5 @@
 package com.opencode.android
 
-import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -258,11 +257,5 @@ object OpenCodeApi {
         }
     }
 
-    private fun basic(secret: String): String {
-        val credentials = "${OpenCodeBootstrap.SERVER_USER}:$secret"
-        return "Basic " + Base64.encodeToString(
-            credentials.toByteArray(StandardCharsets.UTF_8),
-            Base64.NO_WRAP,
-        )
-    }
+    private fun basic(secret: String): String = OpenCodeHttp.basicAuth(secret)
 }

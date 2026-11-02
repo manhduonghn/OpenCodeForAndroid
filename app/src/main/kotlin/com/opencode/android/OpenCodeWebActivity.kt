@@ -45,8 +45,6 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
@@ -1689,10 +1687,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                 connection.requestMethod = "POST"
                 connection.doOutput = true
                 connection.setFixedLengthStreamingMode(0)
-                val credentials = "${OpenCodeBootstrap.SERVER_USER}:$secret"
                 connection.setRequestProperty(
                     "Authorization",
-                    "Basic " + Base64.encodeToString(credentials.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP),
+                    OpenCodeHttp.basicAuth(secret),
                 )
             }
             if (accept != null) connection.setRequestProperty("Accept", accept)
@@ -1706,12 +1703,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
     }
 
-    private fun serverReachable(): Boolean = try {
-        Socket().use { it.connect(InetSocketAddress("127.0.0.1", PORT), 1000) }
-        true
-    } catch (e: Exception) {
-        false
-    }
+    private fun serverReachable(): Boolean = OpenCodeHttp.isPortOpen(PORT, 1000)
 
     /**
      * Check that the server answers `/api/info` with the given secret (a session token or the
@@ -1728,10 +1720,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             connection.connectTimeout = 2000
             connection.readTimeout = 3000
             connection.useCaches = false
-            val credentials = "${OpenCodeBootstrap.SERVER_USER}:$secret"
             connection.setRequestProperty(
                 "Authorization",
-                "Basic " + Base64.encodeToString(credentials.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP),
+                OpenCodeHttp.basicAuth(secret),
             )
             return connection.responseCode == HttpURLConnection.HTTP_OK
         } catch (e: Exception) {

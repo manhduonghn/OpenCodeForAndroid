@@ -8,8 +8,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import java.net.InetSocketAddress
-import java.net.Socket
 
 /**
  * Periodic keep-alive for the OpenCode server.
@@ -117,12 +115,7 @@ object OpenCodeWatchdog {
 
     /** True when something accepts TCP connections on the server port. */
     @JvmStatic
-    fun isPortOpen(port: Int): Boolean = try {
-        Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 800) }
-        true
-    } catch (e: Exception) {
-        false
-    }
+    fun isPortOpen(port: Int): Boolean = OpenCodeHttp.isPortOpen(port, 800)
 
     /** Start the foreground service, the caller must be allowed to do so (target SDK 28). */
     @JvmStatic

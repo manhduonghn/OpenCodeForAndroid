@@ -181,23 +181,13 @@ class OpenCodeInstallState {
         fun save(state: OpenCodeInstallState?) {
             if (state == null) return
 
-            val file = File(STATE_FILE_PATH)
-            val parent = file.parentFile
-            if (parent != null && !parent.isDirectory && !parent.mkdirs()) return
-
-            val temp = File(file.absolutePath + ".tmp")
             try {
-                temp.outputStream().use { it.write(state.toJson().toString().toByteArray(Charsets.UTF_8)) }
+                OpenCodeFiles.writeTextAtomically(
+                    File(STATE_FILE_PATH),
+                    state.toJson().toString(),
+                )
             } catch (e: IOException) {
                 Log.e(TAG, "Could not write the install state", e)
-                return
-            }
-
-            if (!temp.renameTo(file)) {
-                // The rename can fail when the target exists on some file systems.
-                if (!file.delete() || !temp.renameTo(file)) {
-                    Log.w(TAG, "Could not replace $file")
-                }
             }
         }
 
