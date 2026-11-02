@@ -102,12 +102,14 @@ The app combines the two techniques that make this possible:
 
 ### What gets installed
 
-Only the minimum the runtime needs (≈20 MB of packages):
+Only the minimum the runtime needs (≈27 MB of packages):
 
 | package | why |
 | --- | --- |
 | `bash` (+ `readline`, `ncurses`, `libiconv`, `libandroid-support`) | shell for OpenCode and scripts |
 | `coreutils` (+ `libgmp`, …) | `bin/env` for `#!/…/bin/env node` launchers and the standard utilities |
+| `grep`, `sed`, `gawk`, `findutils`, `diffutils` (+ `pcre2`, `libmpfr`) | GNU text tools; the toybox copies of Android reject `grep -P`, BRE `\|`, `sed \s`/`\b` |
+| `ripgrep` | bionic search backend for the built-in `grep`/`glob` tools |
 | `openssl` (+ `zlib`) | `libcrypto`/`libssl` for git, gh and libcurl |
 | `glibc` (+ `linux-api-headers-glibc`) | glibc loader and libraries for the OpenCode binary |
 | `patchelf` (+ `libc++`) | rewrites the RUNPATH of `bash`/`patchelf` themselves |
@@ -274,9 +276,23 @@ exports `OPENCODE_PTY_SOCKET_DIR=$PREFIX/run` (the directory is recreated on eve
 has to stay short: a unix socket path is limited to 107 bytes and the daemon appends
 `/opencode-pty-<uid>/<32 hex>.sock` (57 more), so `$HOME/.opencode/tmp` would not fit.
 
+### Search tools
+
+OpenCode downloads its own ripgrep to `~/.cache/opencode/bin/rg`. That build is a glibc
+executable whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android, so the
+built-in `grep` and `glob` tools fail with `ripgrep execution failed`. The app installs the
+bionic `ripgrep` package in the prefix and writes a small wrapper at that cache path which execs
+`$PREFIX/bin/rg`; the wrapper is checked on every maintenance pass, so a deleted cache or an
+OpenCode update is repaired automatically.
+
+The prefix also ships GNU `grep`, `sed`, `gawk`, `find`, `xargs` and `diff`, which come before
+`/system/bin` in `PATH`. Android's toybox versions do not support common GNU syntax such as
+`grep -P`, the BRE `\|` alternative or `sed \s`/`\b`; using the GNU packages avoids those
+surprising "bad regex" errors.
+
 ### Installation progress
 
-The first start downloads ≈20 MB of toolchain and ≈114 MB of OpenCode, so the
+The first start downloads ≈27 MB of toolchain and ≈114 MB of OpenCode, so the
 app shows a progress screen instead of a blank WebView. The WebView only loads
 the web UI once the server really accepts connections, which avoids
 `net::ERR_CACHE_MISS` / `ERR_CONNECTION_REFUSED`.

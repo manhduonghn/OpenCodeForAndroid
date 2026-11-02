@@ -119,7 +119,18 @@ object OpenCodePackages {
         "libandroid-support" to listOf("lib/libandroid-support.so"),
         "libexpat" to listOf("lib/libexpat.so"),
         "pcre2" to listOf("lib/libpcre2-8.so"),
+        // gawk is linked against both MPFR and GMP.
+        "libmpfr" to listOf("lib/libmpfr.so"),
         "readline" to listOf("lib/libreadline.so"),
+        // The GNU text tools and ripgrep are part of the base toolchain (see CORE_PACKAGES in
+        // OpenCodeBootstrap). Proving their binaries keeps a truncated extraction from being
+        // trusted by the next maintenance pass.
+        "grep" to listOf("bin/grep"),
+        "sed" to listOf("bin/sed"),
+        "gawk" to listOf("bin/gawk", "bin/awk"),
+        "findutils" to listOf("bin/find", "bin/xargs"),
+        "diffutils" to listOf("bin/diff"),
+        "ripgrep" to listOf("bin/rg"),
         "ncurses" to listOf("lib/libncursesw.so"),
         "python" to listOf("bin/python3", "bin/python"),
         "python-pip" to listOf("bin/pip", "bin/pip3"),

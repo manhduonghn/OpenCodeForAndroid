@@ -21,6 +21,7 @@ Các cơ chế đã có trong repo (đánh dấu để so sánh, không cần l�
 | RUNPATH patch bằng `patchelf` cho bash/patchelf/opencode/JDK | `patchRpath` |
 | Symlink tuyệt đối của Termux → tương đối; shebang → `$PREFIX`; ELF của git mang `SHELL_PATH` được vá | `OpenCodePackages` (extractor + `repair`) |
 | Self-heal: `BINARY_PROOF` + reinstall gói hỏng, glibc loader, cert.pem ngắn | `OpenCodePackages.brokenPackages`, `doMaintenance` |
+| Cache ripgrep của OpenCode: wrapper `$HOME/.cache/opencode/bin/rg` → `$PREFIX/bin/rg` (bionic), vì bản tải về là ELF glibc | `OpenCodeBootstrap.ensureRipgrepRuntime`, `CORE_PACKAGES` |
 | `etc/opencode-env.sh`: PATH/LD_LIBRARY_PATH, wrapper tách môi trường cho `pkg` và lệnh Android, GIT_EXEC_PATH/GIT_TEMPLATE_DIR/GIT_CONFIG_SYSTEM/GIT_ATTR_NOSYSTEM, OPENSSL_CONF/MODULES/ENGINES, SSL_CERT_FILE/CURL_CA_BUNDLE/NODE_EXTRA_CA_CERTS, JAVA_HOME/JAVA_TOOL_OPTIONS, GRADLE_USER_HOME/ANDROID_USER_HOME, ANDROID_HOME + SDK PATH, resolv.conf | `buildPackageEnvironment` |
 | `etc/gitconfig` với `http.sslCAInfo` (Termux libcurl cắm cứng cert.pem của prefix cũ) | `writeGitConfig` |
 | resolv.conf cho glibc (IPv6-only fallback, refresh theo mạng) | `refreshResolvConf` |
@@ -29,6 +30,21 @@ Các cơ chế đã có trong repo (đánh dấu để so sánh, không cần l�
 Kết luận nhanh: nền tảng của app đã bao phủ ~80% những gì AndroidHarness vá, theo đúng
 cùng triết lý (không ptrace, sửa string cùng độ dài, self-heal). Phần dưới liệt kê những
 góc còn thiếu và những cách làm tốt hơn đáng học.
+
+### 1.1. Công cụ đọc code (grep/sed/awk/find/ripgrep)
+
+`CORE_PACKAGES` cài sẵn `grep`, `sed`, `gawk`, `findutils`, `diffutils` và `ripgrep` bản
+bionic ngay từ lần cài đầu, nên `$PREFIX/bin` (đứng trước `/system/bin`) cung cấp GNU
+grep/sed/awk/find. Nếu chỉ dựa vào toybox của Android thì `grep -P`, BRE `\|`, `sed \s`/`\b`
+bị từ chối với "bad regex"/"Unknown option" — lỗi trông như file hỏng nhưng thực ra là
+công cụ thiếu tính năng GNU.
+
+Riêng OpenCode tải ripgrep 15.1.0 bản glibc vào `~/.cache/opencode/bin/rg` rồi tái sử dụng;
+file đó có `PT_INTERP=/lib/ld-linux-aarch64.so.1` nên `grep`/`glob` báo
+`ripgrep execution failed`. `ensureRipgrepRuntime` ghi một wrapper tại đúng path cache để
+exec `$PREFIX/bin/rg`, và chạy lại ở mỗi maintenance (kể cả sau khi cache bị xoá hoặc
+OpenCode tự cập nhật). Wrapper tự set `LD_LIBRARY_PATH` vì ripgrep cần `libpcre2-8.so`
+của prefix.
 
 ## 2. AndroidHarness vá gì (dữ liệu lấy từ mã nguồn)
 

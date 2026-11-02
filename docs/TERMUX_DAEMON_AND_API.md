@@ -540,6 +540,15 @@ với `EACCES` (panel báo `ENOENT ... service.json`). Vì vậy server export t
 ngắn: unix socket giới hạn 107 byte, daemon cộng thêm `/opencode-pty-<uid>/<32 hex>.sock` (57 byte),
 nên không dùng được `$HOME/.opencode/tmp`.
 
+**Công cụ đọc code (`grep`, `sed`, `awk`, `find`, `ripgrep`):** `CORE_PACKAGES` của app cài sẵn
+bản GNU/bionic (`grep sed gawk findutils diffutils ripgrep`) ngay từ lần cài đầu. `$PREFIX/bin`
+đứng trước `/system/bin`, nên shell dùng GNU grep/sed/awk/find thay vì toybox; nhờ vậy
+`grep -P`, BRE `\|`, `sed \s`/`\b` hoạt động. OpenCode lại tải ripgrep 15.1.0 bản glibc vào
+`~/.cache/opencode/bin/rg` và ưu tiên file cache này, khiến `grep`/`glob` báo
+`ripgrep execution failed`. `OpenCodeBootstrap.ensureRipgrepRuntime` thay entry cache bằng wrapper
+`#!/system/bin/sh` exec `$PREFIX/bin/rg` (có set `LD_LIBRARY_PATH` cho `libpcre2-8.so`), và chạy
+lại ở mỗi maintenance nên cache bị xoá hay OpenCode cập nhật vẫn tự sửa.
+
 **Thời gian khởi động đo trên máy (runtime đã cài):** `opencode --version` ≈0.24 s; `serve` mở TCP
 sau ≈0.5 s và `/api/info` trả 200 sau ≈0.7 s; `POST /api/pair` ≈40 ms và `/auth/connect/<code>`
 ≈47 ms. Activity khởi động server và probe pairing song song (poll 700 ms), nên WebUI hiện sau

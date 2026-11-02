@@ -157,6 +157,25 @@ object OpenCodeBootstrap {
     /** Timeout for `opencode-pty --version`, also the sanity check of the patch. */
     private const val PTY_VERIFY_TIMEOUT_MS = 20_000L
 
+    /** Timeout for `rg --version` through the cache wrapper. */
+    private const val RIPGREP_VERIFY_TIMEOUT_MS = 10_000L
+
+    /**
+     * Directory in which OpenCode caches helper binaries that it downloads itself (`rg`, the pty
+     * helper, …). It belongs to OpenCode, so the app only seeds entries it can provide in a form
+     * that Android can execute.
+     */
+    private const val OPENCODE_CACHE_BIN_DIR = "$HOME/.cache/opencode/bin"
+
+    /**
+     * Cached ripgrep of OpenCode. OpenCode downloads ripgrep 15.1.0 for `arm64-linux` here and
+     * reuses the file on every start. That build is a glibc executable with
+     * `PT_INTERP=/lib/ld-linux-aarch64.so.1`, a path that does not exist on Android, so the
+     * built-in `grep`/`glob` tools fail with "ripgrep execution failed". The app replaces the
+     * cache entry with a wrapper around the bionic ripgrep of the prefix.
+     */
+    private const val RIPGREP_CACHE_PATH = "$OPENCODE_CACHE_BIN_DIR/rg"
+
     /** Directory used while downloading and patching. */
     const val TMP_DIR = "$OC_HOME/tmp"
 
@@ -325,12 +344,21 @@ object OpenCodeBootstrap {
      * certificate store, the glibc runtime (the loader that runs OpenCode) and patchelf (it
      * rewrites the RUNPATH of the binaries).
      *
+     * The GNU text tools and ripgrep are part of the base toolchain as well. Android only ships
+     * toybox versions of grep/sed/find/awk: they reject common GNU syntax (`grep -P`, the BRE
+     * `\|`, `sed \s`/`\b`) and the built-in search tools of OpenCode need a bionic ripgrep. The
+     * prefix has to come with working versions, otherwise a code-reading command fails with a
+     * syntax error that looks like a bug in the file being read.
+     *
      * `coreutils` currently pulls `openssl` in as a dependency, but that is an implementation
      * detail of the repository. Listing it here keeps the TLS libraries installed even if the
      * dependency graph changes.
      */
     private val CORE_PACKAGES =
-        listOf("bash", "coreutils", "openssl", "ca-certificates", "patchelf", "glibc")
+        listOf(
+            "bash", "coreutils", "openssl", "ca-certificates", "patchelf", "glibc",
+            "grep", "sed", "gawk", "findutils", "diffutils", "ripgrep",
+        )
 
     /** Endpoint telling which OpenCode version is the latest one. */
     private const val VERSION_API_URL = "https://opencode.ai/update/api/latest/cli/npm"
@@ -1520,6 +1548,7 @@ object OpenCodeBootstrap {
                 if (ensureTerminalRuntime() == null) {
                     status("WARNING: the terminal helper could not be prepared, the terminal may not start.")
                 }
+                ensureRipgrepRuntime()
                 installEntrypoints()
             } finally {
                 deleteQuietly(tarball)
@@ -1565,6 +1594,9 @@ object OpenCodeBootstrap {
             // lookup of the server fails with "getaddrinfo".
             if (loader != null) relocateGlibc(loader)
             ensureTerminalRuntime()
+            // The package repair above installs ripgrep on an existing prefix; seed the cache
+            // entry that OpenCode reads right after it, before the server is started.
+            ensureRipgrepRuntime()
             // The env script is rewritten on every start, so a fix in it reaches an install that
             // predates it without reinstalling a package first (the `pkg` wrapper, for example).
             ensurePackageEnvironment(context)
@@ -2997,6 +3029,56 @@ object OpenCodeBootstrap {
             return target.absolutePath
         } finally {
             deleteQuietly(staged)
+        }
+    }
+
+    /**
+     * Make sure the built-in `grep` and `glob` tools of OpenCode can run.
+     *
+     * OpenCode resolves ripgrep in this order: `rg` from `PATH`, then its cached download in
+     * `~/.cache/opencode/bin/rg`, then a fresh download. The cached file is a glibc build whose
+     * interpreter does not exist on Android, so the tool fails with "ripgrep execution failed".
+     * The prefix now ships the bionic `ripgrep` package, but OpenCode may still pick the broken
+     * cache entry (and it rewrites the entry after a cache wipe), so the app puts a wrapper at
+     * that path on every maintenance pass.
+     *
+     * The wrapper sets `LD_LIBRARY_PATH` itself: the Termux ripgrep needs `libpcre2-8.so` from
+     * the prefix and must also work when OpenCode starts it without the environment of the
+     * terminal.
+     */
+    private fun ensureRipgrepRuntime() {
+        val binary = File("$PREFIX/bin/rg")
+        if (!isExecutable(binary)) {
+            Log.w(LOG_TAG, "Cannot prepare the ripgrep cache: $binary is not executable")
+            return
+        }
+
+        val target = File(RIPGREP_CACHE_PATH)
+        val wrapper = buildString {
+            append("#!/system/bin/sh\n")
+            append("# Generated by OpenCode for Android. OpenCode downloads a glibc ripgrep that\n")
+            append("# Android cannot execute; use the bionic ripgrep of the app prefix instead.\n")
+            append("LD_LIBRARY_PATH=\"").append(PREFIX)
+            append("/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"\n")
+            append("export LD_LIBRARY_PATH\n")
+            append("exec \"").append(binary.absolutePath).append("\" \"\$@\"\n")
+        }
+
+        if (target.isFile && target.canExecute() && readTextFileQuietly(target) == wrapper) return
+
+        try {
+            writeTextFileAtomically(target, wrapper)
+            Os.chmod(target.absolutePath, MODE_755)
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not install the ripgrep wrapper at $target", e)
+            return
+        }
+
+        val verify = runCommand(listOf(target.absolutePath, "--version"), RIPGREP_VERIFY_TIMEOUT_MS)
+        if (verify.first != 0 || !verify.second.contains("ripgrep")) {
+            Log.w(LOG_TAG, "The ripgrep wrapper does not start: ${verify.second.takeLast(300)}")
+        } else {
+            Log.i(LOG_TAG, "Prepared the ripgrep cache at $target")
         }
     }
 
