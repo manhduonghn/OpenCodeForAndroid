@@ -154,13 +154,18 @@ dependency closure and completes it.
 `termux-exec` is not needed because the app targets API 28, so binaries in its
 data directory may be executed directly. That is also why there is no linker
 shim: a script whose shebang points into this prefix is exec'ed by the kernel
-normally. The app still repairs prefixes installed by older builds on every
-start: dangling Termux symlinks are relinked, dead Termux shebangs are rewritten
-or removed, and git's ELF shell path is patched. A shebang that names an
-interpreter Android does not have (`#!/usr/bin/env node`, `#!/bin/bash`) is
-pointed at the copy in `$PREFIX/bin` when that exists. Scripts written after the
-last repair pass — a global `npm install -g`, for example — need `pkg repair`
-(any `pkg install` also runs the pass) before the new command can be executed
+normally. The app keeps prefixes installed by older builds healthy: on every
+start it refreshes the cheap entry points (bridge, `opencode`/`pkg` links,
+ripgrep cache, resolver and environment), and when the package marker or the
+package directories changed it also runs the full repair pass — dangling Termux
+symlinks are relinked, dead Termux shebangs are rewritten or removed, and git's
+ELF shell path is patched. The full pass is stamped in
+`$HOME/.opencode/.maintenance`, so an unchanged runtime starts without scanning
+`bin/`, `lib/` and the node tree again. A shebang that names an interpreter
+Android does not have (`#!/usr/bin/env node`, `#!/bin/bash`) is pointed at the
+copy in `$PREFIX/bin` when that exists. Scripts written after the last repair
+pass — a global `npm install -g`, for example — need `pkg repair` (any
+`pkg install` also runs the pass) before the new command can be executed
 directly; `oc-run COMMAND` works immediately. A package that the marker lists
 but whose files are gone is installed again instead of being treated as present.
 

@@ -249,6 +249,16 @@ object OpenCodeBootstrap {
     private const val GLIBC_RELOCATED_PATH = "$OC_HOME/.glibc-relocated"
 
     /**
+     * State of the prefix that the last full maintenance pass repaired. When the app, the APK,
+     * the package marker and the package directories are unchanged, the next start only runs the
+     * cheap pass instead of scanning bin/, lib/ and the node tree again.
+     */
+    private const val MAINTENANCE_STAMP_PATH = "$OC_HOME/.maintenance"
+
+    /** Bumped when the maintenance stamp has to be invalidated for a new app build. */
+    private const val MAINTENANCE_VERSION = 1
+
+    /**
      * Configuration file of the OpenSSL package. Termux installs it below `etc/tls`, because
      * the package also keeps its certificate store there. The compiled-in default still points
      * at `/data/data/com.termux/files/usr/etc/tls/openssl.cnf`, which belongs to the Termux app
@@ -544,6 +554,9 @@ object OpenCodeBootstrap {
 
         Thread({
             try {
+                // Housekeeping must never compete with the server start or the WebView with a
+                // normal priority, so a deep pass does not make the app feel slow on a cold start.
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                 Installer(context, false).apply {
                     logOnly = true
                     doMaintenance()
@@ -878,7 +891,7 @@ object OpenCodeBootstrap {
         // Seed the trust store before the environment and gitconfig are written: the git config
         // below only points at the bundle when it actually exists.
         ensureCaBundle(context)
-        writeTextFileQuietly(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
+        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
         writeGitConfig()
         ensureGradleProperties()
         ensureLoginProfile()
@@ -1038,7 +1051,7 @@ object OpenCodeBootstrap {
             append("[http]\n")
             append("\tsslCAInfo = ").append(cert.absolutePath).append('\n')
         }
-        writeTextFileQuietly(File(PREFIX, "etc/gitconfig"), text)
+        writeTextFileIfChanged(File(PREFIX, "etc/gitconfig"), text)
     }
 
     /**
@@ -1364,7 +1377,7 @@ object OpenCodeBootstrap {
             append("if [ -r \"\$PREFIX/etc/opencode-env.sh\" ]; then . \"\$PREFIX/etc/opencode-env.sh\"; fi\n")
             append("if [ -r \"\$HOME/.bashrc\" ]; then . \"\$HOME/.bashrc\"; fi\n")
         }
-        writeTextFileQuietly(profile, content)
+        if (content != current) writeTextFileQuietly(profile, content)
     }
 
     /**
@@ -1560,6 +1573,47 @@ object OpenCodeBootstrap {
 
         fun doMaintenance() {
             deleteQuietly(File(LEGACY_SETUP_SCRIPT_PATH))
+            val started = SystemClock.uptimeMillis()
+            val current = isMaintenanceCurrent()
+            if (current) {
+                doQuickMaintenance()
+            } else {
+                doDeepMaintenance()
+            }
+            // Write the stamp at the end: a full pass changes files in bin/ and etc/, so only the
+            // state after the pass describes a repaired prefix.
+            writeTextFileQuietly(File(MAINTENANCE_STAMP_PATH), maintenanceStamp() + "\n")
+            Log.i(
+                LOG_TAG,
+                "Maintenance finished in ${SystemClock.uptimeMillis() - started} ms " +
+                    "(${if (current) "quick" else "full"} pass).",
+            )
+        }
+
+        /**
+         * The parts that have to run on every start even when the prefix did not change. They are
+         * cheap (they read small markers instead of scanning the package trees) and keep an entry
+         * point, the resolver or the terminal helper working after a crash.
+         */
+        private fun doQuickMaintenance() {
+            ensurePathAliases()
+            ensureTerminalRuntime()
+            ensureRipgrepRuntime()
+            // The env script is rewritten when its content changed, so a fix in it reaches an
+            // install that predates it without reinstalling a package first (the `pkg` wrapper).
+            ensurePackageEnvironment(context)
+            refreshResolvConf(context)
+            repairNativeInterp()
+            refreshNativeMarker()
+            installEntrypoints()
+        }
+
+        /**
+         * Full self-heal of a prefix that changed: a package was installed, updated or removed,
+         * the app was updated, or a file vanished. Only this pass scans the package trees and
+         * rewrites binaries that a package update may have replaced with the Termux paths.
+         */
+        private fun doDeepMaintenance() {
             // Repair a prefix that was installed by an older build: dangling Termux symlinks,
             // dead Termux shebangs and the git ELF shell path. Then reinstall packages whose
             // marker entry exists but whose files are gone (an interrupted extraction).
@@ -1597,14 +1651,46 @@ object OpenCodeBootstrap {
             // The package repair above installs ripgrep on an existing prefix; seed the cache
             // entry that OpenCode reads right after it, before the server is started.
             ensureRipgrepRuntime()
-            // The env script is rewritten on every start, so a fix in it reaches an install that
-            // predates it without reinstalling a package first (the `pkg` wrapper, for example).
             ensurePackageEnvironment(context)
             refreshResolvConf(context)
             patchLoginShellPaths()
             repairNativeInterp()
             refreshNativeMarker()
             installEntrypoints()
+        }
+
+        /**
+         * True when the last full pass describes the current prefix. The package marker and the
+         * directory times catch an install, an update, an interrupted extraction or a removed
+         * file; the APK stamp catches an app update.
+         */
+        private fun isMaintenanceCurrent(): Boolean {
+            if (readTrimmed(File(MAINTENANCE_STAMP_PATH)) != maintenanceStamp()) return false
+            // The directory time does not change when only the content of a file changes, so
+            // prove the packages with a few stats before skipping the repair scan.
+            return !packagesNeedRepair()
+        }
+
+        private fun packagesNeedRepair(): Boolean {
+            val prefix = File(PREFIX)
+            if (OpenCodePackages.brokenPackages(prefix).isNotEmpty()) return true
+            val recorded = OpenCodePackages.installed(prefix)
+            return CORE_PACKAGES.any { it !in recorded }
+        }
+
+        /** Fingerprint of the prefix and the app build that the last full pass repaired. */
+        private fun maintenanceStamp(): String {
+            val packages = File(PREFIX, ".packages-installed")
+            return buildString {
+                append(MAINTENANCE_VERSION).append('|')
+                append(BuildConfig.VERSION_CODE).append('|')
+                append(apkStamp()).append('|')
+                append(packages.length()).append(':').append(packages.lastModified()).append('|')
+                // An install, update or removal changes the time of these directories.
+                append(File(PREFIX, "bin").lastModified()).append('|')
+                append(File(PREFIX, "lib").lastModified()).append('|')
+                append(File(GLIBC_LIB_DIR).lastModified())
+            }
         }
 
         private fun installPackages(packages: List<String>, errorPrefix: String) {
@@ -2461,6 +2547,7 @@ object OpenCodeBootstrap {
                 append("exec \"\$@\"\n")
             }
             val file = File(OCRUN_PATH)
+            if (readTextFileQuietly(file) == script && file.canExecute()) return
             writeTextFileQuietly(file, script)
             try {
                 Os.chmod(file.absolutePath, MODE_700)
@@ -2488,6 +2575,13 @@ object OpenCodeBootstrap {
             if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
                 Log.w(LOG_TAG, "Could not create the directory $parent")
                 return
+            }
+            try {
+                // The link is already correct: replacing it would create a new inode on every
+                // start for no reason.
+                if (Os.readlink(link.absolutePath) == target) return
+            } catch (e: Exception) {
+                // Not a symlink yet (or it vanished), replace it below.
             }
 
             var temp: File? = null
@@ -3499,19 +3593,25 @@ object OpenCodeBootstrap {
      * @return true when the loader was relocated too, ie. a direct start can work.
      */
     private fun relocateGlibc(loaderPath: String?): Boolean {
-        val loaderOk = loaderPath != null && relocateLoader(loaderPath)
-
         val libDir = File(GLIBC_LIB_DIR)
         val libc = File(libDir, "libc.so.6")
+        val marker = File(GLIBC_RELOCATED_PATH)
+
+        // The stamp covers the loader as well as the shared objects. A matching marker therefore
+        // proves that both are already relocated, so the loader does not have to be read (and
+        // scanned for the Termux prefix) on every start.
+        val current = if (libc.isFile) glibcStamp(libc, libDir, loaderPath) else null
+        if (current != null && current == readTrimmed(marker)) {
+            return loaderPath != null && File(loaderPath).isFile
+        }
+
+        val loaderOk = loaderPath != null && relocateLoader(loaderPath)
         if (!libc.isFile) return loaderOk
 
         // A package update replaces libc.so.6 and invalidates the marker, everything else is a
         // no-op then (files without the prefix are not rewritten). The directory time is part of
         // the stamp too: an update that only replaces another object of the runtime would
         // otherwise leave that object with the paths of the Termux app.
-        val marker = File(GLIBC_RELOCATED_PATH)
-        if (glibcStamp(libc, libDir) == readTrimmed(marker)) return loaderOk
-
         val files = libDir.listFiles()
         var patchedFiles = 0
         var patchedPaths = 0
@@ -3543,13 +3643,19 @@ object OpenCodeBootstrap {
         if (patchedFiles > 0) sGlibcPatchGeneration++
         // Stamped after the rewrite: replacing an object updates the time of the directory, and the
         // marker must describe the runtime as it is now, not as it was before.
-        writeTextFileQuietly(marker, glibcStamp(libc, libDir) + "\n")
+        writeTextFileQuietly(marker, glibcStamp(libc, libDir, loaderPath) + "\n")
         return loaderOk
     }
 
-    /** Fingerprint of the glibc runtime: sandbox path, libc.so.6 and the directory that holds it. */
-    private fun glibcStamp(libc: File, libDir: File): String =
-        "$DATA_DIR|${libc.length()}|${libc.lastModified()}|${libDir.lastModified()}"
+    /**
+     * Fingerprint of the glibc runtime: sandbox path, libc.so.6, the directory that holds it and
+     * the loader whose interpreter path is rewritten too.
+     */
+    private fun glibcStamp(libc: File, libDir: File, loaderPath: String?): String {
+        val loader = loaderPath?.let { File(it) }
+        return "$DATA_DIR|${libc.length()}|${libc.lastModified()}|${libDir.lastModified()}|" +
+            "${loader?.length() ?: 0}|${loader?.lastModified() ?: 0}"
+    }
 
     /**
      * Replace strings inside the C strings of a binary in place. Used for the login shell paths of
@@ -3702,6 +3808,16 @@ object OpenCodeBootstrap {
         } catch (e: IOException) {
             Log.w(LOG_TAG, "Could not write $file", e)
         }
+    }
+
+    /**
+     * Write [content] only when the file does not have it yet. The maintenance pass runs on every
+     * start, so rewriting unchanged shell files would touch the prefix and wake up watchers for
+     * nothing.
+     */
+    private fun writeTextFileIfChanged(file: File, content: String) {
+        if (file.isFile && readTextFileQuietly(file) == content) return
+        writeTextFileQuietly(file, content)
     }
 
     /** @return the content of the file, or null when it does not exist. */

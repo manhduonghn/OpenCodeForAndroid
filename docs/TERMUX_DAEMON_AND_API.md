@@ -551,8 +551,20 @@ lại ở mỗi maintenance nên cache bị xoá hay OpenCode cập nhật vẫn
 
 **Thời gian khởi động đo trên máy (runtime đã cài):** `opencode --version` ≈0.24 s; `serve` mở TCP
 sau ≈0.5 s và `/api/info` trả 200 sau ≈0.7 s; `POST /api/pair` ≈40 ms và `/auth/connect/<code>`
-≈47 ms. Activity khởi động server và probe pairing song song (poll 700 ms), nên WebUI hiện sau
-khoảng 1 s. Lần chạy đầu chậm là do tải runtime (~248 MB), không phải server.
+≈47 ms. Activity khởi động server và probe pairing song song: 3 giây đầu retry mỗi 150 ms (server
+mở port sau ~0.5 s), sau đó mới giãn ra 700 ms như cũ, nên WebUI thường hiện sau khoảng 0.6–0.7 s.
+Lần chạy đầu chậm là do tải runtime (~248 MB), không phải server.
+
+**Maintenance hai mức (fast path):** mỗi lần mở app, `doMaintenance` so
+`$HOME/.opencode/.maintenance` với fingerprint của prefix (versionCode/APK stamp, kích thước +
+mtime của `.packages-installed`, mtime của `bin/`, `lib/`, `glibc/lib`) và vài proof file. Nếu
+khớp, chỉ chạy lượt rẻ: path alias, terminal helper, wrapper `rg`, env/resolver, marker native và
+entry point; các file shell chỉ được ghi khi nội dung thực sự đổi. Khi marker gói, thư mục gói
+hoặc app đổi, mới chạy lượt đầy đủ (quét shebang/symlink, reinstall gói hỏng, relocate glibc, vá
+login path của bash). Nhờ vậy app cập nhật gói vẫn tự phục hồi, còn lần mở bình thường không còn
+quét lại `bin/`, `lib/`, `lib/node_modules` hay đọc lại loader/bash mỗi lần. Maintenance chạy ở
+thread riêng với `THREAD_PRIORITY_BACKGROUND`, không tranh CPU/I/O với lúc server và WebView khởi
+động.
 
 **Server cũ không có biến môi trường mới:** tiến trình server giữ nguyên env lúc spawn, nên server
 mồ côi do bản app cũ khởi động sẽ không có `OPENCODE_PTY_BIN` dù app đã cập nhật. Service ghi chữ

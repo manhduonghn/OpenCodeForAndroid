@@ -142,6 +142,13 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private var waitingForInstall = false
     private var lastServiceStart = 0L
 
+    /**
+     * Failed probes since the last successful load. The server needs about half a second to open
+     * its port after a cold start, so the first retries are much shorter than the interval used
+     * while an installation is still running.
+     */
+    private var probeFailures = 0
+
     /** How often the pairing code was requested for the current server start. */
     private var pairAttempts = 0
 
@@ -206,6 +213,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     probeInFlight = false
                     if (destroyed) return@post
                     if (reachable) {
+                        probeFailures = 0
                         if (sessionToken == null && pairAttempts < 6) {
                             // The server accepted the connection but not the pairing request yet,
                             // retry briefly before falling back to the bare web app.
@@ -218,7 +226,16 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     }
                     updateProgress()
                     if (OpenCodeBootstrap.getInstallState().failed) return@post
-                    handler.postDelayed(poll, 700)
+                    // A cold start opens the port within ~0.5 s: retry fast for the first three
+                    // seconds, then fall back to the slow interval so a long installation does
+                    // not wake the app every 150 ms.
+                    val delay = if (probeFailures < 20) {
+                        probeFailures++
+                        150L
+                    } else {
+                        700L
+                    }
+                    handler.postDelayed(poll, delay)
                 }
             }
         }
@@ -311,6 +328,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         startServerService()
         // The watchdog only needs to be scheduled once, ensureScheduled is idempotent.
         OpenCodeWatchdog.ensureScheduled(this)
+        probeFailures = 0
         if (!pageAlive) {
             handler.post(poll)
         } else {
@@ -1443,6 +1461,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             val now = SystemClock.uptimeMillis()
             if (now - lastServiceStart > 3000) {
                 lastServiceStart = now
+                probeFailures = 0
                 startServerService()
             }
             return
@@ -1513,6 +1532,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
         pairAttempts = 0
         loadFailures = 0
+        probeFailures = 0
         handler.removeCallbacks(poll)
         handler.post(poll)
     }

@@ -122,6 +122,13 @@ App có các mảnh tương đương rải trong `OpenCodePackages.repair` + `do
 thiếu (4) — chưa có gói build toolchain nào, nên mới quyết định tính kế hoạch khi thêm
 gói `d8`/`apksigner`.
 
+Lượt repair đầy đủ không chạy lại mỗi lần mở app: `doMaintenance` lưu fingerprint của prefix
+(APK/versionCode, `.packages-installed`, mtime `bin/`/`lib/`/`glibc/lib`) trong
+`$HOME/.opencode/.maintenance`. Khi fingerprint còn khớp và proof file của các gói vẫn đủ, app chỉ
+chạy fast path (entry point, wrapper `rg`, env, resolver, marker) và bỏ qua bước quét
+`bin/`, `lib/`, `lib/node_modules`, đọc lại loader/bash. Một `pkg install`, `pkg repair` hay app
+update làm fingerprint đổi và kích hoạt lại lượt đầy đủ, nên self-heal vẫn giữ nguyên.
+
 ### 2.6 Cái khác đáng ghi
 
 - **Locale**: `LANG=C.UTF-8` luôn được set (script env của app chưa set; glibc không có
