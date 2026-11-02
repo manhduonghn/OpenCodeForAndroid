@@ -3601,8 +3601,19 @@ object OpenCodeBootstrap {
         // proves that both are already relocated, so the loader does not have to be read (and
         // scanned for the Termux prefix) on every start.
         val current = if (libc.isFile) glibcStamp(libc, libDir, loaderPath) else null
-        if (current != null && current == readTrimmed(marker)) {
+        val stored = readTrimmed(marker)
+        if (current != null && current == stored) {
             return loaderPath != null && File(loaderPath).isFile
+        }
+        // Markers of older builds did not include the loader. They were still written only after
+        // the loader and every object had been rewritten, so upgrade them in place instead of
+        // scanning the whole glibc runtime again on the first start after an app update.
+        if (current != null) {
+            val legacy = "$DATA_DIR|${libc.length()}|${libc.lastModified()}|${libDir.lastModified()}"
+            if (stored == legacy) {
+                writeTextFileQuietly(marker, current + "\n")
+                return loaderPath != null && File(loaderPath).isFile
+            }
         }
 
         val loaderOk = loaderPath != null && relocateLoader(loaderPath)
