@@ -177,7 +177,7 @@
     <!-- GitHub extension -->
     <string name="opencode_settings_extensions">Tiện ích mở rộng</string>
     <string name="opencode_settings_github">GitHub</string>
-    <string name="opencode_settings_github_desc">Đăng nhập GitHub để xem repository, clone dự án trực tiếp.</string>
+    <string name="opencode_settings_github_desc">Đăng nhập GitHub để xem repository, clone và push dự án với đầy đủ quyền.</string>
     <string name="opencode_settings_github_connect">Đăng nhập GitHub</string>
     <string name="opencode_settings_github_disconnect">Đăng xuất</string>
     <string name="opencode_settings_github_connected">Đã kết nối: %1$s</string>
@@ -196,6 +196,7 @@
     <string name="opencode_settings_github_clone_hint">Repo sẽ được clone vào thư mục HOME của OpenCode.</string>
     <string name="opencode_settings_github_url">Link repo (https://github.com/owner/repo)</string>
     <string name="opencode_settings_github_ready">Đã có git &amp; gh. Đăng nhập GitHub để xem và clone repository.</string>
+    <string name="opencode_settings_github_reauth">Token hiện tại chưa có đủ quyền. Đăng nhập lại để cấp toàn bộ quyền GitHub (push code, workflow, package…).</string>
     <string name="opencode_settings_github_missing">Chưa có git/gh. Bấm nút bên dưới để cài đặt.</string>
     <string name="opencode_settings_github_checking">Đang kiểm tra GitHub…</string>
     <string name="opencode_settings_github_waiting">Đang chờ bạn xác thực trên GitHub…</string>

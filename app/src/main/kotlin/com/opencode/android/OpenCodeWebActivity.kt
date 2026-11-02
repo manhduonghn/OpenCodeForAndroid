@@ -712,18 +712,24 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         githubProgress.visibility = View.VISIBLE
         backgroundExecutor.execute {
             val installed = OpenCodeGitHub.bothAvailable()
+            val needsReauth = installed && OpenCodeGitHub.needsScopeUpgrade()
             val loggedIn = installed && OpenCodeGitHub.isLoggedIn()
             val user = if (loggedIn) OpenCodeGitHub.currentUser() else null
             handler.post {
                 if (destroyed) return@post
                 githubRefreshing = false
                 githubProgress.visibility = View.GONE
-                applyGithubState(installed, loggedIn, user)
+                applyGithubState(installed, loggedIn, user, needsReauth)
             }
         }
     }
 
-    private fun applyGithubState(installed: Boolean, loggedIn: Boolean, user: String?) {
+    private fun applyGithubState(
+        installed: Boolean,
+        loggedIn: Boolean,
+        user: String?,
+        needsReauth: Boolean,
+    ) {
         githubInstall.visibility = if (installed) View.GONE else View.VISIBLE
         githubInstallStatus.visibility = if (githubInstalling) View.VISIBLE else View.GONE
 
@@ -738,7 +744,11 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             return
         }
 
-        githubStatus.text = getString(R.string.opencode_settings_github_ready)
+        githubStatus.text = if (needsReauth) {
+            getString(R.string.opencode_settings_github_reauth)
+        } else {
+            getString(R.string.opencode_settings_github_ready)
+        }
         if (!loggedIn) {
             githubChip.text = getString(R.string.opencode_settings_github_not_connected)
             githubUser.visibility = View.GONE

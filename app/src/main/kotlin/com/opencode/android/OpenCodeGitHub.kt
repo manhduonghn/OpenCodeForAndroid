@@ -34,7 +34,26 @@ object OpenCodeGitHub {
     private const val DEVICE_CODE_URL = "https://github.com/login/device/code"
     private const val ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
     private const val VERIFY_URL = "https://github.com/login/device"
-    private const val SCOPES = "repo read:org gist"
+
+    /**
+     * Every OAuth scope GitHub offers to OAuth apps, so the token can clone and push to private
+     * repositories, update workflow files, manage packages, gists, keys, hooks and repositories
+     * without asking the user to authorise again.
+     *
+     * The sub-scopes (`repo:status`, `read:user`, …) are listed even though `repo` and `user`
+     * already include them: GitHub normalises the granted list, and keeping the full list here
+     * documents what the login asks for. `offline_access` is intentionally absent — it would
+     * replace the long-lived token with one that expires after a few hours.
+     */
+    private const val SCOPES = "repo repo:status repo_deployment public_repo repo:invite " +
+        "security_events admin:repo_hook write:repo_hook read:repo_hook " +
+        "admin:org write:org read:org " +
+        "admin:public_key write:public_key read:public_key admin:org_hook " +
+        "gist notifications user read:user user:email user:follow " +
+        "project read:project delete_repo " +
+        "write:packages read:packages delete:packages " +
+        "admin:gpg_key write:gpg_key read:gpg_key " +
+        "codespace workflow read:audit_log"
 
     /** scp-like (`git@github.com:owner/repo`) and `ssh://git@github.com/owner/repo` URLs. */
     private val SSH_GITHUB_URL = Regex("^(?:ssh://)?git@github\\.com[:/](.+)$")
@@ -104,7 +123,39 @@ object OpenCodeGitHub {
         } catch (e: Exception) {
             // Not important.
         }
+        try {
+            scopesFile().delete()
+        } catch (e: Exception) {
+            // Not important.
+        }
     }
+
+    /**
+     * The scopes of [tokenFile]. Older builds stored a token that only had `repo read:org gist`;
+     * comparing this marker with [SCOPES] lets the settings screen ask for a fresh login instead
+     * of silently keeping a token that cannot push workflows or packages.
+     */
+    private fun scopesFile(): File = File(OpenCodeBootstrap.OC_HOME, "github-scopes")
+
+    private fun storedScopes(): String? = try {
+        scopesFile().takeIf { it.isFile }?.readText()?.trim()?.ifEmpty { null }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun storeScopes() {
+        try {
+            val file = scopesFile()
+            file.parentFile?.mkdirs()
+            file.writeText(SCOPES)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not store the GitHub token scopes", e)
+        }
+    }
+
+    /** True when a stored token was issued before the login requested the full scope set. */
+    fun needsScopeUpgrade(): Boolean =
+        storedToken() != null && storedScopes() != SCOPES
 
     /** Install git and gh into the private prefix, blocking the calling thread. */
     fun install(context: Context, onStatus: (String) -> Unit): Result {
@@ -146,7 +197,10 @@ object OpenCodeGitHub {
         if (!result.ok) return false
         val lower = result.output.lowercase()
         if (lower.contains("not logged")) return false
-        return lower.contains("logged in to github.com")
+        if (!lower.contains("logged in to github.com")) return false
+        // A token stored by an older build does not have the full scopes. Report "not logged in"
+        // so the settings screen offers the login again.
+        return !needsScopeUpgrade()
     }
 
     fun currentUser(): String? {
@@ -215,6 +269,9 @@ object OpenCodeGitHub {
                 }
                 // Plain `git clone` can use the gh credential helper, even for private repos.
                 runGh(arrayOf("auth", "setup-git"))
+                // Remember the scopes of this token, so the next app update can tell whether the
+                // login already asked for everything.
+                storeScopes()
                 if (!isLoggedIn()) {
                     throw IllegalStateException("gh chưa ghi nhận đăng nhập. Hãy thử lại.")
                 }
