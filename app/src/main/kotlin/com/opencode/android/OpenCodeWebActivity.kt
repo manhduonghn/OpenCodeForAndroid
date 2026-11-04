@@ -137,6 +137,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var githubProgress: ProgressBar
     private lateinit var githubChip: TextView
     private lateinit var githubStatus: TextView
+    private lateinit var githubSheetStatus: TextView
     private lateinit var githubInstallStatus: TextView
     private lateinit var githubInstall: Button
     private lateinit var githubLogin: Button
@@ -507,6 +508,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         githubProgress = findViewById(R.id.github_progress)
         githubChip = findViewById(R.id.github_chip)
         githubStatus = findViewById(R.id.github_status)
+        githubSheetStatus = githubSheetView.findViewById(R.id.github_sheet_status)
         githubInstallStatus = githubSheetView.findViewById(R.id.github_install_status)
         githubInstall = githubSheetView.findViewById(R.id.github_install)
         githubLogin = githubSheetView.findViewById(R.id.github_login)
@@ -998,7 +1000,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         val view = TextView(this)
         view.text = message
         view.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutline, getColor(R.color.oc_text_faint)))
-        view.textSize = 12f
+        view.setTextAppearance(R.style.TextAppearance_OpenCode_BodySmall)
         view.setPadding(dp(2), dp(8), dp(2), dp(4))
         return view
     }
@@ -1175,7 +1177,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     val row = TextView(this)
                     row.text = text
                     row.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutline, getColor(R.color.oc_text_faint)))
-                    row.textSize = 11f
+                    row.setTextAppearance(R.style.TextAppearance_OpenCode_MonoSmall)
                     row.setPadding(0, dp(2), 0, dp(2))
                     storagePaths.addView(row)
                 }
@@ -1265,7 +1267,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
         if (!installed) {
             githubChip.text = getString(R.string.opencode_settings_github_not_connected)
-            githubStatus.text = getString(R.string.opencode_settings_github_missing)
+            setGithubStatus(getString(R.string.opencode_settings_github_missing))
             githubLogin.visibility = View.GONE
             githubLogout.visibility = View.GONE
             githubUser.visibility = View.GONE
@@ -1274,11 +1276,13 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             return
         }
 
-        githubStatus.text = if (needsReauth) {
-            getString(R.string.opencode_settings_github_reauth)
-        } else {
-            getString(R.string.opencode_settings_github_ready)
-        }
+        setGithubStatus(
+            if (needsReauth) {
+                getString(R.string.opencode_settings_github_reauth)
+            } else {
+                getString(R.string.opencode_settings_github_ready)
+            },
+        )
         if (!loggedIn) {
             githubChip.text = getString(R.string.opencode_settings_github_not_connected)
             githubUser.visibility = View.GONE
@@ -1300,6 +1304,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         githubCloneSection.visibility = View.VISIBLE
         githubRepoSection.visibility = View.VISIBLE
         if (!githubReposLoaded) refreshGithubRepos(force = false)
+    }
+
+    /** Keep the Settings summary and the open GitHub sheet in sync. */
+    private fun setGithubStatus(text: CharSequence) {
+        githubStatus.text = text
+        githubSheetStatus.text = text
     }
 
     private fun startGithubInstall() {
@@ -1344,12 +1354,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun startGithubLogin() {
         if (githubLoginInFlight) return
         if (!OpenCodeGitHub.bothAvailable()) {
-            githubStatus.text = getString(R.string.opencode_settings_github_missing)
+            setGithubStatus(getString(R.string.opencode_settings_github_missing))
             return
         }
         githubLoginInFlight = true
         githubProgress.visibility = View.VISIBLE
-        githubStatus.text = getString(R.string.opencode_settings_github_logging_in)
+        setGithubStatus(getString(R.string.opencode_settings_github_logging_in))
         githubCode.visibility = View.GONE
         githubCopy.visibility = View.GONE
         githubLink.visibility = View.GONE
@@ -1368,7 +1378,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     githubCopy.visibility = View.VISIBLE
                     githubLink.visibility = View.VISIBLE
                     githubHint.visibility = View.VISIBLE
-                    githubStatus.text = getString(R.string.opencode_settings_github_waiting)
+                    setGithubStatus(getString(R.string.opencode_settings_github_waiting))
                 }
                 OpenCodeGitHub.completeLogin(device)
                 handler.post {
@@ -1379,7 +1389,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     githubCopy.visibility = View.GONE
                     githubLink.visibility = View.GONE
                     githubHint.visibility = View.GONE
-                    githubStatus.text = getString(R.string.opencode_settings_github_login_ok)
+                    setGithubStatus(getString(R.string.opencode_settings_github_login_ok))
                     githubUserCode = ""
                     githubVerificationUrl = ""
                     githubReposLoaded = false
@@ -1391,9 +1401,11 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     if (destroyed) return@post
                     githubLoginInFlight = false
                     githubProgress.visibility = View.GONE
-                    githubStatus.text = getString(
-                        R.string.opencode_settings_github_login_failed,
-                        e.message ?: e.toString(),
+                    setGithubStatus(
+                        getString(
+                            R.string.opencode_settings_github_login_failed,
+                            e.message ?: e.toString(),
+                        ),
                     )
                 }
             }
@@ -1440,7 +1452,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(githubVerificationUrl)))
         } catch (e: Exception) {
-            showSnack(getString(R.string.opencode_storage_permission_failed))
+            showSnack(getString(R.string.opencode_settings_github_open_failed))
         }
     }
 
@@ -1486,7 +1498,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         row.text = repo.name + " · " + privacy +
             if (repo.description.isEmpty()) "" else "\n" + repo.description
         row.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant, getColor(R.color.oc_text_muted)))
-        row.textSize = 12f
+        row.setTextAppearance(R.style.TextAppearance_OpenCode_BodySmall)
         row.setLineSpacing(dp(2).toFloat(), 1f)
         row.setPadding(dp(10), dp(8), dp(10), dp(8))
         row.background = getDrawable(R.drawable.bg_input)
@@ -1571,7 +1583,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun restartServerForGitHub() {
-        githubStatus.text = getString(R.string.opencode_settings_github_syncing)
+        setGithubStatus(getString(R.string.opencode_settings_github_syncing))
         try {
             val intent = Intent(this, OpenCodeService::class.java)
                 .putExtra("action", OpenCodeService.ACTION_RESTART)

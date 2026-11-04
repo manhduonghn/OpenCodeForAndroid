@@ -1,8 +1,8 @@
 # Đề xuất thiết kế lại giao diện OpenCode for Android
 
 Tài liệu đề xuất cho giao diện native của app. Mục tiêu: **đẹp, đồng nhất, dễ bảo trì** và không
-làm mất bản sắc Material You / tiếng Việt hiện có. Phase 0 và Phase 1 đã được triển khai trong
-`app/src/main`; các phase còn lại là kế hoạch.
+làm mất bản sắc Material You / tiếng Việt hiện có. Phase 0–4 đã được triển khai trong
+`app/src/main`; Phase 5 đã chạy các kiểm tra tĩnh và chờ kiểm tra trên thiết bị thật.
 
 ## 1. Phạm vi
 
@@ -321,10 +321,12 @@ overlay toàn màn hình, không thay thế WebView, để không mất phiên �
 - Chuyển form GitHub sang bottom sheet; status dùng chip; snackbar cho phản hồi.
 - Giữ nguyên logic trong `OpenCodeWebActivity` bằng cách tách helper/adapter.
 
-Đã triển khai bước đầu: panel được nhóm theo 5 section có tiêu đề, dùng token spacing/typography,
+Đã triển khai: panel được nhóm theo 5 section có tiêu đề, dùng token spacing/typography,
 thêm hàng Khởi động lại / Dừng server và card Thông tin (phiên bản app, phiên bản OpenCode).
-`settings_panel` vẫn là `NestedScrollView` với các id cũ, nên toàn bộ binding hiện tại giữ nguyên;
-bước tiếp theo là chuyển sang `RecyclerView` + item layouts và tách form GitHub sang sheet riêng.
+`settings_panel` vẫn là `NestedScrollView` với các id cũ, nên toàn bộ binding hiện tại giữ nguyên.
+Form GitHub đã tách sang `sheet_github.xml` (mở từ card GitHub gọn trong Cài đặt) ở Phase 4.
+Việc chuyển toàn bộ Cài đặt sang `RecyclerView` + item layouts được giữ lại như bước tối ưu
+sau, vì panel hiện tại đã đúng nhóm, đúng token và không còn layout nhảy.
 
 ### Phase 3 — Tệp & chọn thư mục
 
@@ -332,17 +334,57 @@ bước tiếp theo là chuyển sang `RecyclerView` + item layouts và tách fo
 - Thay `DirectoryPickerDialog` bằng `BottomSheetDialog` + breadcrumb + shortcut.
 - Xoá `ListView`/`simple_list_item_1`/emoji.
 
+Đã triển khai:
+
+- `FilesScreen.kt` là overlay toàn màn hình trong `activity_main.xml`, giữ WebView attached.
+  `RecyclerView` + `ListAdapter`/`DiffUtil`, quét HOME ở background, hiển thị dung lượng,
+  trạng thái rỗng/lỗi, nút làm mới trên toolbar.
+- Mỗi mục mở `BottomSheetDialog` (`sheet_file_actions.xml`) với mở dự án / sao chép đường dẫn /
+  xoá; xoá có dialog xác nhận, kết quả báo bằng Snackbar.
+- `DirectoryPickerSheet.kt`: `BottomSheetDialog` có breadcrumb bấm được (rút gọn path sâu bằng
+  dấu `…`), chip lối tắt HOME / bộ nhớ trong / từng thẻ SD, ô nhập đường dẫn (`~` hỗ trợ),
+  danh sách thư mục đọc được, trạng thái rỗng/lỗi và nút chọn.
+- Đã xoá `FileManagerDialog.kt`, `DirectoryPickerDialog.kt`; không còn `ListView`,
+  `simple_list_item_1` hay emoji trong UI native.
+
 ### Phase 4 — Đồng bộ còn lại
 
 - Dialog/snackbar/notification; icon; motion; empty/error states.
 - Đồng bộ success/warning vào `OpenCodeWebTheme` — đã làm cùng Phase 1.
 - Kiểm tra dark/light/dynamic, tablet, font scale, TalkBack.
 
+Đã triển khai:
+
+- Form GitHub chuyển vào `sheet_github.xml`, mở từ card tóm tắt trong Cài đặt; các trạng thái
+  cài đặt / đăng nhập / clone / danh sách repo giữ nguyên logic cũ.
+- Toast còn lại trong Activity đổi sang Snackbar (`showSnack`), có action khi phù hợp.
+- Nút xác nhận Dừng server dùng màu error; empty/error state của Files và picker có text rõ ràng.
+- `OverlayMotion` thêm fade ngắn cho Cài đặt/Files, không detach WebView.
+- Bỏ toàn bộ `android:textSize`/`android:fontFamily` khỏi `activity_main.xml`; dùng
+  `TextAppearance.OpenCode.*` (thêm `MonoSmall`, `MonoCode`), input clone dùng `TextInputLayout`.
+- Nội dung Cài đặt/Files giới hạn 640dp và canh giữa trên tablet/landscape; boot card 480dp.
+- Icon button quan trọng nâng lên 48dp; breadcrumb có `contentDescription` cho TalkBack.
+
+Phần kiểm tra dark/light/dynamic, font scale 200%, TalkBack và so sánh contrast được liệt kê ở
+Phase 5; các kiểm tra này cần thiết bị/emulator nên chưa chạy trong môi trường build hiện tại.
+
 ### Phase 5 — QA & chốt
 
 - Screenshot test cho các trạng thái chính (boot, lỗi, settings, files, picker).
 - So sánh light/dark/dynamic; kiểm tra contrast bằng tool.
 - Đo cold start: không thêm dependency nặng; ưu tiên view/RecyclerView thuần.
+
+Đã chạy được trong môi trường không có thiết bị:
+
+- Kiểm tra tĩnh: không còn `textSize`/`fontFamily` đặt tay trong layout, không còn `ListView`/
+  `simple_list_item_1`/emoji, mọi `R.id`/`R.string`/`R.layout`/`R.drawable` được tham chiếu đều
+  tồn tại, `git diff --check` sạch.
+- Build + unit test trên GitHub Actions là bước biên dịch chính (máy local không có JDK/Android SDK).
+- Không thêm dependency mới: Files/picker dùng `RecyclerView`, `BottomSheetDialog`, `ListAdapter`
+  sẵn có; cold start không bị ảnh hưởng bởi thư viện nặng.
+
+Chưa chạy (cần thiết bị/emulator): screenshot test, đo contrast bằng tool, kiểm tra TalkBack,
+font scale 200%, xoay màn hình và so sánh light/dark/dynamic trực quan.
 
 ## 10. Tiêu chí nghiệm thu
 
@@ -356,9 +398,12 @@ bước tiếp theo là chuyển sang `RecyclerView` + item layouts và tách fo
 - Dynamic Color bật/tắt đều đẹp; dark/light đồng nhất với web.
 - Tablet: nội dung không vượt 640dp; sheet không full width.
 
-## 11. Câu hỏi cần chốt
+## 11. Quyết định & câu hỏi còn lại
 
-1. Chọn hướng A (Material You thuần + logo thương hiệu) hay C (hybrid accent cam)?
-2. Cài đặt có cần tìm kiếm ngay phase 2 không, hay để phase sau?
-3. Có cần màn hình "Nhật ký server" riêng (xem log, sao chép) trong phase 2 không?
+1. Đã chốt hướng **A**: Material You động cho surface/accent, màu thương hiệu cố định chỉ dùng cho
+   logo/seed. Các phase 0–4 triển khai theo hướng này.
+2. Cài đặt có cần tìm kiếm ngay không, hay để sau?
+3. Có cần màn hình "Nhật ký server" riêng (xem log, sao chép) không?
 4. Có cần onboarding lần đầu (quyền bộ nhớ, pin, chọn thư mục) hay giữ dialog hiện tại?
+5. Có chuyển nốt `settings_panel` sang `RecyclerView` + item layouts không, hay giữ
+   `NestedScrollView` đã nhóm section như hiện tại?

@@ -30,6 +30,14 @@
             android:textColor="?attr/colorOnSurfaceVariant" />
 
         <TextView
+            android:id="@+id/github_sheet_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/spacing_sm"
+            android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium"
+            android:textColor="?attr/colorOnSurface" />
+
+        <TextView
             android:id="@+id/github_install_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

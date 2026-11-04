@@ -265,6 +265,7 @@
     <string name="opencode_settings_github_logging_in">Đang lấy mã đăng nhập từ GitHub…</string>
     <string name="opencode_settings_github_login_ok">Đăng nhập thành công</string>
     <string name="opencode_settings_github_login_failed">Đăng nhập thất bại: %1$s</string>
+    <string name="opencode_settings_github_open_failed">Không mở được trang xác thực GitHub.</string>
     <string name="opencode_settings_github_account">Tài khoản: %1$s</string>
     <string name="opencode_settings_github_repos_loading">Đang tải danh sách repository…</string>
     <string name="opencode_settings_github_repos_empty">Tài khoản chưa có repository nào.</string>

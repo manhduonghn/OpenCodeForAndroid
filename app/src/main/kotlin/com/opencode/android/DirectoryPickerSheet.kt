@@ -134,7 +134,7 @@ class DirectoryPickerSheet(
                 com.google.android.material.R.attr.materialButtonOutlinedStyle,
             ).apply {
                 text = shortcutLabel(root)
-                textSize = 12f
+                setTextAppearance(R.style.TextAppearance_OpenCode_LabelLarge)
                 isAllCaps = false
                 minWidth = 0
                 minimumWidth = 0
