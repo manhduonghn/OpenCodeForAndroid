@@ -687,13 +687,13 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                 )
                 StepState.ACTIVE -> MaterialColors.getColor(
                     this,
-                    com.google.android.material.R.attr.colorPrimary,
+                    androidx.appcompat.R.attr.colorPrimary,
                     ContextCompat.getColor(this, R.color.oc_primary),
                 )
                 StepState.DONE -> ContextCompat.getColor(this, R.color.oc_success)
                 StepState.ERROR -> MaterialColors.getColor(
                     this,
-                    com.google.android.material.R.attr.colorError,
+                    androidx.appcompat.R.attr.colorError,
                     ContextCompat.getColor(this, R.color.oc_error),
                 )
             }
@@ -724,7 +724,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             ConnectionState.STOPPED,
             -> MaterialColors.getColor(
                 this,
-                com.google.android.material.R.attr.colorError,
+                androidx.appcompat.R.attr.colorError,
                 ContextCompat.getColor(this, R.color.oc_error),
             )
         }

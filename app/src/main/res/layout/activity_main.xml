@@ -20,7 +20,6 @@
             android:layout_height="@dimen/toolbar_height"
             app:logo="@drawable/ic_opencode_mark"
             app:menu="@menu/menu_main"
-            app:popupTheme="@style/ThemeOverlay.Material3.PopupMenu"
             app:subtitle="@string/opencode_web_subtitle"
             app:title="@string/opencode_web_title" />
 
