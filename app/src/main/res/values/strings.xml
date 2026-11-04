@@ -207,6 +207,9 @@
     <string name="opencode_files_time_hours">%1$d giờ trước</string>
     <string name="opencode_files_time_days">%1$d ngày trước</string>
     <string name="opencode_files_hint">Chỉ hiển thị tệp và thư mục ở cấp đầu tiên của thư mục ứng dụng. Các mục ẩn và tệp hệ thống được giữ nguyên.</string>
+    <string name="opencode_files_options">Tuỳ chọn</string>
+    <string name="opencode_files_options_for">Tuỳ chọn cho %1$s</string>
+    <string name="opencode_files_back">Quay lại</string>
 
     <!-- Folder picker -->
     <string name="opencode_picker_title">Chọn thư mục dự án</string>
@@ -218,6 +221,7 @@
     <string name="opencode_picker_internal">Bộ nhớ trong</string>
     <string name="opencode_picker_sd">Thẻ SD %1$s</string>
     <string name="opencode_picker_home">Thư mục ứng dụng</string>
+    <string name="opencode_picker_root">/</string>
     <string name="opencode_picker_empty">Thư mục trống</string>
     <string name="opencode_picker_unreadable">Android không cho phép đọc thư mục này.</string>
     <string name="opencode_picker_not_directory">Đường dẫn không phải thư mục.</string>
@@ -226,6 +230,9 @@
     <string name="opencode_picker_copied">Đã sao chép đường dẫn: %1$s</string>
     <string name="opencode_picker_opening">Đang mở dự án %1$s…</string>
     <string name="opencode_picker_open_failed">Không mở được dự án. Đường dẫn đã được sao chép: %1$s</string>
+    <string name="opencode_picker_shortcuts">Lối tắt</string>
+    <string name="opencode_picker_path">Đường dẫn</string>
+    <string name="opencode_picker_current">Thư mục hiện tại</string>
 
     <!-- GitHub extension -->
     <string name="opencode_settings_extensions">Tiện ích mở rộng</string>

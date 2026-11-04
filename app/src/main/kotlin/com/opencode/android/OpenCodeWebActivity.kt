@@ -113,6 +113,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private var subtitlePainted = false
 
     private lateinit var settingsPanel: View
+    private lateinit var filesScreen: FilesScreen
     private lateinit var updatesCurrent: TextView
     private lateinit var updatesStatus: TextView
     private lateinit var updatesCheck: Button
@@ -535,6 +536,11 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
         findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
         findViewById<View>(R.id.files_manage).setOnClickListener { showFiles() }
+        filesScreen = FilesScreen(
+            this,
+            { directory -> openProject(directory) },
+            { pickProjectDirectory() },
+        )
         findViewById<View>(R.id.settings_restart).setOnClickListener { confirmRestartServer() }
         findViewById<View>(R.id.settings_stop).setOnClickListener { confirmStopServer() }
         findViewById<View>(R.id.info_about).setOnClickListener { showAbout() }
@@ -578,7 +584,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    if (settingsPanel.visibility == View.VISIBLE) {
+                    if (::filesScreen.isInitialized && filesScreen.isVisible) {
+                        filesScreen.hide()
+                    } else if (settingsPanel.visibility == View.VISIBLE) {
                         closeSettings()
                     } else {
                         isEnabled = false
@@ -600,7 +608,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun showFiles() {
-        FileManagerDialog.show(this) { directory -> openProject(directory) }
+        filesScreen.show()
     }
 
     /* ------------------------------------------------------------------ app shell */
@@ -1113,14 +1121,15 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private fun pickProjectDirectory() {
         val start = OpenCodeSettings.lastProjectDir(this)?.let { File(it) }
-        DirectoryPickerDialog.show(this, start) { directory ->
+        DirectoryPickerSheet(this) { directory ->
             OpenCodeSettings.setLastProjectDir(this, directory.absolutePath)
             openProject(directory)
-        }
+        }.show(start)
     }
 
     /** Create a session in [directory] so the project appears in the web UI, then show it. */
     private fun openProject(directory: File) {
+        if (::filesScreen.isInitialized) filesScreen.hide()
         Toast.makeText(
             this,
             getString(R.string.opencode_picker_opening, directory.absolutePath),
@@ -1592,6 +1601,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         OpenCodeSettings.setLastSessionId(this, sessionId)
         OpenCodeSessionTracker.setActiveSession(sessionId)
         if (settingsPanel.visibility == View.VISIBLE) closeSettings()
+        if (::filesScreen.isInitialized && filesScreen.isVisible) filesScreen.hide()
         if (!pageLoaded) {
             pendingSessionId = sessionId
             return
@@ -2351,6 +2361,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     override fun onDestroy() {
         destroyed = true
+        if (::filesScreen.isInitialized) filesScreen.release()
         probeExecutor.shutdownNow()
         backgroundExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)

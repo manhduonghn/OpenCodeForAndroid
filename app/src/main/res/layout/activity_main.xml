@@ -1102,4 +1102,108 @@
             </LinearLayout>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
+
+    <!-- Files screen: a full-height overlay so the retained WebView stays attached. -->
+    <LinearLayout
+        android:id="@+id/files_panel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="?attr/colorSurface"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/files_toolbar"
+            style="@style/Widget.OpenCode.Toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/toolbar_height"
+            app:navigationContentDescription="@string/opencode_files_back"
+            app:navigationIcon="@drawable/ic_arrow_back"
+            app:title="@string/opencode_files_title" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/files_summary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="@dimen/screen_margin"
+                android:paddingTop="@dimen/spacing_sm"
+                android:paddingEnd="@dimen/screen_margin"
+                android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/files_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clipToPadding="false"
+                    android:paddingTop="@dimen/spacing_sm"
+                    android:paddingBottom="@dimen/spacing_lg"
+                    android:scrollbars="vertical" />
+
+                <LinearLayout
+                    android:id="@+id/files_empty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="@dimen/spacing_xl"
+                    android:visibility="gone">
+
+                    <ImageView
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_folder"
+                        android:tint="?attr/colorPrimary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_md"
+                        android:gravity="center"
+                        android:text="@string/opencode_files_empty"
+                        android:textAppearance="@style/TextAppearance.OpenCode.BodyLarge"
+                        android:textColor="?attr/colorOnSurfaceVariant" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/files_empty_pick"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_md"
+                        android:text="@string/opencode_storage_pick" />
+                </LinearLayout>
+
+                <ProgressBar
+                    android:id="@+id/files_progress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:indeterminateTint="?attr/colorPrimary" />
+            </FrameLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="@dimen/screen_margin"
+                android:paddingTop="@dimen/spacing_sm"
+                android:paddingEnd="@dimen/screen_margin"
+                android:paddingBottom="@dimen/spacing_sm"
+                android:text="@string/opencode_files_hint"
+                android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
+                android:textColor="?attr/colorOutline" />
+        </LinearLayout>
+    </LinearLayout>
 </FrameLayout>
