@@ -2,6 +2,9 @@ package com.opencode.android
 
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.JsResult
@@ -38,7 +41,44 @@ class OpenCodeWebViewModel : ViewModel() {
 
         /** Called for `confirm()` of the web app. */
         fun onJsConfirm(view: WebView, message: String?, result: JsResult)
+
+        /**
+         * The web app completed its first successful API call. Only now is it safe to show the
+         * WebView: before that point its session list can still be loading (or retrying), and the
+         * web UI would paint its own "Transport: Failed to fetch" error over the boot screen.
+         */
+        fun onWebBootReady()
+
+        /**
+         * The transport guard ran out of retries: the server is gone or the loopback request
+         * failed. The activity shows the native reconnect screen instead of the web app's error.
+         */
+        fun onWebTransportLost(detail: String)
+
+        /** API traffic works again, the reconnect screen can be hidden. */
+        fun onWebTransportRestored()
+
+        /** The server rejected the credential of the page, it has to be paired again. */
+        fun onWebAuthFailed()
     }
+
+    /**
+     * True once the web app has talked to the server successfully. It lives in the ViewModel so a
+     * rotation does not hide the page again, and it is reset whenever the page is (re)loaded.
+     */
+    @Volatile
+    var webReady = false
+
+    /** True between a transport failure reported by the guard and the next successful call. */
+    @Volatile
+    var transportDown = false
+
+    /**
+     * False when this WebView does not support document-start scripts. The activity then falls
+     * back to a native health check before it reveals the page.
+     */
+    @Volatile
+    var bootGuardInstalled = false
 
     /** True once the web UI of the server was loaded, it survives a configuration change. */
     var pageLoaded = false
@@ -67,8 +107,14 @@ class OpenCodeWebViewModel : ViewModel() {
     /** Registered document-start script of the Material You stylesheet, replaced on each attach. */
     private var themeHandler: ScriptHandler? = null
 
+    /** Registered document-start script of the transport/boot guard. */
+    private var bootHandler: ScriptHandler? = null
+
     /** Last stylesheet built by [OpenCodeWebTheme], kept for the live document fallback. */
     private var themeScript: String? = null
+
+    /** JavaScript bridges are called on a private WebView thread, UI callbacks go through here. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** @return the single WebView of this state, created on the first call. */
     fun webView(context: Context): WebView {
@@ -88,6 +134,10 @@ class OpenCodeWebViewModel : ViewModel() {
         val old = webViewInstance
         webViewInstance = null
         themeHandler = null
+        bootHandler = null
+        bootGuardInstalled = false
+        webReady = false
+        transportDown = false
         pageLoaded = false
         pairedServerGeneration = 0
         if (old != null) {
@@ -119,8 +169,10 @@ class OpenCodeWebViewModel : ViewModel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             view.isForceDarkAllowed = false
         }
-        // The page is served by our own loopback server. The bridge only reports the route.
+        // The page is served by our own loopback server. The bridges only report the route and
+        // the state of the web app's first API calls.
         view.addJavascriptInterface(SessionBridge(), "OpenCodeAndroidSession")
+        view.addJavascriptInterface(BootBridge(), "OpenCodeAndroidBoot")
         // The default handler needs a window of an activity, which an application context cannot
         // provide, so the dialogs of the web app are shown by the activity that is on screen.
         view.webChromeClient = object : WebChromeClient() {
@@ -159,7 +211,29 @@ class OpenCodeWebViewModel : ViewModel() {
         }
 
         webViewInstance = view
+        installBootGuard(view)
         return view
+    }
+
+    /**
+     * Install the transport guard before the web app bundle runs.
+     *
+     * The guard wraps `fetch`, retries short GET/HEAD transport failures (a server restart, a
+     * cold start) and reports a successful first API call through [BootBridge]. The activity keeps
+     * its native boot screen on top until that callback arrives, so the SolidJS error boundary
+     * never gets a chance to paint "Transport: Failed to fetch" over the launcher.
+     */
+    private fun installBootGuard(view: WebView) {
+        bootGuardInstalled = false
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        bootHandler = try {
+            WebViewCompat.addDocumentStartJavaScript(view, BOOT_SCRIPT, setOf("*")).also {
+                bootGuardInstalled = true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not install the boot guard", e)
+            null
+        }
     }
 
     /**
@@ -258,12 +332,47 @@ class OpenCodeWebViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Receives the state of the injected [BOOT_SCRIPT]. The methods are called on the WebView's
+     * JavaScript thread, so the fields are volatile and every UI callback is posted to the main
+     * thread.
+     */
+    private inner class BootBridge {
+        @JavascriptInterface
+        fun ready(source: String?) {
+            webReady = true
+            transportDown = false
+            mainHandler.post { ui?.onWebBootReady() }
+        }
+
+        @JavascriptInterface
+        fun transportLost(detail: String?) {
+            transportDown = true
+            mainHandler.post { ui?.onWebTransportLost(detail.orEmpty()) }
+        }
+
+        @JavascriptInterface
+        fun transportOk(value: String?) {
+            transportDown = false
+            mainHandler.post { ui?.onWebTransportRestored() }
+        }
+
+        @JavascriptInterface
+        fun authFailed(value: String?) {
+            mainHandler.post { ui?.onWebAuthFailed() }
+        }
+    }
+
     override fun onCleared() {
         ui = null
+        webReady = false
+        transportDown = false
+        bootGuardInstalled = false
         OpenCodeSessionTracker.setActiveSession(null)
         val view = webViewInstance
         webViewInstance = null
         themeHandler = null
+        bootHandler = null
         themeScript = null
         if (view == null) return
         (view.parent as? ViewGroup)?.removeView(view)
@@ -271,6 +380,8 @@ class OpenCodeWebViewModel : ViewModel() {
     }
 
     companion object {
+        private const val TAG = "OpenCodeWebViewModel"
+
         /** Extract `ses_…` from a URL such as `http://127.0.0.1:49374/session/ses_abc`. */
         fun sessionIdOf(url: String?): String? {
             if (url == null) return null
@@ -282,6 +393,163 @@ class OpenCodeWebViewModel : ViewModel() {
             if (cut >= 0) id = id.substring(0, cut)
             return id.takeIf { it.startsWith("ses_") }
         }
+
+        /**
+         * Transport/boot guard, evaluated before any bundle of the web app.
+         *
+         * The web UI fetches its session list immediately after mounting. A server that has just
+         * been restarted, or a cold start that has not finished opening its database, makes that
+         * fetch reject with `TypeError: Failed to fetch`; the SolidJS error boundary then paints
+         * the long `ClientError: Transport: Failed to fetch` stack over the launcher. Instead of
+         * showing that, this script retries the short GET/HEAD calls for a few seconds and tells
+         * the native side when the first call succeeds. The activity keeps its boot screen on top
+         * until then, and replaces a page that still loses the transport with the reconnect screen.
+         */
+        private val BOOT_SCRIPT = """
+            (function () {
+              if (window.__ocAndroidBoot) return;
+              var bridge = window.OpenCodeAndroidBoot;
+              var state = window.__ocAndroidBoot = {
+                ready: false,
+                failed: false,
+                lost: false,
+                authFailed: false,
+                pending: 0
+              };
+              function call(name, value) {
+                try {
+                  if (bridge && typeof bridge[name] === 'function') {
+                    bridge[name](value == null ? '' : String(value));
+                  }
+                } catch (e) {}
+              }
+              function apiPath(input) {
+                try {
+                  var raw = typeof input === 'string' ? input : (input && input.url) || '';
+                  if (!raw) return '';
+                  var url = new URL(raw, window.location.href);
+                  if (url.origin !== window.location.origin) return '';
+                  return url.pathname.indexOf('/api/') === 0 ? url.pathname : '';
+                } catch (e) {
+                  return '';
+                }
+              }
+              function methodOf(input, init) {
+                if (init && init.method) return String(init.method).toUpperCase();
+                if (input && typeof input !== 'string' && input.method) {
+                  return String(input.method).toUpperCase();
+                }
+                return 'GET';
+              }
+              function retryable(method) {
+                return method === 'GET' || method === 'HEAD';
+              }
+              function delay(ms) {
+                return new Promise(function (resolve) { setTimeout(resolve, ms); });
+              }
+              function markReady() {
+                if (state.ready) return;
+                state.ready = true;
+                call('ready', 'api');
+              }
+              function finish() {
+                state.pending = Math.max(0, state.pending - 1);
+              }
+              function fetchWithRetry(input, init, attempt) {
+                return nativeFetch.call(window, input, init).then(function (response) {
+                  var path = apiPath(input);
+                  var method = methodOf(input, init);
+                  if (path && response && response.status >= 500 &&
+                      retryable(method) && attempt < 6) {
+                    try {
+                      if (response.body && response.body.cancel) {
+                        var discarded = response.body.cancel();
+                        if (discarded && discarded.catch) discarded.catch(function () {});
+                      }
+                    } catch (e) {}
+                    return delay(Math.min(200 * Math.pow(2, attempt), 3000)).then(function () {
+                      return fetchWithRetry(input, init, attempt + 1);
+                    });
+                  }
+                  if (path) {
+                    if (response && (response.status === 401 || response.status === 403)) {
+                      if (!state.authFailed) {
+                        state.authFailed = true;
+                        call('authFailed', String(response.status));
+                      }
+                    } else if (response && response.ok) {
+                      markReady();
+                      if (state.lost) {
+                        state.lost = false;
+                        call('transportOk', '');
+                      }
+                    }
+                  }
+                  return response;
+                }, function (error) {
+                  var path = apiPath(input);
+                  if (!path) throw error;
+                  // A request the app cancelled on purpose (leaving a screen, replacing a stale
+                  // session list) is not a dead server: retrying and reporting it would flash the
+                  // native reconnect screen for no reason.
+                  var signal = (init && init.signal) ||
+                    (input && typeof input !== 'string' && input.signal) || null;
+                  if ((signal && signal.aborted) ||
+                      (error && (error.name === 'AbortError' || error.name === 'TimeoutError'))) {
+                    throw error;
+                  }
+                  var method = methodOf(input, init);
+                  if (retryable(method) && attempt < 6) {
+                    return delay(Math.min(200 * Math.pow(2, attempt), 3000)).then(function () {
+                      return fetchWithRetry(input, init, attempt + 1);
+                    });
+                  }
+                  if (!state.ready) {
+                    // The first sync never completed. The native boot timeout decides when to
+                    // give up, the error boundary of the web app must stay behind the boot screen.
+                    state.failed = true;
+                  }
+                  if (!state.lost) {
+                    state.lost = true;
+                  }
+                  call('transportLost',
+                    String((error && error.message) || error || 'Failed to fetch'));
+                  throw error;
+                });
+              }
+              var nativeFetch = window.fetch;
+              if (typeof nativeFetch !== 'function') return;
+              window.fetch = function (input, init) {
+                var path = apiPath(input);
+                if (path) state.pending++;
+                var request;
+                try {
+                  request = fetchWithRetry(input, init, 0);
+                } catch (error) {
+                  if (path) finish();
+                  throw error;
+                }
+                if (path) request.then(finish, finish);
+                return request;
+              };
+              // Keep non-enumerable properties that the app or its HTTP client attached to the
+              // original fetch (for example a preconnect helper), so wrapping it is transparent.
+              try {
+                Object.getOwnPropertyNames(nativeFetch).forEach(function (key) {
+                  if (key === 'length' || key === 'name' || key === 'prototype') return;
+                  if (window.fetch[key] === undefined) window.fetch[key] = nativeFetch[key];
+                });
+              } catch (e) {}
+              // A page that mounts without touching the API (for example a cached empty install)
+              // still has to leave the boot screen after it has settled.
+              window.addEventListener('load', function () {
+                setTimeout(function () {
+                  if (state.ready || state.failed || state.pending > 0) return;
+                  markReady();
+                }, 1500);
+              });
+            })();
+        """.trimIndent()
 
         /**
          * Watches the history API of the single page app and reports `/session/<id>` whenever the

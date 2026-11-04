@@ -555,6 +555,23 @@ sau ≈0.5 s và `/api/info` trả 200 sau ≈0.7 s; `POST /api/pair` ≈40 ms v
 mở port sau ~0.5 s), sau đó mới giãn ra 700 ms như cũ, nên WebUI thường hiện sau khoảng 0.6–0.7 s.
 Lần chạy đầu chậm là do tải runtime (~248 MB), không phải server.
 
+**Boot gate và transport guard:** trước đây activity ẩn màn hình native ngay sau khi pair được
+token, trong khi web app còn đang gọi `GET /api/session` lần đầu. Nếu server vừa restart (heartbeat,
+`ACTION_RESTART`, phantom killer) hoặc vừa mở port nhưng chưa đọc xong database, fetch đó reject với
+`TypeError: Failed to fetch` và error boundary của SolidJS vẽ nguyên stack
+`ClientError: Transport: Failed to fetch` lên màn hình khởi động. Bây giờ:
+
+- `OpenCodeWebViewModel` đăng ký một document-start script (bridge `OpenCodeAndroidBoot`) trước khi
+  bundle của web app chạy. Script bọc `fetch`, retry các lệnh `GET`/`HEAD` cùng origin dưới `/api/`
+  khi gặp lỗi transport hoặc HTTP 5xx (200 ms → 3 s, tối đa 6 lần), và báo `ready` khi có API call
+  đầu tiên thành công, `transportLost` khi hết lượt retry, `authFailed` khi gặp 401/403.
+- Activity giữ panel native cho tới callback `ready`, nên WebView chỉ hiện khi web app đã có dữ liệu;
+  khi `transportLost` nó hiện màn hình "Đang kết nối lại" rồi pair lại sau 1,5 s thay vì để lộ stack
+  trace. Boot timeout 15 s đưa về vòng poll nếu trang không bao giờ báo ready. WebView cũ không hỗ
+  trợ document-start script thì activity tự probe `/api/session` trước khi hiện trang.
+- Panel khởi động native được chia ba bước (Môi trường → Server cục bộ → Giao diện), có logo, mô tả
+  trạng thái và nút Thử lại; các lỗi transport/401 không còn hiện chi tiết kỹ thuật thô.
+
 **Maintenance hai mức (fast path):** mỗi lần mở app, `doMaintenance` so
 `$HOME/.opencode/.maintenance` với fingerprint của prefix (versionCode/APK stamp, kích thước +
 mtime của `.packages-installed`, mtime của `bin/`, `lib/`, `glibc/lib`) và vài proof file. Nếu

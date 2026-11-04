@@ -78,6 +78,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var webView: WebView
     private lateinit var webContainer: FrameLayout
     private lateinit var statusPanel: View
+    private lateinit var statusStage: TextView
     private lateinit var statusTitle: TextView
     private lateinit var statusDetail: TextView
     private lateinit var statusProgress: ProgressBar
@@ -240,6 +241,55 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     /**
+     * The web UI was loaded but never reported a successful API call. A cold server or a broken
+     * page must not leave the launcher on an endless spinner, so fall back to the retry loop.
+     */
+    private val bootTimeout: Runnable = object : Runnable {
+        override fun run() {
+            if (destroyed || !pageLoaded || viewModel.webReady) return
+            Log.w(TAG, "The web UI did not become ready in time, reloading the launcher")
+            failUi(
+                getString(R.string.opencode_ui_unavailable),
+                getString(R.string.opencode_ui_boot_timeout),
+            )
+        }
+    }
+
+    /**
+     * After the transport guard has exhausted its retries, keep the native reconnect screen up
+     * for a moment. A successful retry cancels this task; otherwise the page is paired again.
+     */
+    private val transportWatchdog: Runnable = object : Runnable {
+        override fun run() {
+            if (destroyed || !pageLoaded) return
+            Log.i(TAG, "The web UI lost the server transport, pairing again")
+            reconnectToRestartedServer()
+        }
+    }
+
+    /**
+     * Fallback for WebViews without document-start scripts: probe the same API the web app calls
+     * and reveal the page only after the server answers it.
+     */
+    private val readinessFallback: Runnable = object : Runnable {
+        override fun run() {
+            if (destroyed || !pageLoaded || viewModel.webReady) return
+            val secret = serverPassword
+            if (secret.isEmpty()) return
+            backgroundExecutor.execute {
+                val ready = OpenCodeApi.sessionList(PORT, secret, 2500) != null
+                handler.post {
+                    if (destroyed || !pageLoaded || viewModel.webReady) return@post
+                    if (ready) {
+                        viewModel.webReady = true
+                        showWebUi()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Keep the page paired with the server while the activity is visible.
      *
      * The server can be replaced behind the back of the UI at any time: the heartbeat or the
@@ -310,14 +360,32 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (requestedSession != null) pendingSessionId = requestedSession
 
         // A rotation only re-attaches the WebView that the ViewModel kept, the UI stays where it
-        // was and the poll (which pairs again and reloads the page) is not started at all.
-        val pageAlive = viewModel.pageLoaded
+        // was and the poll (which pairs again and reloads the page) is not started at all. A
+        // rotation while the page is still booting keeps the native boot screen until the web app
+        // reports its first successful API call.
+        val pageAlive = viewModel.pageLoaded && viewModel.webReady && !viewModel.transportDown
         if (pageAlive) {
             statusPanel.visibility = View.GONE
             webView.visibility = View.VISIBLE
+            handler.removeCallbacks(bootTimeout)
         } else {
             statusPanel.visibility = View.VISIBLE
-            webView.visibility = View.GONE
+            // INVISIBLE, not GONE: the WebView must keep its layout and keep running its scripts
+            // while the native boot panel covers it. GONE can make some WebView versions defer
+            // the first layout/paint and with it the very API call the boot gate waits for.
+            webView.visibility = View.INVISIBLE
+            if (viewModel.pageLoaded) {
+                showBootPanel(
+                    getString(R.string.opencode_loading_ui),
+                    getString(R.string.opencode_loading_ui_detail),
+                )
+                handler.removeCallbacks(bootTimeout)
+                handler.postDelayed(bootTimeout, BOOT_TIMEOUT_MS)
+                if (!viewModel.bootGuardInstalled) {
+                    handler.removeCallbacks(readinessFallback)
+                    handler.postDelayed(readinessFallback, 500)
+                }
+            }
         }
 
         // Make sure the OpenCode server is running before the WebView talks to it. Opening the
@@ -327,20 +395,25 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         // The watchdog only needs to be scheduled once, ensureScheduled is idempotent.
         OpenCodeWatchdog.ensureScheduled(this)
         probeFailures = 0
-        if (!pageAlive) {
+        if (!viewModel.pageLoaded) {
             handler.post(poll)
-        } else {
+        } else if (pageAlive) {
             if (requestedSession != null) {
                 openSession(requestedSession)
             } else {
                 viewModel.installSessionWatcher()
             }
+        } else {
+            // The page exists in the retained WebView and is still booting. The boot bridge (or
+            // the boot timeout) takes over; starting the pairing poll here would load it twice.
+            handler.removeCallbacks(poll)
         }
     }
 
     private fun bindViews() {
         webContainer = findViewById(R.id.web_container)
         statusPanel = findViewById(R.id.status_panel)
+        statusStage = findViewById(R.id.status_stage)
         statusTitle = findViewById(R.id.status_title)
         statusDetail = findViewById(R.id.status_detail)
         statusProgress = findViewById(R.id.status_progress)
@@ -1090,6 +1163,15 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         super.onStart()
         // JavaScript dialogs of the web app are shown by the activity of the moment.
         viewModel.ui = this
+        // The boot/transport callbacks run on a background WebView thread and may have happened
+        // while no activity was attached (screen off, rotation). Re-apply their state here.
+        if (viewModel.pageLoaded) {
+            if (viewModel.transportDown) {
+                onWebTransportLost("")
+            } else if (viewModel.webReady) {
+                showWebUi()
+            }
+        }
     }
 
     override fun onStop() {
@@ -1112,6 +1194,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (pageLoaded && generation != 0 && generation != viewModel.pairedServerGeneration) {
             reconnectToRestartedServer()
         } else if (pageLoaded) {
+            if (!viewModel.webReady) {
+                // A rotation or a short trip to the background must not leave the launcher stuck
+                // without a deadline while the page is still booting.
+                handler.removeCallbacks(bootTimeout)
+                handler.postDelayed(bootTimeout, BOOT_TIMEOUT_MS)
+            }
             // The server is fine. Android may have dropped the event streams of the page while it
             // was in the background without the page noticing, so make the single page app run its
             // own reconnect path and fetch what it missed.
@@ -1167,6 +1255,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         val sessionId = OpenCodeWebViewModel.sessionIdOf(webView.url)
             ?: OpenCodeSettings.lastSessionId(this)
         pageLoaded = false
+        viewModel.webReady = false
         pairAttempts = 0
         loadFailures = 0
         pendingSessionId = sessionId
@@ -1180,12 +1269,14 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             Log.w(TAG, "Could not drop the cookies of the previous server", e)
         }
         webView.visibility = View.GONE
-        statusPanel.visibility = View.VISIBLE
-        statusTitle.setText(R.string.opencode_status_starting)
-        statusDetail.setText(R.string.opencode_reconnecting)
-        statusProgress.visibility = View.VISIBLE
-        statusProgress.isIndeterminate = true
-        statusRetry.visibility = View.GONE
+        showBootPanel(
+            getString(R.string.opencode_status_starting),
+            getString(R.string.opencode_reconnecting),
+        )
+        statusStage.setText(R.string.opencode_stage_ui)
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
         handler.removeCallbacks(poll)
         handler.post(poll)
     }
@@ -1284,6 +1375,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     // A page that started loading before the stylesheet was registered would
                     // keep the stock colors; make sure the live document is themed.
                     viewModel.applyWebTheme()
+                    if (pageLoaded && !viewModel.webReady && !viewModel.bootGuardInstalled) {
+                        // Older WebViews do not support document-start scripts. Probe the API the
+                        // web app calls and reveal the page only after the server answers it.
+                        handler.removeCallbacks(readinessFallback)
+                        handler.postDelayed(readinessFallback, 1200)
+                    }
                     // A re-pair after a server restart keeps the chat the user was reading: the
                     // start page was loaded with the fresh token, open the session on top of it.
                     val pending = pendingSessionId
@@ -1370,18 +1467,22 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         configureWebView()
         applyWebTheme()
         pageLoaded = false
+        viewModel.webReady = false
+        viewModel.transportDown = false
         waitingForInstall = false
         pairAttempts = 0
         loadFailures = 0
         pendingSessionId = sessionId
         serverPassword = OpenCodeBootstrap.getServerPassword(this)
         webView.visibility = View.GONE
-        statusPanel.visibility = View.VISIBLE
-        statusTitle.setText(R.string.opencode_status_starting)
-        statusDetail.setText(R.string.opencode_reconnecting)
-        statusProgress.visibility = View.VISIBLE
-        statusProgress.isIndeterminate = true
-        statusRetry.visibility = View.GONE
+        showBootPanel(
+            getString(R.string.opencode_status_starting),
+            getString(R.string.opencode_reconnecting),
+        )
+        statusStage.setText(R.string.opencode_stage_ui)
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
         handler.removeCallbacks(poll)
         handler.post(poll)
     }
@@ -1405,6 +1506,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (state.failed) {
             waitingForInstall = false
             statusPanel.visibility = View.VISIBLE
+            statusStage.setText(R.string.opencode_stage_runtime)
             statusProgress.isIndeterminate = false
             statusProgress.progress = state.overallProgress()
             statusTitle.text = getString(R.string.opencode_install_failed)
@@ -1415,6 +1517,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
 
         if (state.done) {
+            statusStage.setText(R.string.opencode_stage_server)
             statusTitle.text = getString(R.string.opencode_starting)
             statusDetail.text = getString(R.string.opencode_install_done_detail)
             statusProgress.isIndeterminate = true
@@ -1425,6 +1528,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (state.running) {
             waitingForInstall = true
             statusPanel.visibility = View.VISIBLE
+            statusStage.setText(R.string.opencode_stage_runtime)
             statusProgress.isIndeterminate = false
             statusProgress.progress = state.overallProgress()
             statusTitle.text = getString(R.string.opencode_installing)
@@ -1443,6 +1547,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             waitingForInstall = false
             webView.visibility = View.GONE
             statusPanel.visibility = View.VISIBLE
+            statusStage.setText(R.string.opencode_stage_server)
             statusProgress.isIndeterminate = false
             statusTitle.text = getString(R.string.opencode_notification_stopped)
             statusDetail.text = getString(R.string.opencode_notification_stopped_text)
@@ -1456,6 +1561,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (OpenCodeBootstrap.isRuntimeComplete()) {
             // Installed, but the server is not answering. Ask the service to start it again (it
             // may have been killed while the app was in the background).
+            statusStage.setText(R.string.opencode_stage_server)
             val now = SystemClock.uptimeMillis()
             if (now - lastServiceStart > 3000) {
                 lastServiceStart = now
@@ -1480,14 +1586,20 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun failUi(title: String, detail: String) {
         if (destroyed) return
         pageLoaded = false
+        viewModel.webReady = false
+        viewModel.transportDown = false
         waitingForInstall = false
         pairAttempts = 0
         webView.visibility = View.GONE
         statusPanel.visibility = View.VISIBLE
+        statusStage.setText(R.string.opencode_stage_ui)
         statusProgress.isIndeterminate = true
         statusTitle.text = title
         statusDetail.text = detail
         statusRetry.visibility = View.GONE
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
         handler.removeCallbacks(poll)
         loadFailures++
         if (loadFailures > 3) {
@@ -1518,9 +1630,14 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun retryInstall() {
         OpenCodeSettings.setStoppedByUser(this, false)
         statusRetry.visibility = View.GONE
+        statusStage.setText(R.string.opencode_stage_runtime)
         statusTitle.text = getString(R.string.opencode_preparing)
         statusDetail.text = getString(R.string.opencode_preparing_detail)
         statusProgress.isIndeterminate = true
+        viewModel.webReady = false
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
         // Retry is also the way back from an explicit Stop, when the runtime is already installed.
         waitingForInstall = !OpenCodeBootstrap.isRuntimeComplete()
         if (waitingForInstall) {
@@ -1560,30 +1677,49 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
 
         pageLoaded = false
+        viewModel.webReady = false
+        viewModel.transportDown = false
         pairAttempts = 0
         pendingSessionId = null
         loadFailures = 0
         serverPassword = OpenCodeBootstrap.getServerPassword(this)
 
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
         webView.visibility = View.GONE
         statusPanel.visibility = View.VISIBLE
+        statusStage.setText(R.string.opencode_stage_ui)
         statusTitle.setText(R.string.opencode_status_starting)
         statusDetail.setText(R.string.opencode_status_waiting)
         statusProgress.visibility = View.VISIBLE
+        statusProgress.isIndeterminate = true
         statusRetry.visibility = View.GONE
 
         handler.removeCallbacks(poll)
         handler.post(poll)
     }
 
-    /** The server accepts connections, replace the progress screen with the paired web UI. */
+    /** The server accepts connections, load the paired web UI behind the native boot screen. */
     private fun loadUi(sessionToken: String?) {
         if (pageLoaded) return
         pageLoaded = true
+        viewModel.webReady = false
+        viewModel.transportDown = false
         viewModel.pairedServerGeneration = OpenCodeService.serverGeneration()
         waitingForInstall = false
-        statusPanel.visibility = View.GONE
-        webView.visibility = View.VISIBLE
+        // Do not reveal the WebView yet. The web app fetches its session list immediately after
+        // mounting; if that request fails it paints its own "Transport: Failed to fetch" error.
+        // The boot bridge hides this panel only after the first successful API call.
+        showBootPanel(
+            getString(R.string.opencode_loading_ui),
+            getString(R.string.opencode_loading_ui_detail),
+        )
+        statusStage.setText(R.string.opencode_stage_ui)
+        // Keep the view in the hierarchy and laid out; the opaque boot panel covers it.
+        webView.visibility = View.INVISIBLE
+        handler.removeCallbacks(bootTimeout)
+        handler.postDelayed(bootTimeout, BOOT_TIMEOUT_MS)
 
         var target = "$baseUrl/"
         // Prefer the session token of the pairing code. The real password is an acceptable
@@ -1628,6 +1764,71 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         Log.i(TAG, "Loading the paired OpenCode web UI")
         webView.loadUrl(target)
         // The page routes to the session in onPageFinished, once the start page is ready.
+    }
+
+    /** Show one of the native boot/reconnect states over the (hidden) WebView. */
+    private fun showBootPanel(title: String, detail: String) {
+        statusPanel.visibility = View.VISIBLE
+        statusProgress.visibility = View.VISIBLE
+        statusProgress.isIndeterminate = true
+        statusTitle.text = title
+        statusDetail.text = detail
+        statusRetry.visibility = View.GONE
+    }
+
+    /** Reveal the web UI after its first successful API call, retiring the native boot screen. */
+    private fun showWebUi() {
+        if (destroyed || !pageLoaded) return
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
+        loadFailures = 0
+        statusPanel.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+    }
+
+    /**
+     * Called by the injected transport guard once the web app has completed an API call. This is
+     * the moment the SolidJS UI is actually usable, not the `load` event of the page.
+     */
+    override fun onWebBootReady() {
+        if (destroyed || !pageLoaded) return
+        Log.i(TAG, "The web UI completed its first API call, showing it")
+        showWebUi()
+    }
+
+    /**
+     * The transport guard exhausted its retries. Keep the native screen on top so the web app's
+     * error boundary does not paint a stack trace, then pair again when the server is back.
+     */
+    override fun onWebTransportLost(detail: String) {
+        if (destroyed || !pageLoaded) return
+        Log.w(TAG, "The web UI lost the server transport: $detail")
+        showBootPanel(
+            getString(R.string.opencode_status_starting),
+            getString(R.string.opencode_reconnecting_detail),
+        )
+        statusStage.setText(R.string.opencode_stage_ui)
+        handler.removeCallbacks(transportWatchdog)
+        handler.postDelayed(transportWatchdog, TRANSPORT_RECOVERY_MS)
+    }
+
+    /** A later request succeeded, hide the reconnect screen without reloading the page. */
+    override fun onWebTransportRestored() {
+        if (destroyed || !pageLoaded) return
+        handler.removeCallbacks(transportWatchdog)
+        if (viewModel.webReady) showWebUi()
+    }
+
+    /**
+     * The server rejected the credential of the page. Retrying cannot fix that: the page has to
+     * be paired with the current server again.
+     */
+    override fun onWebAuthFailed() {
+        if (destroyed || !pageLoaded) return
+        Log.i(TAG, "The web UI received a 401/403, pairing again")
+        handler.removeCallbacks(transportWatchdog)
+        handler.postDelayed(transportWatchdog, AUTH_RECOVERY_MS)
     }
 
     /**
@@ -1772,5 +1973,14 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
         /** How often the activity checks that the page is paired with the current server. */
         private const val GENERATION_CHECK_MS = 3000L
+
+        /** How long the web app may take to complete its first API call before the boot retries. */
+        private const val BOOT_TIMEOUT_MS = 15_000L
+
+        /** Grace period before the page is paired again after the transport guard gave up. */
+        private const val TRANSPORT_RECOVERY_MS = 1500L
+
+        /** A 401/403 cannot recover by itself, re-pair almost immediately. */
+        private const val AUTH_RECOVERY_MS = 250L
     }
 }
