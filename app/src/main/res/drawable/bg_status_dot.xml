@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status dot of the toolbar subtitle. Tinted at runtime with a semantic color. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="#FFFFFFFF" />
+    <size
+        android:width="@dimen/status_dot_size"
+        android:height="@dimen/status_dot_size" />
+</shape>

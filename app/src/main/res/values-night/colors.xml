@@ -37,6 +37,16 @@
     <color name="oc_surface_container_highest">#FF3D332F</color>
     <color name="oc_scrim">#FF000000</color>
 
+    <!-- Fixed semantic roles, see values/colors.xml. -->
+    <color name="oc_success">#FF6BD586</color>
+    <color name="oc_success_container">#296BD586</color>
+    <color name="oc_warning">#FFF2CF76</color>
+    <color name="oc_warning_container">#29F2CF76</color>
+    <color name="oc_info">@color/oc_primary</color>
+    <color name="oc_info_container">@color/oc_primary_container</color>
+
+    <color name="oc_brand">#FFFFB067</color>
+
     <!-- Aliases kept for the programmatic views of OpenCodeWebActivity. -->
     <color name="oc_text">@color/oc_on_surface</color>
     <color name="oc_text_muted">@color/oc_on_surface_variant</color>
@@ -46,8 +56,9 @@
     <color name="oc_input">@color/oc_surface_container_highest</color>
     <color name="oc_accent">@color/oc_primary</color>
     <color name="oc_accent_soft">#33FFB596</color>
-    <color name="oc_ok">#FF6BD586</color>
-    <color name="oc_ok_soft">#336BD586</color>
-    <color name="oc_warn">#FFF2CF76</color>
+    <color name="oc_ok">@color/oc_success</color>
+    <color name="oc_ok_soft">@color/oc_success_container</color>
+    <color name="oc_warn">@color/oc_warning</color>
+    <color name="oc_warn_soft">@color/oc_warning_container</color>
     <color name="oc_divider">@color/oc_outline_variant</color>
 </resources>

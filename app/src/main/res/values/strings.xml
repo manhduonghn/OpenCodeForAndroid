@@ -25,6 +25,43 @@
     <string name="opencode_reconnecting_detail">Kết nối tới server bị gián đoạn. Ứng dụng đang kết nối lại và sẽ tự mở lại phiên đang xem.</string>
     <string name="opencode_ui_boot_timeout">Giao diện chưa phản hồi kịp. Ứng dụng sẽ thử lại.</string>
 
+    <!-- Boot stepper and details -->
+    <string name="opencode_boot_step_environment">Môi trường Linux</string>
+    <string name="opencode_boot_step_server">Server cục bộ</string>
+    <string name="opencode_boot_step_ui">Giao diện</string>
+    <string name="opencode_boot_state_waiting">Chờ</string>
+    <string name="opencode_boot_state_active">Đang chạy</string>
+    <string name="opencode_boot_state_done">Xong</string>
+    <string name="opencode_boot_state_error">Lỗi</string>
+    <string name="opencode_boot_details_show">Xem chi tiết</string>
+    <string name="opencode_boot_details_hide">Ẩn chi tiết</string>
+    <string name="opencode_boot_copy_error">Sao chép lỗi</string>
+    <string name="opencode_boot_error_copied">Đã sao chép chi tiết lỗi</string>
+    <string name="opencode_boot_footer">Server chạy cục bộ trên thiết bị, không rời khỏi máy.</string>
+
+    <!-- Connection state in the toolbar -->
+    <string name="opencode_connection_running">Đang chạy</string>
+    <string name="opencode_connection_starting">Đang khởi động</string>
+    <string name="opencode_connection_reconnecting">Đang kết nối lại</string>
+    <string name="opencode_connection_offline">Mất kết nối</string>
+    <string name="opencode_connection_stopped">Đã dừng</string>
+    <string name="opencode_status_line">%1$s · 127.0.0.1:%2$d</string>
+
+    <!-- Overflow menu -->
+    <string name="opencode_copy_address">Sao chép địa chỉ server</string>
+    <string name="opencode_address_copied">Đã sao chép địa chỉ server</string>
+    <string name="opencode_about">Giới thiệu</string>
+    <string name="opencode_about_message">Ứng dụng: %1$s\nOpenCode: %2$s\n\nCoding agent chạy ngay trên thiết bị.</string>
+    <string name="opencode_about_version_unknown">chưa cài đặt</string>
+    <string name="opencode_restart_title">Khởi động lại server?</string>
+    <string name="opencode_restart_message">Server sẽ khởi động lại. Phiên đang mở được kết nối lại khi server sẵn sàng.</string>
+    <string name="opencode_restart_action">Khởi động lại</string>
+    <string name="opencode_stop_title">Dừng server?</string>
+    <string name="opencode_stop_message">Server sẽ ngừng chạy. Mở lại ứng dụng để khởi động server.</string>
+    <string name="opencode_stop_action">Dừng server</string>
+    <string name="opencode_restarting">Đang khởi động lại server…</string>
+    <string name="opencode_stopping">Đang dừng server…</string>
+
     <!-- Notification -->
     <string name="opencode_server_channel">OpenCode server</string>
     <string name="opencode_pkg_channel">OpenCode packages</string>

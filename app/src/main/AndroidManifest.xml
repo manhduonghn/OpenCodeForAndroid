@@ -41,6 +41,7 @@
 
         <activity
             android:name=".OpenCodeWebActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|navigation"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>

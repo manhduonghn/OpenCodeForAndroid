@@ -119,6 +119,10 @@ object OpenCodeWebTheme {
         val onError: Int,
         val errorContainer: Int,
         val onErrorContainer: Int,
+        val success: Int,
+        val successContainer: Int,
+        val warning: Int,
+        val warningContainer: Int,
         val surface: Int,
         val onSurface: Int,
         val surfaceVariant: Int,
@@ -180,6 +184,12 @@ object OpenCodeWebTheme {
                 com.google.android.material.R.attr.colorOnErrorContainer,
                 R.color.oc_on_error_container,
             ),
+            // Success and warning stay fixed instead of following Dynamic Color: a running
+            // server must stay green even when the wallpaper palette makes tertiary pink.
+            success = ContextCompat.getColor(context, R.color.oc_success),
+            successContainer = ContextCompat.getColor(context, R.color.oc_success_container),
+            warning = ContextCompat.getColor(context, R.color.oc_warning),
+            warningContainer = ContextCompat.getColor(context, R.color.oc_warning_container),
             surface = color(com.google.android.material.R.attr.colorSurface, R.color.oc_surface),
             onSurface = color(com.google.android.material.R.attr.colorOnSurface, R.color.oc_on_surface),
             surfaceVariant = color(
@@ -291,9 +301,9 @@ object OpenCodeWebTheme {
         tokens["--v2-overlay-simple-tab-hover-scrim"] = fade(p.surface, 0)
         tokens["--v2-overlay-simple-tab-scrim"] = fade(p.surface, 0)
 
-        // ── States: Material roles instead of the fixed blue/green/red ramp ──
-        state(tokens, "success", p.tertiaryContainer, p.onTertiaryContainer, p.tertiary)
-        state(tokens, "warning", p.secondaryContainer, p.onSecondaryContainer, p.secondary)
+        // ── States: Material roles, with fixed success/warning semantics ──
+        state(tokens, "success", p.successContainer, p.success, p.success)
+        state(tokens, "warning", p.warningContainer, p.warning, p.warning)
         state(tokens, "danger", p.errorContainer, p.onErrorContainer, p.error)
         state(tokens, "info", p.primaryContainer, p.onPrimaryContainer, p.primary)
 
@@ -355,8 +365,8 @@ object OpenCodeWebTheme {
         tokens["--syntax-punctuation"] = color(p.onSurfaceVariant)
         tokens["--syntax-variable"] = color(p.onSurface)
         tokens["--syntax-object"] = color(p.onSurface)
-        tokens["--syntax-success"] = color(p.tertiary)
-        tokens["--syntax-warning"] = color(p.secondary)
+        tokens["--syntax-success"] = color(p.success)
+        tokens["--syntax-warning"] = color(p.warning)
         tokens["--syntax-critical"] = color(p.error)
         tokens["--syntax-info"] = color(p.primary)
         tokens["--markdown-heading"] = color(p.primary)
@@ -427,20 +437,20 @@ object OpenCodeWebTheme {
         tokens["--text-on-brand-strong"] = color(onAccentBg)
         tokens["--text-on-interactive-base"] = color(onAccentBg)
         tokens["--text-on-interactive-weak"] = fade(onAccentBg, 60)
-        tokens["--text-on-success-base"] = color(p.onTertiaryContainer)
-        tokens["--text-on-success-weak"] = fade(p.onTertiaryContainer, 60)
-        tokens["--text-on-success-strong"] = color(p.onTertiaryContainer)
-        tokens["--text-on-warning-base"] = color(p.onSecondaryContainer)
-        tokens["--text-on-warning-weak"] = fade(p.onSecondaryContainer, 60)
-        tokens["--text-on-warning-strong"] = color(p.onSecondaryContainer)
+        tokens["--text-on-success-base"] = color(p.success)
+        tokens["--text-on-success-weak"] = fade(p.success, 60)
+        tokens["--text-on-success-strong"] = color(p.success)
+        tokens["--text-on-warning-base"] = color(p.warning)
+        tokens["--text-on-warning-weak"] = fade(p.warning, 60)
+        tokens["--text-on-warning-strong"] = color(p.warning)
         tokens["--text-on-critical-base"] = color(p.onErrorContainer)
         tokens["--text-on-critical-weak"] = fade(p.onErrorContainer, 70)
         tokens["--text-on-critical-strong"] = color(p.onErrorContainer)
         tokens["--text-on-info-base"] = color(p.onPrimaryContainer)
         tokens["--text-on-info-weak"] = fade(p.onPrimaryContainer, 60)
         tokens["--text-on-info-strong"] = color(p.onPrimaryContainer)
-        tokens["--text-diff-add-base"] = color(p.tertiary)
-        tokens["--text-diff-add-strong"] = color(p.tertiary)
+        tokens["--text-diff-add-base"] = color(p.success)
+        tokens["--text-diff-add-strong"] = color(p.success)
         tokens["--text-diff-delete-base"] = color(p.error)
         tokens["--text-diff-delete-strong"] = color(p.error)
 
@@ -466,12 +476,12 @@ object OpenCodeWebTheme {
         tokens["--icon-strong-disabled"] = fade(p.onSurface, 38)
         tokens["--icon-brand-base"] = color(onAccentBg)
         tokens["--icon-interactive-base"] = color(p.primary)
-        tokens["--icon-success-base"] = color(p.tertiary)
-        tokens["--icon-success-hover"] = color(p.tertiary)
-        tokens["--icon-success-active"] = color(p.tertiary)
-        tokens["--icon-warning-base"] = color(p.secondary)
-        tokens["--icon-warning-hover"] = color(p.secondary)
-        tokens["--icon-warning-active"] = color(p.secondary)
+        tokens["--icon-success-base"] = color(p.success)
+        tokens["--icon-success-hover"] = color(p.success)
+        tokens["--icon-success-active"] = color(p.success)
+        tokens["--icon-warning-base"] = color(p.warning)
+        tokens["--icon-warning-hover"] = color(p.warning)
+        tokens["--icon-warning-active"] = color(p.warning)
         tokens["--icon-critical-base"] = color(p.error)
         tokens["--icon-critical-hover"] = color(p.error)
         tokens["--icon-critical-active"] = color(p.error)
@@ -482,12 +492,12 @@ object OpenCodeWebTheme {
         tokens["--icon-on-brand-hover"] = color(onAccentBg)
         tokens["--icon-on-brand-selected"] = color(onAccentBg)
         tokens["--icon-on-interactive-base"] = color(onAccentBg)
-        tokens["--icon-on-success-base"] = color(p.onTertiaryContainer)
-        tokens["--icon-on-success-hover"] = color(p.onTertiaryContainer)
-        tokens["--icon-on-success-selected"] = color(p.onTertiaryContainer)
-        tokens["--icon-on-warning-base"] = color(p.onSecondaryContainer)
-        tokens["--icon-on-warning-hover"] = color(p.onSecondaryContainer)
-        tokens["--icon-on-warning-selected"] = color(p.onSecondaryContainer)
+        tokens["--icon-on-success-base"] = color(p.success)
+        tokens["--icon-on-success-hover"] = color(p.success)
+        tokens["--icon-on-success-selected"] = color(p.success)
+        tokens["--icon-on-warning-base"] = color(p.warning)
+        tokens["--icon-on-warning-hover"] = color(p.warning)
+        tokens["--icon-on-warning-selected"] = color(p.warning)
         tokens["--icon-on-critical-base"] = color(p.onErrorContainer)
         tokens["--icon-on-critical-hover"] = color(p.onErrorContainer)
         tokens["--icon-on-critical-selected"] = color(p.onErrorContainer)
@@ -498,9 +508,9 @@ object OpenCodeWebTheme {
         tokens["--icon-agent-docs-base"] = color(p.secondary)
         tokens["--icon-agent-ask-base"] = color(p.primary)
         tokens["--icon-agent-build-base"] = color(p.primary)
-        tokens["--icon-diff-add-base"] = color(p.tertiary)
-        tokens["--icon-diff-add-hover"] = color(p.tertiary)
-        tokens["--icon-diff-add-active"] = color(p.tertiary)
+        tokens["--icon-diff-add-base"] = color(p.success)
+        tokens["--icon-diff-add-hover"] = color(p.success)
+        tokens["--icon-diff-add-active"] = color(p.success)
         tokens["--icon-diff-delete-base"] = color(p.error)
         tokens["--icon-diff-delete-hover"] = color(p.error)
         tokens["--icon-diff-modified-base"] = color(p.secondary)
@@ -537,12 +547,12 @@ object OpenCodeWebTheme {
         tokens["--border-interactive-selected"] = color(p.primary)
         tokens["--border-interactive-disabled"] = color(p.outline)
         tokens["--border-interactive-focus"] = color(p.primary)
-        tokens["--border-success-base"] = mix(p.tertiary, 45, p.surface)
-        tokens["--border-success-hover"] = mix(p.tertiary, 65, p.surface)
-        tokens["--border-success-selected"] = color(p.tertiary)
-        tokens["--border-warning-base"] = mix(p.secondary, 45, p.surface)
-        tokens["--border-warning-hover"] = mix(p.secondary, 65, p.surface)
-        tokens["--border-warning-selected"] = color(p.secondary)
+        tokens["--border-success-base"] = mix(p.success, 45, p.surface)
+        tokens["--border-success-hover"] = mix(p.success, 65, p.surface)
+        tokens["--border-success-selected"] = color(p.success)
+        tokens["--border-warning-base"] = mix(p.warning, 45, p.surface)
+        tokens["--border-warning-hover"] = mix(p.warning, 65, p.surface)
+        tokens["--border-warning-selected"] = color(p.warning)
         tokens["--border-critical-base"] = mix(p.error, 35, p.surface)
         tokens["--border-critical-hover"] = mix(p.error, 55, p.surface)
         tokens["--border-critical-selected"] = color(p.error)
@@ -557,12 +567,12 @@ object OpenCodeWebTheme {
         tokens["--surface-interactive-hover"] = accentHover
         tokens["--surface-interactive-weak"] = fade(p.primary, 15)
         tokens["--surface-interactive-weak-hover"] = fade(p.primary, 12)
-        tokens["--surface-success-base"] = color(p.tertiaryContainer)
-        tokens["--surface-success-weak"] = fade(p.tertiary, 12)
-        tokens["--surface-success-strong"] = color(p.tertiary)
-        tokens["--surface-warning-base"] = color(p.secondaryContainer)
-        tokens["--surface-warning-weak"] = fade(p.secondary, 12)
-        tokens["--surface-warning-strong"] = color(p.secondary)
+        tokens["--surface-success-base"] = color(p.successContainer)
+        tokens["--surface-success-weak"] = fade(p.success, 12)
+        tokens["--surface-success-strong"] = color(p.success)
+        tokens["--surface-warning-base"] = color(p.warningContainer)
+        tokens["--surface-warning-weak"] = fade(p.warning, 12)
+        tokens["--surface-warning-strong"] = color(p.warning)
         tokens["--surface-critical-base"] = color(p.errorContainer)
         tokens["--surface-critical-weak"] = fade(p.error, 12)
         tokens["--surface-critical-strong"] = color(p.error)
@@ -578,11 +588,11 @@ object OpenCodeWebTheme {
         tokens["--surface-diff-hidden-weaker"] = fade(p.primary, 7)
         tokens["--surface-diff-hidden-strong"] = mix(p.primary, 30, p.surface)
         tokens["--surface-diff-hidden-stronger"] = color(p.primary)
-        tokens["--surface-diff-add-base"] = color(p.tertiaryContainer)
-        tokens["--surface-diff-add-weak"] = fade(p.tertiary, 12)
-        tokens["--surface-diff-add-weaker"] = fade(p.tertiary, 7)
-        tokens["--surface-diff-add-strong"] = mix(p.tertiary, 30, p.surface)
-        tokens["--surface-diff-add-stronger"] = color(p.tertiary)
+        tokens["--surface-diff-add-base"] = color(p.successContainer)
+        tokens["--surface-diff-add-weak"] = fade(p.success, 12)
+        tokens["--surface-diff-add-weaker"] = fade(p.success, 7)
+        tokens["--surface-diff-add-strong"] = mix(p.success, 30, p.surface)
+        tokens["--surface-diff-add-stronger"] = color(p.success)
         tokens["--surface-diff-delete-base"] = color(p.errorContainer)
         tokens["--surface-diff-delete-weak"] = fade(p.error, 12)
         tokens["--surface-diff-delete-weaker"] = fade(p.error, 7)
@@ -631,7 +641,14 @@ object OpenCodeWebTheme {
         return mode == Configuration.UI_MODE_NIGHT_YES
     }
 
-    private fun color(value: Int): String = hex(value)
+    /**
+     * Format a color for CSS. A translucent color (the success/warning containers are alpha
+     * blends) must keep its alpha; [hex] would silently make it opaque.
+     */
+    private fun color(value: Int): String {
+        val alpha = value ushr 24
+        return if (alpha == 0xFF) hex(value) else fade(value, alpha * 100 / 255)
+    }
 
     private fun hex(value: Int): String = String.format(Locale.US, "#%06X", value and 0xFFFFFF)
 

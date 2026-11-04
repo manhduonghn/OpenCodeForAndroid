@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spacing, shape and sizing tokens of the native shell. Everything is on a 4dp grid; screens use
+  screen_margin, cards use card_padding, and every interactive target is at least touch_target.
+-->
+<resources>
+    <dimen name="spacing_xs">4dp</dimen>
+    <dimen name="spacing_sm">8dp</dimen>
+    <dimen name="spacing_md">12dp</dimen>
+    <dimen name="spacing_lg">16dp</dimen>
+    <dimen name="spacing_xl">24dp</dimen>
+    <dimen name="spacing_xxl">32dp</dimen>
+
+    <dimen name="screen_margin">16dp</dimen>
+    <dimen name="content_max_width">640dp</dimen>
+    <dimen name="boot_card_max_width">480dp</dimen>
+    <dimen name="toolbar_height">64dp</dimen>
+    <dimen name="touch_target">48dp</dimen>
+    <dimen name="card_padding">16dp</dimen>
+    <dimen name="row_min_height">56dp</dimen>
+
+    <dimen name="shape_corner_small">12dp</dimen>
+    <dimen name="shape_corner_large">16dp</dimen>
+    <dimen name="shape_corner_extra_large">28dp</dimen>
+
+    <dimen name="status_dot_size">8dp</dimen>
+    <dimen name="boot_logo_size">40dp</dimen>
+    <dimen name="boot_step_icon_size">20dp</dimen>
+    <dimen name="boot_log_line_spacing">2dp</dimen>
+</resources>

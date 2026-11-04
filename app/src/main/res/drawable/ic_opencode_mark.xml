@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  In-app OpenCode mark: the `>_` prompt of the launcher icon, drawn as a flat vector so it can be
+  tinted or used at 24dp. The launcher icon itself keeps the full gradient artwork.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M5,6 L12,12 L5,18"
+        android:strokeColor="@color/oc_brand"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M13,18 L19,18"
+        android:strokeColor="@color/oc_brand"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round" />
+</vector>

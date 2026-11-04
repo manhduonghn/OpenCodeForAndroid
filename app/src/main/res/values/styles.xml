@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Design-system styles of the native shell. Layouts reference TextAppearance / shape / widget
+  styles instead of hardcoding textSize, fontFamily, corner radii or card colors.
+-->
+<resources>
+    <!-- Typography: the Material 3 type scale, with one monospace style for paths and logs. -->
+    <style name="TextAppearance.OpenCode.HeadlineSmall" parent="TextAppearance.Material3.HeadlineSmall" />
+    <style name="TextAppearance.OpenCode.TitleLarge" parent="TextAppearance.Material3.TitleLarge" />
+    <style name="TextAppearance.OpenCode.TitleMedium" parent="TextAppearance.Material3.TitleMedium" />
+    <style name="TextAppearance.OpenCode.BodyLarge" parent="TextAppearance.Material3.BodyLarge" />
+    <style name="TextAppearance.OpenCode.BodyMedium" parent="TextAppearance.Material3.BodyMedium" />
+    <style name="TextAppearance.OpenCode.BodySmall" parent="TextAppearance.Material3.BodySmall" />
+    <style name="TextAppearance.OpenCode.LabelLarge" parent="TextAppearance.Material3.LabelLarge" />
+    <style name="TextAppearance.OpenCode.LabelMedium" parent="TextAppearance.Material3.LabelMedium" />
+    <style name="TextAppearance.OpenCode.LabelSmall" parent="TextAppearance.Material3.LabelSmall" />
+    <style name="TextAppearance.OpenCode.Mono" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:fontFamily">monospace</item>
+    </style>
+
+    <!-- Shape scale. Card 16dp, sheet 28dp, input 12dp, pills fully rounded. -->
+    <style name="ShapeAppearance.OpenCode.Card" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/shape_corner_large</item>
+    </style>
+    <style name="ShapeAppearance.OpenCode.Sheet" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/shape_corner_extra_large</item>
+    </style>
+    <style name="ShapeAppearance.OpenCode.Input" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/shape_corner_small</item>
+    </style>
+    <style name="ShapeAppearance.OpenCode.Pill" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">50%</item>
+    </style>
+
+    <!-- App shell -->
+    <style name="Widget.OpenCode.Toolbar" parent="Widget.Material3.Toolbar">
+        <item name="android:background">?attr/colorSurface</item>
+        <item name="titleTextAppearance">@style/TextAppearance.OpenCode.TitleLarge</item>
+        <item name="subtitleTextAppearance">@style/TextAppearance.OpenCode.LabelMedium</item>
+        <item name="titleTextColor">?attr/colorOnSurface</item>
+        <item name="subtitleTextColor">?attr/colorOnSurfaceVariant</item>
+        <item name="contentInsetStart">@dimen/screen_margin</item>
+        <item name="contentInsetEnd">@dimen/spacing_sm</item>
+    </style>
+
+    <!-- Cards, inputs and buttons -->
+    <style name="Widget.OpenCode.Card" parent="Widget.Material3.CardView.Filled">
+        <item name="cardBackgroundColor">?attr/colorSurfaceContainerLow</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeWidth">0dp</item>
+        <item name="shapeAppearance">@style/ShapeAppearance.OpenCode.Card</item>
+    </style>
+
+    <style name="Widget.OpenCode.TextInputLayout" parent="Widget.Material3.TextInputLayout.FilledBox">
+        <item name="boxBackgroundColor">?attr/colorSurfaceContainerHighest</item>
+        <item name="boxCornerRadiusTopStart">@dimen/shape_corner_small</item>
+        <item name="boxCornerRadiusTopEnd">@dimen/shape_corner_small</item>
+        <item name="boxCornerRadiusBottomStart">@dimen/shape_corner_small</item>
+        <item name="boxCornerRadiusBottomEnd">@dimen/shape_corner_small</item>
+    </style>
+
+    <style name="Widget.OpenCode.Button" parent="Widget.Material3.Button" />
+    <style name="Widget.OpenCode.Button.Outlined" parent="Widget.Material3.Button.OutlinedButton" />
+    <style name="Widget.OpenCode.Button.Text" parent="Widget.Material3.Button.TextButton" />
+</resources>

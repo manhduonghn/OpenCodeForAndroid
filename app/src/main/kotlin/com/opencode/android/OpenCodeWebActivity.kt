@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
@@ -14,6 +15,11 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.util.Base64
 import android.util.Log
 import android.view.View
@@ -30,6 +36,7 @@ import android.webkit.WebViewDatabase
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -38,7 +45,11 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
@@ -75,14 +86,31 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private val viewModel: OpenCodeWebViewModel by viewModels()
 
+    private lateinit var root: View
+    private lateinit var toolbar: MaterialToolbar
+
     private lateinit var webView: WebView
     private lateinit var webContainer: FrameLayout
     private lateinit var statusPanel: View
+    private lateinit var bootCard: View
     private lateinit var statusStage: TextView
     private lateinit var statusTitle: TextView
     private lateinit var statusDetail: TextView
     private lateinit var statusProgress: ProgressBar
     private lateinit var statusRetry: Button
+    private lateinit var statusDetailsToggle: Button
+    private lateinit var statusCopy: Button
+    private lateinit var statusLog: TextView
+    private lateinit var bootStepIcons: List<ImageView>
+    private lateinit var bootStepStates: List<TextView>
+
+    /** Which boot step the native panel is showing, and the step that failed (if any). */
+    private var bootStage = BootStage.ENVIRONMENT
+    private var bootFailure: BootStage? = null
+
+    /** Connection state painted into the toolbar subtitle. */
+    private var connectionState = ConnectionState.STARTING
+    private var subtitlePainted = false
 
     private lateinit var settingsPanel: View
     private lateinit var updatesCurrent: TextView
@@ -313,10 +341,15 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
         bindViews()
+        applyEdgeToEdge()
+        applyContentWidths()
         bindSettings()
         applySystemBarAppearance()
+        showBootStage(BootStage.ENVIRONMENT)
+        updateStatusSubtitle(ConnectionState.STARTING)
 
         // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
         // the same page: it only has to be moved from the view hierarchy of the previous activity
@@ -348,6 +381,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
 
         statusRetry.setOnClickListener { retryInstall() }
+        statusDetailsToggle.setOnClickListener { toggleBootDetails() }
+        statusCopy.setOnClickListener { copyBootError() }
+        statusDetailsToggle.visibility = View.GONE
+        statusCopy.visibility = View.GONE
 
         // Restore the progress of an installation that was interrupted by a process death.
         OpenCodeBootstrap.restoreState()
@@ -368,6 +405,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             statusPanel.visibility = View.GONE
             webView.visibility = View.VISIBLE
             handler.removeCallbacks(bootTimeout)
+            updateStatusSubtitle(ConnectionState.RUNNING)
         } else {
             statusPanel.visibility = View.VISIBLE
             // INVISIBLE, not GONE: the WebView must keep its layout and keep running its scripts
@@ -379,12 +417,17 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     getString(R.string.opencode_loading_ui),
                     getString(R.string.opencode_loading_ui_detail),
                 )
+                showBootStage(BootStage.UI)
+                updateStatusSubtitle(ConnectionState.RECONNECTING)
                 handler.removeCallbacks(bootTimeout)
                 handler.postDelayed(bootTimeout, BOOT_TIMEOUT_MS)
                 if (!viewModel.bootGuardInstalled) {
                     handler.removeCallbacks(readinessFallback)
                     handler.postDelayed(readinessFallback, 500)
                 }
+            } else {
+                showBootStage(BootStage.ENVIRONMENT)
+                updateStatusSubtitle(ConnectionState.STARTING)
             }
         }
 
@@ -411,13 +454,29 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun bindViews() {
+        root = findViewById(R.id.root)
+        toolbar = findViewById(R.id.toolbar)
         webContainer = findViewById(R.id.web_container)
         statusPanel = findViewById(R.id.status_panel)
+        bootCard = findViewById(R.id.boot_card)
         statusStage = findViewById(R.id.status_stage)
         statusTitle = findViewById(R.id.status_title)
         statusDetail = findViewById(R.id.status_detail)
         statusProgress = findViewById(R.id.status_progress)
         statusRetry = findViewById(R.id.status_retry)
+        statusDetailsToggle = findViewById(R.id.status_details_toggle)
+        statusCopy = findViewById(R.id.status_copy)
+        statusLog = findViewById(R.id.status_log)
+        bootStepIcons = listOf(
+            findViewById(R.id.boot_step1_icon),
+            findViewById(R.id.boot_step2_icon),
+            findViewById(R.id.boot_step3_icon),
+        )
+        bootStepStates = listOf(
+            findViewById(R.id.boot_step1_state),
+            findViewById(R.id.boot_step2_state),
+            findViewById(R.id.boot_step3_state),
+        )
 
         settingsPanel = findViewById(R.id.settings_panel)
         updatesCurrent = findViewById(R.id.updates_current)
@@ -457,12 +516,21 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun bindSettings() {
-        findViewById<View>(R.id.refresh_button).setOnClickListener { hardRefreshWebUi() }
-        findViewById<View>(R.id.settings_button).setOnClickListener { openSettings() }
-        findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
-        findViewById<View>(R.id.files_manage).setOnClickListener {
-            FileManagerDialog.show(this) { directory -> openProject(directory) }
+        toolbar.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                R.id.action_refresh -> hardRefreshWebUi()
+                R.id.action_settings -> openSettings()
+                R.id.action_files -> showFiles()
+                R.id.action_restart -> confirmRestartServer()
+                R.id.action_stop -> confirmStopServer()
+                R.id.action_copy_address -> copyServerAddress()
+                R.id.action_about -> showAbout()
+                else -> return@setOnMenuItemClickListener false
+            }
+            true
         }
+        findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
+        findViewById<View>(R.id.files_manage).setOnClickListener { showFiles() }
 
         updatesCheck.setOnClickListener { checkForUpdates() }
         updatesUpdate.setOnClickListener { startUpdate() }
@@ -522,6 +590,294 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private fun closeSettings() {
         settingsPanel.visibility = View.GONE
+    }
+
+    private fun showFiles() {
+        FileManagerDialog.show(this) { directory -> openProject(directory) }
+    }
+
+    /* ------------------------------------------------------------------ app shell */
+
+    /**
+     * Draw behind the system bars and pad the root by the actual insets.
+     *
+     * The activity is edge-to-edge (Android 15 enforces it anyway), so the toolbar, the boot card
+     * and the WebView all live inside one surface. Padding the root by the system bars keeps the
+     * toolbar below the status bar and the chat input above the navigation bar, and the IME inset
+     * shrinks the WebView instead of covering its input when the keyboard opens.
+     */
+    private fun applyEdgeToEdge() {
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            applyContentWidths()
+            WindowInsetsCompat.CONSUMED
+        }
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    /**
+     * Keep the boot card readable on a tablet or in landscape: it never grows past 480dp, and it
+     * stays centered instead of stretching across the whole window.
+     */
+    private fun applyContentWidths() {
+        val available = resources.displayMetrics.widthPixels -
+            root.paddingLeft - root.paddingRight -
+            2 * resources.getDimensionPixelSize(R.dimen.screen_margin)
+        if (available <= 0) return
+        val width = minOf(available, resources.getDimensionPixelSize(R.dimen.boot_card_max_width))
+        val params = bootCard.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        if (params.width == width) return
+        params.width = width
+        bootCard.layoutParams = params
+    }
+
+    /**
+     * Rotation, multi-window and keyboard changes are handled here instead of recreating the
+     * activity, so the retained WebView is never detached and the chat keeps its scroll position.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applySystemBarAppearance()
+        applyContentWidths()
+        applyWebTheme()
+        updateStatusSubtitle(connectionState, force = true)
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    /* ------------------------------------------------------------------ boot stepper */
+
+    /** Move the boot panel to [stage] and repaint the three step rows. */
+    private fun showBootStage(stage: BootStage) {
+        bootStage = stage
+        statusStage.setText(
+            when (stage) {
+                BootStage.ENVIRONMENT -> R.string.opencode_stage_runtime
+                BootStage.SERVER -> R.string.opencode_stage_server
+                BootStage.UI -> R.string.opencode_stage_ui
+            },
+        )
+        renderBootSteps()
+    }
+
+    private fun renderBootSteps() {
+        val failure = bootFailure
+        for (index in 0 until bootStepIcons.size) {
+            val state = when {
+                failure != null && index == failure.index -> StepState.ERROR
+                failure != null && index > failure.index -> StepState.WAITING
+                index < bootStage.index -> StepState.DONE
+                index == bootStage.index -> StepState.ACTIVE
+                else -> StepState.WAITING
+            }
+            val icon = when (state) {
+                StepState.WAITING -> R.drawable.ic_step_pending
+                StepState.ACTIVE -> R.drawable.ic_step_active
+                StepState.DONE -> R.drawable.ic_step_done
+                StepState.ERROR -> R.drawable.ic_step_error
+            }
+            val color = when (state) {
+                StepState.WAITING -> MaterialColors.getColor(
+                    this,
+                    com.google.android.material.R.attr.colorOnSurfaceVariant,
+                    ContextCompat.getColor(this, R.color.oc_on_surface_variant),
+                )
+                StepState.ACTIVE -> MaterialColors.getColor(
+                    this,
+                    com.google.android.material.R.attr.colorPrimary,
+                    ContextCompat.getColor(this, R.color.oc_primary),
+                )
+                StepState.DONE -> ContextCompat.getColor(this, R.color.oc_success)
+                StepState.ERROR -> MaterialColors.getColor(
+                    this,
+                    com.google.android.material.R.attr.colorError,
+                    ContextCompat.getColor(this, R.color.oc_error),
+                )
+            }
+            val label = when (state) {
+                StepState.WAITING -> R.string.opencode_boot_state_waiting
+                StepState.ACTIVE -> R.string.opencode_boot_state_active
+                StepState.DONE -> R.string.opencode_boot_state_done
+                StepState.ERROR -> R.string.opencode_boot_state_error
+            }
+            bootStepIcons[index].setImageResource(icon)
+            bootStepIcons[index].imageTintList = ColorStateList.valueOf(color)
+            bootStepStates[index].setText(label)
+            bootStepStates[index].setTextColor(color)
+        }
+    }
+
+    /** The semantic status dot and the connection label of the toolbar subtitle. */
+    private fun updateStatusSubtitle(state: ConnectionState, force: Boolean = false) {
+        if (!force && subtitlePainted && connectionState == state) return
+        connectionState = state
+        subtitlePainted = true
+        val dotColor = when (state) {
+            ConnectionState.RUNNING -> ContextCompat.getColor(this, R.color.oc_success)
+            ConnectionState.STARTING,
+            ConnectionState.RECONNECTING,
+            -> ContextCompat.getColor(this, R.color.oc_warning)
+            ConnectionState.OFFLINE,
+            ConnectionState.STOPPED,
+            -> MaterialColors.getColor(
+                this,
+                com.google.android.material.R.attr.colorError,
+                ContextCompat.getColor(this, R.color.oc_error),
+            )
+        }
+        val label = getString(
+            when (state) {
+                ConnectionState.RUNNING -> R.string.opencode_connection_running
+                ConnectionState.STARTING -> R.string.opencode_connection_starting
+                ConnectionState.RECONNECTING -> R.string.opencode_connection_reconnecting
+                ConnectionState.OFFLINE -> R.string.opencode_connection_offline
+                ConnectionState.STOPPED -> R.string.opencode_connection_stopped
+            },
+        )
+        val text = getString(R.string.opencode_status_line, label, PORT)
+        val dot = SpannableString("●")
+        dot.setSpan(
+            ForegroundColorSpan(dotColor),
+            0,
+            dot.length,
+            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        dot.setSpan(RelativeSizeSpan(0.85f), 0, dot.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        toolbar.subtitle = SpannableStringBuilder(dot).append(' ').append(text)
+    }
+
+    private fun toggleBootDetails() {
+        val expanded = statusLog.visibility == View.VISIBLE
+        statusLog.visibility = if (expanded) View.GONE else View.VISIBLE
+        statusDetailsToggle.setText(
+            if (expanded) R.string.opencode_boot_details_show
+            else R.string.opencode_boot_details_hide,
+        )
+    }
+
+    private fun copyBootError() {
+        val text = statusLog.text?.toString()?.ifBlank { null }
+            ?: statusDetail.text?.toString().orEmpty()
+        if (text.isEmpty()) return
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(
+            ClipData.newPlainText(getString(R.string.opencode_boot_copy_error), text),
+        )
+        Toast.makeText(this, R.string.opencode_boot_error_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    /* ------------------------------------------------------------------ server actions */
+
+    private fun copyServerAddress() {
+        val address = "127.0.0.1:$PORT"
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(
+            ClipData.newPlainText(getString(R.string.opencode_copy_address), address),
+        )
+        Toast.makeText(this, R.string.opencode_address_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showAbout() {
+        val installed = OpenCodeBootstrap.getInstalledVersion()
+            .ifEmpty { getString(R.string.opencode_about_version_unknown) }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.opencode_about)
+            .setMessage(
+                getString(R.string.opencode_about_message, BuildConfig.VERSION_NAME, installed),
+            )
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun confirmRestartServer() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.opencode_restart_title)
+            .setMessage(R.string.opencode_restart_message)
+            .setPositiveButton(R.string.opencode_restart_action) { _, _ -> restartServer() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun restartServer() {
+        OpenCodeSettings.setStoppedByUser(this, false)
+        val sessionId = OpenCodeWebViewModel.sessionIdOf(webView.url)
+            ?: OpenCodeSettings.lastSessionId(this)
+        pageLoaded = false
+        viewModel.webReady = false
+        viewModel.transportDown = false
+        waitingForInstall = false
+        pairAttempts = 0
+        loadFailures = 0
+        probeFailures = 0
+        pendingSessionId = sessionId
+        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        bootFailure = null
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        showBootStage(BootStage.SERVER)
+        showBootPanel(
+            getString(R.string.opencode_restarting),
+            getString(R.string.opencode_reconnecting),
+        )
+        updateStatusSubtitle(ConnectionState.STARTING)
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
+        handler.removeCallbacks(poll)
+        try {
+            val intent = Intent(this, OpenCodeService::class.java)
+                .putExtra("action", OpenCodeService.ACTION_RESTART)
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not restart the server", e)
+        }
+        // Give the service a moment to replace the process before pairing again.
+        handler.postDelayed(poll, 800)
+    }
+
+    private fun confirmStopServer() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.opencode_stop_title)
+            .setMessage(R.string.opencode_stop_message)
+            .setPositiveButton(R.string.opencode_stop_action) { _, _ -> stopServer() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun stopServer() {
+        OpenCodeSettings.setStoppedByUser(this, true)
+        try {
+            val intent = Intent(this, OpenCodeService::class.java)
+                .putExtra("action", OpenCodeService.ACTION_STOP)
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not stop the server", e)
+        }
+        pageLoaded = false
+        viewModel.webReady = false
+        viewModel.transportDown = false
+        waitingForInstall = false
+        pairAttempts = 0
+        loadFailures = 0
+        pendingSessionId = null
+        bootFailure = null
+        webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        showBootStage(BootStage.SERVER)
+        showBootPanel(
+            getString(R.string.opencode_notification_stopped),
+            getString(R.string.opencode_notification_stopped_text),
+        )
+        statusProgress.visibility = View.GONE
+        statusRetry.visibility = View.VISIBLE
+        updateStatusSubtitle(ConnectionState.STOPPED)
+        handler.removeCallbacks(bootTimeout)
+        handler.removeCallbacks(transportWatchdog)
+        handler.removeCallbacks(readinessFallback)
+        handler.removeCallbacks(poll)
     }
 
     private fun renderSettings() {
@@ -1269,11 +1625,13 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             Log.w(TAG, "Could not drop the cookies of the previous server", e)
         }
         webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        showBootStage(BootStage.UI)
         showBootPanel(
             getString(R.string.opencode_status_starting),
             getString(R.string.opencode_reconnecting),
         )
-        statusStage.setText(R.string.opencode_stage_ui)
+        updateStatusSubtitle(ConnectionState.RECONNECTING)
         handler.removeCallbacks(bootTimeout)
         handler.removeCallbacks(transportWatchdog)
         handler.removeCallbacks(readinessFallback)
@@ -1475,11 +1833,13 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         pendingSessionId = sessionId
         serverPassword = OpenCodeBootstrap.getServerPassword(this)
         webView.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+        showBootStage(BootStage.UI)
         showBootPanel(
             getString(R.string.opencode_status_starting),
             getString(R.string.opencode_reconnecting),
         )
-        statusStage.setText(R.string.opencode_stage_ui)
+        updateStatusSubtitle(ConnectionState.RECONNECTING)
         handler.removeCallbacks(bootTimeout)
         handler.removeCallbacks(transportWatchdog)
         handler.removeCallbacks(readinessFallback)
@@ -1506,35 +1866,44 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (state.failed) {
             waitingForInstall = false
             statusPanel.visibility = View.VISIBLE
-            statusStage.setText(R.string.opencode_stage_runtime)
+            bootFailure = BootStage.ENVIRONMENT
+            showBootStage(BootStage.ENVIRONMENT)
+            val message = state.error.ifEmpty { state.message }
+            showBootPanel(
+                getString(R.string.opencode_install_failed),
+                message,
+                log = message,
+            )
             statusProgress.isIndeterminate = false
             statusProgress.progress = state.overallProgress()
-            statusTitle.text = getString(R.string.opencode_install_failed)
-            val message = state.error.ifEmpty { state.message }
-            statusDetail.text = message
             statusRetry.visibility = View.VISIBLE
+            updateStatusSubtitle(ConnectionState.OFFLINE)
             return
         }
 
         if (state.done) {
-            statusStage.setText(R.string.opencode_stage_server)
-            statusTitle.text = getString(R.string.opencode_starting)
-            statusDetail.text = getString(R.string.opencode_install_done_detail)
-            statusProgress.isIndeterminate = true
-            statusRetry.visibility = View.GONE
+            bootFailure = null
+            showBootStage(BootStage.SERVER)
+            showBootPanel(
+                getString(R.string.opencode_starting),
+                getString(R.string.opencode_install_done_detail),
+            )
+            updateStatusSubtitle(ConnectionState.STARTING)
             return
         }
 
         if (state.running) {
             waitingForInstall = true
             statusPanel.visibility = View.VISIBLE
-            statusStage.setText(R.string.opencode_stage_runtime)
+            bootFailure = null
+            showBootStage(BootStage.ENVIRONMENT)
+            showBootPanel(
+                getString(R.string.opencode_installing),
+                listOf(state.message, state.detail).filter { it.isNotEmpty() }.joinToString(" "),
+            )
             statusProgress.isIndeterminate = false
             statusProgress.progress = state.overallProgress()
-            statusTitle.text = getString(R.string.opencode_installing)
-            statusDetail.text =
-                listOf(state.message, state.detail).filter { it.isNotEmpty() }.joinToString(" ")
-            statusRetry.visibility = View.GONE
+            updateStatusSubtitle(ConnectionState.STARTING)
         }
     }
 
@@ -1547,11 +1916,15 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             waitingForInstall = false
             webView.visibility = View.GONE
             statusPanel.visibility = View.VISIBLE
-            statusStage.setText(R.string.opencode_stage_server)
-            statusProgress.isIndeterminate = false
-            statusTitle.text = getString(R.string.opencode_notification_stopped)
-            statusDetail.text = getString(R.string.opencode_notification_stopped_text)
+            bootFailure = null
+            showBootStage(BootStage.SERVER)
+            showBootPanel(
+                getString(R.string.opencode_notification_stopped),
+                getString(R.string.opencode_notification_stopped_text),
+            )
+            statusProgress.visibility = View.GONE
             statusRetry.visibility = View.VISIBLE
+            updateStatusSubtitle(ConnectionState.STOPPED)
             return
         }
         val state = OpenCodeBootstrap.getInstallState()
@@ -1561,7 +1934,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (OpenCodeBootstrap.isRuntimeComplete()) {
             // Installed, but the server is not answering. Ask the service to start it again (it
             // may have been killed while the app was in the background).
-            statusStage.setText(R.string.opencode_stage_server)
+            bootFailure = null
+            showBootStage(BootStage.SERVER)
+            updateStatusSubtitle(ConnectionState.STARTING)
             val now = SystemClock.uptimeMillis()
             if (now - lastServiceStart > 3000) {
                 lastServiceStart = now
@@ -1592,11 +1967,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         pairAttempts = 0
         webView.visibility = View.GONE
         statusPanel.visibility = View.VISIBLE
-        statusStage.setText(R.string.opencode_stage_ui)
-        statusProgress.isIndeterminate = true
-        statusTitle.text = title
-        statusDetail.text = detail
-        statusRetry.visibility = View.GONE
+        bootFailure = BootStage.UI
+        showBootStage(BootStage.UI)
+        showBootPanel(title, detail, log = detail)
+        updateStatusSubtitle(ConnectionState.OFFLINE)
         handler.removeCallbacks(bootTimeout)
         handler.removeCallbacks(transportWatchdog)
         handler.removeCallbacks(readinessFallback)
@@ -1605,7 +1979,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (loadFailures > 3) {
             // Stop the automatic loop: the user can retry by hand, otherwise a broken server
             // would reload the page every two seconds forever.
-            statusDetail.text = "$detail\n" + getString(R.string.opencode_retry_hint)
+            val retryDetail = "$detail\n" + getString(R.string.opencode_retry_hint)
+            statusDetail.text = retryDetail
+            statusLog.text = retryDetail
+            statusProgress.visibility = View.GONE
             statusRetry.visibility = View.VISIBLE
             return
         }
@@ -1629,11 +2006,14 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private fun retryInstall() {
         OpenCodeSettings.setStoppedByUser(this, false)
+        bootFailure = null
         statusRetry.visibility = View.GONE
-        statusStage.setText(R.string.opencode_stage_runtime)
-        statusTitle.text = getString(R.string.opencode_preparing)
-        statusDetail.text = getString(R.string.opencode_preparing_detail)
-        statusProgress.isIndeterminate = true
+        showBootStage(BootStage.ENVIRONMENT)
+        showBootPanel(
+            getString(R.string.opencode_preparing),
+            getString(R.string.opencode_preparing_detail),
+        )
+        updateStatusSubtitle(ConnectionState.STARTING)
         viewModel.webReady = false
         handler.removeCallbacks(bootTimeout)
         handler.removeCallbacks(transportWatchdog)
@@ -1683,17 +2063,19 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         pendingSessionId = null
         loadFailures = 0
         serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        bootFailure = null
 
         handler.removeCallbacks(bootTimeout)
         handler.removeCallbacks(transportWatchdog)
         handler.removeCallbacks(readinessFallback)
         webView.visibility = View.GONE
         statusPanel.visibility = View.VISIBLE
-        statusStage.setText(R.string.opencode_stage_ui)
-        statusTitle.setText(R.string.opencode_status_starting)
-        statusDetail.setText(R.string.opencode_status_waiting)
-        statusProgress.visibility = View.VISIBLE
-        statusProgress.isIndeterminate = true
+        showBootStage(BootStage.UI)
+        showBootPanel(
+            getString(R.string.opencode_status_starting),
+            getString(R.string.opencode_status_waiting),
+        )
+        updateStatusSubtitle(ConnectionState.STARTING)
         statusRetry.visibility = View.GONE
 
         handler.removeCallbacks(poll)
@@ -1715,7 +2097,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             getString(R.string.opencode_loading_ui),
             getString(R.string.opencode_loading_ui_detail),
         )
-        statusStage.setText(R.string.opencode_stage_ui)
+        showBootStage(BootStage.UI)
+        updateStatusSubtitle(ConnectionState.RECONNECTING)
+        statusRetry.visibility = View.GONE
         // Keep the view in the hierarchy and laid out; the opaque boot panel covers it.
         webView.visibility = View.INVISIBLE
         handler.removeCallbacks(bootTimeout)
@@ -1766,14 +2150,32 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         // The page routes to the session in onPageFinished, once the start page is ready.
     }
 
-    /** Show one of the native boot/reconnect states over the (hidden) WebView. */
-    private fun showBootPanel(title: String, detail: String) {
+    /**
+     * Show one of the native boot/reconnect states over the (hidden) WebView.
+     *
+     * [log] is the expandable technical detail behind the "Xem chi tiết" action; normal boot
+     * transitions leave it empty so a stale error is not shown next to a healthy start.
+     */
+    private fun showBootPanel(title: String, detail: String, log: String? = null) {
         statusPanel.visibility = View.VISIBLE
         statusProgress.visibility = View.VISIBLE
         statusProgress.isIndeterminate = true
         statusTitle.text = title
         statusDetail.text = detail
         statusRetry.visibility = View.GONE
+        if (log.isNullOrBlank()) {
+            statusLog.text = ""
+            statusLog.visibility = View.GONE
+            statusDetailsToggle.visibility = View.GONE
+            statusCopy.visibility = View.GONE
+            statusDetailsToggle.setText(R.string.opencode_boot_details_show)
+        } else {
+            statusLog.text = log
+            statusLog.visibility = View.GONE
+            statusDetailsToggle.visibility = View.VISIBLE
+            statusCopy.visibility = View.VISIBLE
+            statusDetailsToggle.setText(R.string.opencode_boot_details_show)
+        }
     }
 
     /** Reveal the web UI after its first successful API call, retiring the native boot screen. */
@@ -1783,8 +2185,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         handler.removeCallbacks(transportWatchdog)
         handler.removeCallbacks(readinessFallback)
         loadFailures = 0
+        bootFailure = null
         statusPanel.visibility = View.GONE
         webView.visibility = View.VISIBLE
+        updateStatusSubtitle(ConnectionState.RUNNING)
     }
 
     /**
@@ -1808,7 +2212,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             getString(R.string.opencode_status_starting),
             getString(R.string.opencode_reconnecting_detail),
         )
-        statusStage.setText(R.string.opencode_stage_ui)
+        showBootStage(BootStage.UI)
+        updateStatusSubtitle(ConnectionState.RECONNECTING)
         handler.removeCallbacks(transportWatchdog)
         handler.postDelayed(transportWatchdog, TRANSPORT_RECOVERY_MS)
     }
@@ -1947,6 +2352,27 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         // ViewModel destroys it (onCleared).
         if (webView.parent === webContainer) webContainer.removeView(webView)
         super.onDestroy()
+    }
+
+    private enum class BootStage(val index: Int) {
+        ENVIRONMENT(0),
+        SERVER(1),
+        UI(2),
+    }
+
+    private enum class StepState {
+        WAITING,
+        ACTIVE,
+        DONE,
+        ERROR,
+    }
+
+    private enum class ConnectionState {
+        RUNNING,
+        STARTING,
+        RECONNECTING,
+        OFFLINE,
+        STOPPED,
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
