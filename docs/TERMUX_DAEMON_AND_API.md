@@ -531,7 +531,10 @@ dụng: mỗi lần server khởi động lại so checksum với sha256 nhúng 
 đó từ CLI đã cài (Bun giữ nguyên, không nén), đối chiếu sha256 ghi cạnh asset,
 `patchelf --set-interpreter` trỏ về loader glibc của prefix, cài vào
 `$HOME/.opencode/bin/opencode-pty` và export `OPENCODE_PTY_BIN` cho server (đồng thời ghi vào
-`etc/opencode-env.sh` cho terminal). OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước
+`etc/opencode-env.sh` cho terminal). Bước `patchelf` chạy với `LD_LIBRARY_PATH=$PREFIX/lib` vì nó
+là binary bionic cần `libc++_shared.so` của prefix; nếu RUNPATH của nó vẫn còn trỏ
+`/data/data/com.termux/files/usr/lib` (sau khi `pkg install patchelf`), thiếu biến này thì helper
+không được tạo và terminal vẫn báo lỗi. OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước
 validate cache. `$HOME/.opencode/.terminal-runtime` lưu fingerprint của CLI + version + sha256, nên
 helper chỉ được build lại khi binary đổi. Riêng trên Android chỉ có vậy vẫn chưa đủ: daemon bind
 unix socket dưới `${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, mà `/tmp` không tồn tại nên nó chết

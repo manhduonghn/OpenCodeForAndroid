@@ -3066,6 +3066,10 @@ object OpenCodeBootstrap {
             val patch = runCommand(
                 listOf(patchelf.absolutePath, "--set-interpreter", loader, staged.absolutePath),
                 PTY_PATCH_TIMEOUT_MS,
+                // patchelf is a bionic binary that links against libc++_shared.so from the
+                // prefix. It only starts when that directory is on its library path; the
+                // staged opencode-pty itself must keep the clean environment (it runs on glibc).
+                libraryPath = "$PREFIX/lib",
             )
             if (patch.first != 0) {
                 Log.w(
@@ -3379,11 +3383,18 @@ object OpenCodeBootstrap {
     }
 
     /**
-     * Run a short command with a timeout and return its exit code and combined output. The
-     * environment is minimal on purpose: the glibc tools must not inherit the bionic
-     * `LD_LIBRARY_PATH` of the OpenCode server.
+     * Run a short command with a timeout and return its exit code and combined output.
+     *
+     * The environment is minimal on purpose: the glibc tools must not inherit the bionic
+     * `LD_LIBRARY_PATH` of the OpenCode server. A bionic helper that links against the libraries
+     * of the prefix (eg. `patchelf`, which needs `libc++_shared.so`) gets the path through
+     * [libraryPath] instead.
      */
-    private fun runCommand(cmd: List<String>, timeoutMs: Long): Pair<Int, String> {
+    private fun runCommand(
+        cmd: List<String>,
+        timeoutMs: Long,
+        libraryPath: String? = null,
+    ): Pair<Int, String> {
         val output = StringBuilder()
         var process: Process? = null
         try {
@@ -3395,6 +3406,7 @@ object OpenCodeBootstrap {
                 put("HOME", HOME)
                 put("PATH", "$PREFIX/bin:/system/bin")
                 put("TMPDIR", TMP_DIR)
+                if (libraryPath != null) put("LD_LIBRARY_PATH", libraryPath)
             }
             val started = builder.start()
             process = started
