@@ -489,7 +489,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
         settingsPanel = findViewById(R.id.settings_panel)
         // GitHub details are a progressive-disclosure sheet opened from the Settings card.
-        githubSheetView = layoutInflater.inflate(R.layout.sheet_github, root, false)
+        githubSheetView = layoutInflater.inflate(R.layout.sheet_github, null, false)
         updatesCurrent = findViewById(R.id.updates_current)
         updatesStatus = findViewById(R.id.updates_status)
         updatesCheck = findViewById(R.id.updates_check)
