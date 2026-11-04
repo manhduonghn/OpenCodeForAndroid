@@ -147,6 +147,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var githubRepoSection: View
     private lateinit var githubRepoStatus: TextView
     private lateinit var githubRepoList: LinearLayout
+    private lateinit var infoAppVersion: TextView
+    private lateinit var infoOpencodeVersion: TextView
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -513,6 +515,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         githubRepoSection = findViewById(R.id.github_repo_section)
         githubRepoStatus = findViewById(R.id.github_repo_status)
         githubRepoList = findViewById(R.id.github_repo_list)
+        infoAppVersion = findViewById(R.id.info_app_version)
+        infoOpencodeVersion = findViewById(R.id.info_opencode_version)
     }
 
     private fun bindSettings() {
@@ -531,6 +535,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
         findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
         findViewById<View>(R.id.files_manage).setOnClickListener { showFiles() }
+        findViewById<View>(R.id.settings_restart).setOnClickListener { confirmRestartServer() }
+        findViewById<View>(R.id.settings_stop).setOnClickListener { confirmStopServer() }
+        findViewById<View>(R.id.info_about).setOnClickListener { showAbout() }
 
         updatesCheck.setOnClickListener { checkForUpdates() }
         updatesUpdate.setOnClickListener { startUpdate() }
@@ -889,6 +896,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         suppressSettingsCallbacks = false
 
         val installed = OpenCodeBootstrap.getInstalledVersion().ifEmpty { "-" }
+        infoAppVersion.text = BuildConfig.VERSION_NAME
+        infoOpencodeVersion.text = OpenCodeBootstrap.getInstalledVersion()
+            .ifEmpty { getString(R.string.opencode_about_version_unknown) }
         updatesCurrent.text = getString(R.string.opencode_updates_current, installed)
         updatesUpdate.visibility = View.GONE
         updatesStatus.text = ""

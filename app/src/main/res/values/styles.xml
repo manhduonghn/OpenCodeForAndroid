@@ -63,6 +63,22 @@
         <item name="boxCornerRadiusBottomEnd">@dimen/shape_corner_small</item>
     </style>
 
+    <!-- Section title of the grouped settings list. -->
+    <style name="Widget.OpenCode.SectionHeader" parent="">
+        <item name="android:textAppearance">@style/TextAppearance.OpenCode.LabelLarge</item>
+        <item name="android:textColor">?attr/colorPrimary</item>
+        <item name="android:letterSpacing">0.02</item>
+    </style>
+
+    <!-- A settings row: title on the start, supporting value on the end. -->
+    <style name="Widget.OpenCode.SettingsRow" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">@dimen/touch_target</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:orientation">horizontal</item>
+    </style>
+
     <style name="Widget.OpenCode.Button" parent="Widget.Material3.Button" />
     <style name="Widget.OpenCode.Button.Outlined" parent="Widget.Material3.Button.OutlinedButton" />
     <style name="Widget.OpenCode.Button.Text" parent="Widget.Material3.Button.TextButton" />

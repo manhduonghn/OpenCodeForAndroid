@@ -90,6 +90,14 @@
     <string name="opencode_settings">Cài đặt</string>
     <string name="opencode_settings_close">Đóng</string>
     <string name="opencode_settings_subtitle">Phiên chat, chạy nền, bộ nhớ, cập nhật và GitHub</string>
+    <string name="opencode_settings_section_opencode">OpenCode</string>
+    <string name="opencode_settings_section_server">Máy chủ</string>
+    <string name="opencode_settings_section_workspace">Không gian làm việc</string>
+    <string name="opencode_settings_section_github">GitHub</string>
+    <string name="opencode_settings_section_info">Thông tin</string>
+    <string name="opencode_settings_app_version">Phiên bản ứng dụng</string>
+    <string name="opencode_settings_opencode_version">Phiên bản OpenCode</string>
+    <string name="opencode_settings_about">Giới thiệu ứng dụng</string>
     <string name="opencode_settings_open">Mở cài đặt</string>
     <string name="opencode_webui_refresh">Làm mới WebUI</string>
 

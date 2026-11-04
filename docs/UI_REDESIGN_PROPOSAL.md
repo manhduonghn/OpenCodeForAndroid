@@ -321,6 +321,11 @@ overlay toàn màn hình, không thay thế WebView, để không mất phiên �
 - Chuyển form GitHub sang bottom sheet; status dùng chip; snackbar cho phản hồi.
 - Giữ nguyên logic trong `OpenCodeWebActivity` bằng cách tách helper/adapter.
 
+Đã triển khai bước đầu: panel được nhóm theo 5 section có tiêu đề, dùng token spacing/typography,
+thêm hàng Khởi động lại / Dừng server và card Thông tin (phiên bản app, phiên bản OpenCode).
+`settings_panel` vẫn là `NestedScrollView` với các id cũ, nên toàn bộ binding hiện tại giữ nguyên;
+bước tiếp theo là chuyển sang `RecyclerView` + item layouts và tách form GitHub sang sheet riêng.
+
 ### Phase 3 — Tệp & chọn thư mục
 
 - Thay `FileManagerDialog` bằng màn hình Files (`RecyclerView`).
@@ -330,7 +335,7 @@ overlay toàn màn hình, không thay thế WebView, để không mất phiên �
 ### Phase 4 — Đồng bộ còn lại
 
 - Dialog/snackbar/notification; icon; motion; empty/error states.
-- Đồng bộ success/warning vào `OpenCodeWebTheme`.
+- Đồng bộ success/warning vào `OpenCodeWebTheme` — đã làm cùng Phase 1.
 - Kiểm tra dark/light/dynamic, tablet, font scale, TalkBack.
 
 ### Phase 5 — QA & chốt
