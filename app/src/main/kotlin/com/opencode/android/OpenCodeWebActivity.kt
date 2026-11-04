@@ -22,6 +22,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.util.Base64
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -40,7 +41,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -50,9 +50,11 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.snackbar.Snackbar
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -114,6 +116,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private lateinit var settingsPanel: View
     private lateinit var filesScreen: FilesScreen
+    /** GitHub controls live in a sheet; the view stays inflated so the settings summary can drive it. */
+    private lateinit var githubSheetView: View
+    private var githubSheet: BottomSheetDialog? = null
     private lateinit var updatesCurrent: TextView
     private lateinit var updatesStatus: TextView
     private lateinit var updatesCheck: Button
@@ -482,6 +487,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         )
 
         settingsPanel = findViewById(R.id.settings_panel)
+        // GitHub details are a progressive-disclosure sheet opened from the Settings card.
+        githubSheetView = layoutInflater.inflate(R.layout.sheet_github, root, false)
         updatesCurrent = findViewById(R.id.updates_current)
         updatesStatus = findViewById(R.id.updates_status)
         updatesCheck = findViewById(R.id.updates_check)
@@ -500,22 +507,22 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         githubProgress = findViewById(R.id.github_progress)
         githubChip = findViewById(R.id.github_chip)
         githubStatus = findViewById(R.id.github_status)
-        githubInstallStatus = findViewById(R.id.github_install_status)
-        githubInstall = findViewById(R.id.github_install)
-        githubLogin = findViewById(R.id.github_login)
-        githubLogout = findViewById(R.id.github_logout)
-        githubUser = findViewById(R.id.github_user)
-        githubCode = findViewById(R.id.github_code)
-        githubCopy = findViewById(R.id.github_copy)
-        githubLink = findViewById(R.id.github_link)
-        githubHint = findViewById(R.id.github_hint)
-        githubCloneSection = findViewById(R.id.github_clone_section)
-        githubCloneUrl = findViewById(R.id.github_clone_url)
-        githubClone = findViewById(R.id.github_clone)
-        githubCloneStatus = findViewById(R.id.github_clone_status)
-        githubRepoSection = findViewById(R.id.github_repo_section)
-        githubRepoStatus = findViewById(R.id.github_repo_status)
-        githubRepoList = findViewById(R.id.github_repo_list)
+        githubInstallStatus = githubSheetView.findViewById(R.id.github_install_status)
+        githubInstall = githubSheetView.findViewById(R.id.github_install)
+        githubLogin = githubSheetView.findViewById(R.id.github_login)
+        githubLogout = githubSheetView.findViewById(R.id.github_logout)
+        githubUser = githubSheetView.findViewById(R.id.github_user)
+        githubCode = githubSheetView.findViewById(R.id.github_code)
+        githubCopy = githubSheetView.findViewById(R.id.github_copy)
+        githubLink = githubSheetView.findViewById(R.id.github_link)
+        githubHint = githubSheetView.findViewById(R.id.github_hint)
+        githubCloneSection = githubSheetView.findViewById(R.id.github_clone_section)
+        githubCloneUrl = githubSheetView.findViewById(R.id.github_clone_url)
+        githubClone = githubSheetView.findViewById(R.id.github_clone)
+        githubCloneStatus = githubSheetView.findViewById(R.id.github_clone_status)
+        githubRepoSection = githubSheetView.findViewById(R.id.github_repo_section)
+        githubRepoStatus = githubSheetView.findViewById(R.id.github_repo_status)
+        githubRepoList = githubSheetView.findViewById(R.id.github_repo_list)
         infoAppVersion = findViewById(R.id.info_app_version)
         infoOpencodeVersion = findViewById(R.id.info_opencode_version)
     }
@@ -536,6 +543,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
         findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
         findViewById<View>(R.id.files_manage).setOnClickListener { showFiles() }
+        findViewById<View>(R.id.github_manage).setOnClickListener { openGithubSheet() }
+        githubSheetView.findViewById<View>(R.id.github_sheet_close).setOnClickListener {
+            githubSheet?.dismiss()
+        }
         filesScreen = FilesScreen(
             this,
             { directory -> openProject(directory) },
@@ -598,13 +609,26 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun openSettings() {
-        settingsPanel.visibility = View.VISIBLE
+        OverlayMotion.reveal(settingsPanel)
         renderSettings()
         refreshGitHub()
     }
 
     private fun closeSettings() {
-        settingsPanel.visibility = View.GONE
+        githubSheet?.dismiss()
+        OverlayMotion.conceal(settingsPanel)
+    }
+
+    /** Show the GitHub controls without leaving Settings, above the retained WebView. */
+    private fun openGithubSheet() {
+        if (githubSheet?.isShowing == true) return
+        (githubSheetView.parent as? ViewGroup)?.removeView(githubSheetView)
+        val sheet = BottomSheetDialog(this)
+        sheet.setContentView(githubSheetView)
+        sheet.setOnDismissListener { githubSheet = null }
+        githubSheet = sheet
+        sheet.show()
+        refreshGitHub()
     }
 
     private fun showFiles() {
@@ -635,19 +659,48 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     /**
-     * Keep the boot card readable on a tablet or in landscape: it never grows past 480dp, and it
-     * stays centered instead of stretching across the whole window.
+     * Keep long forms readable on a tablet or in landscape: the boot card never grows past
+     * 480dp and the settings/files content past 640dp. Both stay centered instead of stretching
+     * across the whole window.
      */
     private fun applyContentWidths() {
-        val available = resources.displayMetrics.widthPixels -
-            root.paddingLeft - root.paddingRight -
-            2 * resources.getDimensionPixelSize(R.dimen.screen_margin)
-        if (available <= 0) return
-        val width = minOf(available, resources.getDimensionPixelSize(R.dimen.boot_card_max_width))
-        val params = bootCard.layoutParams as? ViewGroup.MarginLayoutParams ?: return
-        if (params.width == width) return
-        params.width = width
-        bootCard.layoutParams = params
+        val usable = (resources.displayMetrics.widthPixels -
+            root.paddingLeft - root.paddingRight).coerceAtLeast(0)
+        if (usable <= 0) return
+        val margins = 2 * resources.getDimensionPixelSize(R.dimen.screen_margin)
+        val bootWidth = minOf(
+            (usable - margins).coerceAtLeast(0),
+            resources.getDimensionPixelSize(R.dimen.boot_card_max_width),
+        )
+        applyWidth(bootCard, bootWidth)
+        // The settings and files content bring their own screen margins, so only the card limit
+        // applies here. Without it a tablet would stretch every row across the whole screen.
+        val contentWidth = minOf(usable, resources.getDimensionPixelSize(R.dimen.content_max_width))
+        applyWidth(findViewById(R.id.settings_content), contentWidth)
+        applyWidth(findViewById(R.id.files_content), contentWidth)
+    }
+
+    /** Keep long forms readable on tablets and in landscape instead of stretching them edge to edge. */
+    private fun applyWidth(view: View, width: Int) {
+        when (val params = view.layoutParams) {
+            is FrameLayout.LayoutParams -> {
+                if (params.width == width && params.gravity == Gravity.CENTER_HORIZONTAL) return
+                params.width = width
+                params.gravity = Gravity.CENTER_HORIZONTAL
+                view.layoutParams = params
+            }
+            is LinearLayout.LayoutParams -> {
+                if (params.width == width && params.gravity == Gravity.CENTER_HORIZONTAL) return
+                params.width = width
+                params.gravity = Gravity.CENTER_HORIZONTAL
+                view.layoutParams = params
+            }
+            else -> {
+                if (params.width == width) return
+                params.width = width
+                view.layoutParams = params
+            }
+        }
     }
 
     /**
@@ -781,7 +834,19 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         clipboard?.setPrimaryClip(
             ClipData.newPlainText(getString(R.string.opencode_boot_copy_error), text),
         )
-        Toast.makeText(this, R.string.opencode_boot_error_copied, Toast.LENGTH_SHORT).show()
+        showSnack(getString(R.string.opencode_boot_error_copied))
+    }
+
+    private fun showSnack(
+        message: String,
+        duration: Int = Snackbar.LENGTH_LONG,
+        actionText: String? = null,
+        action: (() -> Unit)? = null,
+    ) {
+        if (destroyed) return
+        val bar = Snackbar.make(root, message, duration)
+        if (actionText != null && action != null) bar.setAction(actionText) { action() }
+        bar.show()
     }
 
     /* ------------------------------------------------------------------ server actions */
@@ -792,7 +857,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         clipboard?.setPrimaryClip(
             ClipData.newPlainText(getString(R.string.opencode_copy_address), address),
         )
-        Toast.makeText(this, R.string.opencode_address_copied, Toast.LENGTH_SHORT).show()
+        showSnack(getString(R.string.opencode_address_copied), Snackbar.LENGTH_SHORT)
     }
 
     private fun showAbout() {
@@ -854,12 +919,22 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun confirmStopServer() {
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.opencode_stop_title)
             .setMessage(R.string.opencode_stop_message)
             .setPositiveButton(R.string.opencode_stop_action) { _, _ -> stopServer() }
             .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.setTextColor(
+                MaterialColors.getColor(
+                    this,
+                    androidx.appcompat.R.attr.colorError,
+                    ContextCompat.getColor(this, R.color.oc_error),
+                ),
+            )
+        }
+        dialog.show()
     }
 
     private fun stopServer() {
@@ -999,11 +1074,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             try {
                 startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             } catch (e2: Exception) {
-                Toast.makeText(
-                    this,
-                    R.string.opencode_storage_permission_failed,
-                    Toast.LENGTH_LONG,
-                ).show()
+                showSnack(getString(R.string.opencode_storage_permission_failed))
             }
         }
     }
@@ -1062,11 +1133,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                 try {
                     startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
                 } catch (e2: Exception) {
-                    Toast.makeText(
-                        this,
-                        R.string.opencode_storage_permission_failed,
-                        Toast.LENGTH_LONG,
-                    ).show()
+                    showSnack(getString(R.string.opencode_storage_permission_failed))
                 }
             }
             return
@@ -1130,11 +1197,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     /** Create a session in [directory] so the project appears in the web UI, then show it. */
     private fun openProject(directory: File) {
         if (::filesScreen.isInitialized) filesScreen.hide()
-        Toast.makeText(
-            this,
+        showSnack(
             getString(R.string.opencode_picker_opening, directory.absolutePath),
-            Toast.LENGTH_SHORT,
-        ).show()
+            Snackbar.LENGTH_SHORT,
+        )
         val secret = OpenCodeBootstrap.getServerPassword(this)
         backgroundExecutor.execute {
             val status = OpenCodeApi.createSession(PORT, secret, directory.absolutePath)
@@ -1149,11 +1215,11 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                     }
                 } else {
                     copyPath(directory.absolutePath)
-                    Toast.makeText(
-                        this,
+                    showSnack(
                         getString(R.string.opencode_picker_open_failed, directory.absolutePath),
-                        Toast.LENGTH_LONG,
-                    ).show()
+                        actionText = getString(R.string.opencode_files_copy_path),
+                        action = { copyPath(directory.absolutePath) },
+                    )
                 }
             }
         }
@@ -1164,7 +1230,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             clipboard?.setPrimaryClip(ClipData.newPlainText("path", path))
         } catch (e: Exception) {
-            // The clipboard may be unavailable, the toast below is the important part.
+            // The clipboard may be unavailable; the caller shows the important message.
         }
     }
 
@@ -1360,7 +1426,10 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         try {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             clipboard?.setPrimaryClip(ClipData.newPlainText("code", githubUserCode))
-            Toast.makeText(this, R.string.opencode_settings_github_copy_done, Toast.LENGTH_SHORT).show()
+            showSnack(
+                getString(R.string.opencode_settings_github_copy_done),
+                Snackbar.LENGTH_SHORT,
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Could not copy the GitHub code", e)
         }
@@ -1371,7 +1440,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(githubVerificationUrl)))
         } catch (e: Exception) {
-            Toast.makeText(this, R.string.opencode_storage_permission_failed, Toast.LENGTH_LONG).show()
+            showSnack(getString(R.string.opencode_storage_permission_failed))
         }
     }
 
@@ -2055,7 +2124,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun hardRefreshWebUi() {
         if (destroyed) return
 
-        Toast.makeText(this, "Đang làm mới WebUI...", Toast.LENGTH_SHORT).show()
+        showSnack(getString(R.string.opencode_webui_refreshing), Snackbar.LENGTH_SHORT)
 
         try {
             val cookieManager = CookieManager.getInstance()
@@ -2362,6 +2431,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     override fun onDestroy() {
         destroyed = true
         if (::filesScreen.isInitialized) filesScreen.release()
+        githubSheet?.dismiss()
+        githubSheet = null
         probeExecutor.shutdownNow()
         backgroundExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)

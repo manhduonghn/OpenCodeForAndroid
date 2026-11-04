@@ -53,11 +53,11 @@
 
     <ImageButton
         android:id="@+id/file_more"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
         android:background="@drawable/bg_icon_button"
         android:contentDescription="@string/opencode_files_options"
-        android:padding="10dp"
+        android:padding="12dp"
         android:src="@drawable/ic_more_vert"
         android:tint="?attr/colorOnSurfaceVariant" />
 </LinearLayout>

@@ -100,6 +100,7 @@
     <string name="opencode_settings_about">Giới thiệu ứng dụng</string>
     <string name="opencode_settings_open">Mở cài đặt</string>
     <string name="opencode_webui_refresh">Làm mới WebUI</string>
+    <string name="opencode_webui_refreshing">Đang làm mới WebUI…</string>
 
     <!-- Current session -->
     <string name="opencode_session_title">Phiên chat</string>
@@ -233,6 +234,7 @@
     <string name="opencode_picker_shortcuts">Lối tắt</string>
     <string name="opencode_picker_path">Đường dẫn</string>
     <string name="opencode_picker_current">Thư mục hiện tại</string>
+    <string name="opencode_picker_goto">Đi tới %1$s</string>
 
     <!-- GitHub extension -->
     <string name="opencode_settings_extensions">Tiện ích mở rộng</string>
@@ -266,6 +268,8 @@
     <string name="opencode_settings_github_account">Tài khoản: %1$s</string>
     <string name="opencode_settings_github_repos_loading">Đang tải danh sách repository…</string>
     <string name="opencode_settings_github_repos_empty">Tài khoản chưa có repository nào.</string>
+    <string name="opencode_settings_github_repos">Repository</string>
+    <string name="opencode_settings_github_manage">Quản lý GitHub</string>
     <string name="opencode_settings_github_repos_count">%1$d repository</string>
     <string name="opencode_settings_github_repos_failed">Không tải được repository: %1$s</string>
     <string name="opencode_settings_github_cloning">Đang clone…</string>

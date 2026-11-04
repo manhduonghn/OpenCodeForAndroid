@@ -89,12 +89,12 @@ class FilesScreen(
         get() = panel.visibility == View.VISIBLE
 
     fun show() {
-        panel.visibility = View.VISIBLE
+        OverlayMotion.reveal(panel)
         scan()
     }
 
     fun hide() {
-        panel.visibility = View.GONE
+        OverlayMotion.conceal(panel)
     }
 
     fun release() {

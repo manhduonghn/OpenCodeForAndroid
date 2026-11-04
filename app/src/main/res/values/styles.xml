@@ -17,6 +17,15 @@
     <style name="TextAppearance.OpenCode.Mono" parent="TextAppearance.Material3.BodySmall">
         <item name="android:fontFamily">monospace</item>
     </style>
+    <style name="TextAppearance.OpenCode.MonoSmall" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">11sp</item>
+    </style>
+    <style name="TextAppearance.OpenCode.MonoCode" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
 
     <!-- Shape scale. Card 16dp, sheet 28dp, input 12dp, pills fully rounded. -->
     <style name="ShapeAppearance.OpenCode.Card" parent="">

@@ -242,18 +242,18 @@ class DirectoryPickerSheet(
                 breadcrumb.addView(segmentView("…"))
                 continue
             }
+            val entry: File = segment
             val label = when {
-                segment.parentFile == null -> activity.getString(R.string.opencode_picker_root)
-                segment.absolutePath == OpenCodeBootstrap.HOME -> activity.getString(R.string.opencode_picker_home)
-                else -> segment.name
+                entry.parentFile == null -> activity.getString(R.string.opencode_picker_root)
+                entry.absolutePath == OpenCodeBootstrap.HOME -> activity.getString(R.string.opencode_picker_home)
+                else -> entry.name
             }
-            breadcrumb.addView(
-                segmentView(
-                    label = label,
-                    isCurrent = segment.absolutePath == directory.absolutePath,
-                    onClick = { load(segment) },
-                ),
-            )
+            val isCurrent = entry.absolutePath == directory.absolutePath
+            if (isCurrent) {
+                breadcrumb.addView(segmentView(label, isCurrent = true))
+            } else {
+                breadcrumb.addView(segmentView(label) { load(entry) })
+            }
         }
     }
 
@@ -279,13 +279,16 @@ class DirectoryPickerSheet(
                 )
                 else -> MaterialColors.getColor(
                     activity,
-                    com.google.android.material.R.attr.colorPrimary,
+                    androidx.appcompat.R.attr.colorPrimary,
                     ContextCompat.getColor(activity, R.color.oc_primary),
                 )
             },
         )
         setPadding(dp(4), dp(8), dp(4), dp(8))
+        minHeight = dp(48)
+        gravity = Gravity.CENTER_VERTICAL
         if (onClick != null) {
+            contentDescription = activity.getString(R.string.opencode_picker_goto, label)
             isClickable = true
             isFocusable = true
             background = ContextCompat.getDrawable(activity, android.R.drawable.list_selector_background)
