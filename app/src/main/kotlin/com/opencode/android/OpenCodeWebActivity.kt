@@ -481,6 +481,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun bindViews() {
         root = findViewById(R.id.root)
         toolbar = findViewById(R.id.toolbar)
+        toolbar.tintActionIcons()
         webContainer = findViewById(R.id.web_container)
         statusPanel = findViewById(R.id.status_panel)
         bootCard = findViewById(R.id.boot_card)
@@ -504,6 +505,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         )
 
         settingsPanel = findViewById(R.id.settings_panel)
+        findViewById<MaterialToolbar>(R.id.settings_toolbar).tintActionIcons()
         // GitHub details are a progressive-disclosure sheet opened from the Settings card.
         githubSheetView = layoutInflater.inflate(R.layout.sheet_github, null, false)
         updatesCurrent = findViewById(R.id.updates_current)
@@ -549,18 +551,18 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.action_refresh -> hardRefreshWebUi()
-                R.id.action_settings -> openSettings()
                 R.id.action_files -> showFiles()
-                R.id.action_restart -> confirmRestartServer()
-                R.id.action_stop -> confirmStopServer()
-                R.id.action_copy_address -> copyServerAddress()
-                R.id.action_about -> showAbout()
+                R.id.action_settings -> openSettings()
                 else -> return@setOnMenuItemClickListener false
             }
             true
         }
-        findViewById<View>(R.id.settings_close).setOnClickListener { closeSettings() }
-        findViewById<View>(R.id.files_manage).setOnClickListener { showFiles() }
+        findViewById<MaterialToolbar>(R.id.settings_toolbar).setNavigationOnClickListener {
+            closeSettings()
+        }
+        findViewById<View>(R.id.settings_copy_address).setOnClickListener {
+            copyServerAddress()
+        }
         findViewById<View>(R.id.github_manage).setOnClickListener { openGithubSheet() }
         githubSheetView.findViewById<View>(R.id.github_sheet_close).setOnClickListener {
             githubSheet?.dismiss()

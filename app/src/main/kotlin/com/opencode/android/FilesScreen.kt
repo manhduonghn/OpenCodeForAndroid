@@ -483,6 +483,7 @@ class FilesScreen(
         toolbar.setNavigationIcon(R.drawable.ic_arrow_back)
         toolbar.setNavigationContentDescription(R.string.opencode_files_back)
         toolbar.menu.findItem(R.id.action_files_hidden)?.isChecked = showHidden
+        toolbar.tintActionIcons()
     }
 
     /* ------------------------------------------------------------------ selection */
@@ -561,6 +562,7 @@ class FilesScreen(
         toolbar.setNavigationContentDescription(R.string.opencode_files_clear_selection)
         toolbar.title = activity.getString(R.string.opencode_files_selection_title, selected.size)
         toolbar.subtitle = activity.getString(R.string.opencode_files_selection_hint)
+        toolbar.tintActionIcons()
     }
 
     private fun clearSelection() {

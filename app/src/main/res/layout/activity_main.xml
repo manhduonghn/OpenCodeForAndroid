@@ -23,6 +23,12 @@
             app:subtitle="@string/opencode_web_subtitle"
             app:title="@string/opencode_web_title" />
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:alpha="0.6"
+            android:background="?attr/colorOutlineVariant" />
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -314,64 +320,46 @@
         </FrameLayout>
     </LinearLayout>
 
-    <androidx.core.widget.NestedScrollView
+    <LinearLayout
         android:id="@+id/settings_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="?attr/colorSurface"
-        android:fillViewport="true"
+        android:orientation="vertical"
         android:visibility="gone">
 
-        <LinearLayout
-            android:id="@+id/settings_content"
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/settings_toolbar"
+            style="@style/Widget.OpenCode.Toolbar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingStart="@dimen/screen_margin"
-            android:paddingTop="@dimen/screen_margin"
-            android:paddingEnd="@dimen/screen_margin"
-            android:paddingBottom="@dimen/spacing_xxl">
+            android:layout_height="@dimen/toolbar_height"
+            app:navigationContentDescription="@string/opencode_settings_close"
+            app:navigationIcon="@drawable/ic_arrow_back"
+            app:title="@string/opencode_settings" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:alpha="0.6"
+            android:background="?attr/colorOutlineVariant" />
+
+        <androidx.core.widget.NestedScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true">
 
             <LinearLayout
+                android:id="@+id/settings_content"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:orientation="vertical"
+                android:paddingStart="@dimen/screen_margin"
+                android:paddingTop="@dimen/spacing_lg"
+                android:paddingEnd="@dimen/screen_margin"
+                android:paddingBottom="@dimen/spacing_xxl">
 
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/opencode_settings"
-                        android:textAppearance="@style/TextAppearance.OpenCode.HeadlineSmall"
-                        android:textColor="?attr/colorOnSurface" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/spacing_xs"
-                        android:text="@string/opencode_settings_subtitle"
-                        android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
-                        android:textColor="?attr/colorOnSurfaceVariant" />
-                </LinearLayout>
-
-                <ImageButton
-                    android:id="@+id/settings_close"
-                    android:layout_width="48dp"
-                    android:layout_height="48dp"
-                    android:background="@drawable/bg_icon_button"
-                    android:contentDescription="@string/opencode_settings_close"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_close"
-                    android:tint="?attr/colorOnSurfaceVariant" />
-            </LinearLayout>
-
-            <!-- OpenCode -->
+                <!-- OpenCode -->
             <TextView
                 style="@style/Widget.OpenCode.SectionHeader"
                 android:layout_width="wrap_content"
@@ -619,6 +607,17 @@
                     android:minWidth="0dp"
                     android:text="@string/opencode_stop_action"
                     android:textColor="?attr/colorError" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/settings_copy_address"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="@dimen/touch_target"
+                    android:minWidth="0dp"
+                    android:text="@string/opencode_copy_address"
+                    app:icon="@drawable/ic_copy"
+                    app:iconTint="?attr/colorPrimary" />
             </LinearLayout>
 
             <!-- Workspace / shared storage -->
@@ -716,56 +715,6 @@
                     android:text="@string/opencode_storage_hint"
                     android:textColor="?attr/colorOutline"
                     android:textAppearance="@style/TextAppearance.OpenCode.BodySmall" />
-            </LinearLayout>
-
-            <!-- Downloaded files -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/spacing_md"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="@dimen/card_padding">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <ImageView
-                        android:layout_width="22dp"
-                        android:layout_height="22dp"
-                        android:contentDescription="@null"
-                        android:src="@drawable/ic_download"
-                        android:tint="?attr/colorPrimary" />
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="12dp"
-                        android:layout_weight="1"
-                        android:text="@string/opencode_files_title"
-                        android:textColor="?attr/colorOnSurface"
-                        android:textAppearance="@style/TextAppearance.OpenCode.TitleMedium" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/files_manage"
-                        style="@style/Widget.Material3.Button.TextButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="40dp"
-                        android:minWidth="0dp"
-                        android:text="@string/opencode_files_manage" />
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/opencode_files_desc"
-                    android:textColor="?attr/colorOnSurfaceVariant"
-                    android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium" />
             </LinearLayout>
 
             <!-- GitHub -->
@@ -925,6 +874,7 @@
             </LinearLayout>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
+    </LinearLayout>
 
     <!-- Files screen: a full-height overlay so the retained WebView stays attached. -->
     <LinearLayout

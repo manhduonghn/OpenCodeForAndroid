@@ -1,35 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Actions of the app shell. Refresh and settings stay visible; the rest live in the overflow. -->
+<!--
+  The app shell has exactly three primary destinations: refresh the Web UI, open Files and open
+  Settings. Server restart/stop, the server address and About live inside Settings only, so the
+  same action never appears twice.
+-->
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
         android:id="@+id/action_refresh"
         android:icon="@drawable/ic_refresh"
         android:title="@string/opencode_webui_refresh"
-        app:showAsAction="ifRoom" />
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_files"
+        android:icon="@drawable/ic_folder_open"
+        android:title="@string/opencode_files_title"
+        app:showAsAction="always" />
     <item
         android:id="@+id/action_settings"
         android:icon="@drawable/ic_settings"
         android:title="@string/opencode_settings"
-        app:showAsAction="ifRoom" />
-    <item
-        android:id="@+id/action_files"
-        android:title="@string/opencode_files_manage"
-        app:showAsAction="never" />
-    <item
-        android:id="@+id/action_restart"
-        android:title="@string/opencode_notification_action_restart"
-        app:showAsAction="never" />
-    <item
-        android:id="@+id/action_stop"
-        android:title="@string/opencode_stop_action"
-        app:showAsAction="never" />
-    <item
-        android:id="@+id/action_copy_address"
-        android:title="@string/opencode_copy_address"
-        app:showAsAction="never" />
-    <item
-        android:id="@+id/action_about"
-        android:title="@string/opencode_about"
-        app:showAsAction="never" />
+        app:showAsAction="always" />
 </menu>
