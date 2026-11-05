@@ -18,7 +18,10 @@ Git/GitHub nằm trong cùng một mô hình điều hướng với Quản lý t
 >
 > **Bước tiếp theo:** đề xuất nâng editor native hiện tại thành code editor có tô màu cú pháp
 > (CodeMirror 6 trong WebView, fallback native) nằm ở
-> [`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md).
+> [`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md). Phần nền của
+> đề xuất đó đã được triển khai, gồm recovery snapshot, hạ cấp trang trí cho tệp lớn, xem trước
+> Markdown offline, kiểm tra cú pháp nhẹ JSON/XML và gợi ý chế độ đơn giản cho TalkBack; build,
+> unit test và QA thiết bị vẫn chưa chạy.
 
 ---
 
@@ -713,9 +716,10 @@ thì chỉ lưu; file ngoài repo không hiện action Git; không mất dữ li
 
 Đã triển khai: `ImagePreviewScreen` (sample ảnh theo kích thước màn hình), gutter + undo/redo +
 search trong `EditorScreen`, diff dialog, stage/unstage từng tệp, `CloneHandle` huỷ clone, và
-GitHub two-pane khi `screenWidthDp >= 720` (Git changes giữ một cột). Chưa chạy được screenshot
-test, dark/light/dynamic, font scale 200% và TalkBack vì môi trường hiện tại không có
-Java/Gradle/thiết bị.
+GitHub two-pane khi `screenWidthDp >= 720` (Git changes giữ một cột). Editor còn có recovery
+snapshot, xem trước Markdown, kiểm tra cú pháp nhẹ và mục "Trình sửa" trong Cài đặt. Chưa chạy
+được screenshot test, dark/light/dynamic, font scale 200% và TalkBack vì môi trường hiện tại không
+có Java/Gradle/thiết bị.
 
 ---
 

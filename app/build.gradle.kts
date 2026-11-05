@@ -125,6 +125,9 @@ android {
             java.srcDirs("src/main/kotlin")
             assets.srcDir(cliBridgeAssets.get().asFile)
         }
+        getByName("test") {
+            java.srcDirs("src/test/kotlin")
+        }
     }
 
     buildFeatures {
@@ -150,6 +153,12 @@ dependencies {
     implementation("androidx.webkit:webkit:1.18.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
+
+    // Pure JVM tests for the editor language registry, protocol, theme and the
+    // encoding/atomic-save boundary. `org.json` replaces the mockable android.jar stub so
+    // EditorSyntaxCheck's JSON parsing can run on the JVM.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
 }
 
 // The asset merge tasks read the generated directory, make sure the two native binaries exist

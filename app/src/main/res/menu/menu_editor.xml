@@ -44,6 +44,14 @@
         android:title="@string/opencode_editor_recent"
         app:showAsAction="never" />
     <item
+        android:id="@+id/action_editor_preview"
+        android:title="@string/opencode_editor_preview"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_lint"
+        android:title="@string/opencode_editor_lint"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_editor_external"
         android:icon="@drawable/ic_open_in_new"
         android:title="@string/opencode_editor_external"

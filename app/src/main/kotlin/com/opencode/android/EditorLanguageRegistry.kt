@@ -281,8 +281,8 @@ object EditorLanguageRegistry {
         val name = filename.substringAfterLast('/').lowercase()
         if (name.isEmpty()) return plain
         resolveExact(name)?.let { return it }
-        resolveShebang(shebang)?.let { return it }
         resolveExtension(name)?.let { return it }
+        resolveShebang(shebang)?.let { return it }
         return plain
     }
 

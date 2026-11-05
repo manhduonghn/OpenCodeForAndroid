@@ -251,12 +251,14 @@ function loadDocument(payload: Record<string, unknown>): void {
   if (payload.readOnly === true || payload.readOnly === false) {
     readOnly = payload.readOnly === true;
   }
-  const lines = text.split("\n");
-  const doc = Text.of(lines);
-  savedDoc = doc;
+  // `text` can be a recovery draft while `baseText` is the last saved content on disk. Keeping
+  // both lets dirty tracking, save and conflict detection behave exactly like a normal edit.
+  const baseText = typeof payload.baseText === "string" ? payload.baseText : text;
+  const doc = Text.of(text.split("\n"));
+  savedDoc = Text.of(baseText.split("\n"));
   savedHash = typeof payload.baseHash === "string" ? payload.baseHash : "";
   version = typeof payload.version === "number" ? payload.version : 0;
-  dirty = false;
+  dirty = !doc.eq(savedDoc);
   lastSnapshot = null;
   loading = true;
   const selection = payload.selection as { anchor?: number; head?: number } | undefined;

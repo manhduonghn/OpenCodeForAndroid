@@ -1,6 +1,5 @@
 package com.opencode.android
 
-import android.net.Uri
 import android.webkit.JavascriptInterface
 import org.json.JSONObject
 
@@ -62,13 +61,13 @@ class EditorBridge(private val callbacks: Callbacks) {
 
     @JavascriptInterface
     fun onSnapshot(payload: String) {
-        if (payload.length > MAX_MESSAGE_CHARS) {
+        if (payload.length > EditorProtocol.MAX_MESSAGE_CHARS) {
             callbacks.onError("oversize", "Snapshot is larger than the bridge limit")
             return
         }
         val json = parse(payload) ?: return
         val text = json.optString("text", "")
-        if (text.length > MAX_TEXT_CHARS) {
+        if (!EditorProtocol.withinTextLimit(text.length)) {
             callbacks.onError("oversize", "The document is too large for the bridge")
             return
         }
@@ -101,13 +100,8 @@ class EditorBridge(private val callbacks: Callbacks) {
     @JavascriptInterface
     fun onLink(payload: String) {
         val json = parse(payload) ?: return
-        val url = json.optString("url", "").take(MAX_URL_CHARS)
-        val scheme = try {
-            Uri.parse(url).scheme?.lowercase()
-        } catch (e: Exception) {
-            null
-        }
-        if (scheme != "http" && scheme != "https" && scheme != "mailto") return
+        val url = json.optString("url", "")
+        if (!EditorProtocol.isSafeLink(url)) return
         callbacks.onLink(url)
     }
 
@@ -130,17 +124,11 @@ class EditorBridge(private val callbacks: Callbacks) {
     }
 
     private fun parse(payload: String): JSONObject? {
-        if (payload.length > MAX_MESSAGE_CHARS) return null
+        if (!EditorProtocol.withinMessageLimit(payload.length)) return null
         return try {
             JSONObject(payload)
         } catch (e: Exception) {
             null
         }
-    }
-
-    private companion object {
-        const val MAX_TEXT_CHARS = 4 * 1024 * 1024
-        const val MAX_MESSAGE_CHARS = 4 * 1024 * 1024 + 64 * 1024
-        const val MAX_URL_CHARS = 2048
     }
 }

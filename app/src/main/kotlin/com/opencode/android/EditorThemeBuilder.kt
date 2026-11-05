@@ -25,7 +25,7 @@ data class EditorTheme(
     }
 
     companion object {
-        const val PROTOCOL = 1
+        const val PROTOCOL = EditorProtocol.VERSION
     }
 }
 

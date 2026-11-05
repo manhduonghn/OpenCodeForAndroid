@@ -386,6 +386,8 @@ Phase 5; các kiểm tra này cần thiết bị/emulator nên chưa chạy tron
 - Kiểm tra tĩnh: không còn `textSize`/`fontFamily` đặt tay trong layout, không còn `ListView`/
   `simple_list_item_1`/emoji, mọi `R.id`/`R.string`/`R.layout`/`R.drawable` được tham chiếu đều
   tồn tại, `git diff --check` sạch.
+- Mục "Trình sửa" trong Cài đặt dùng cùng `MaterialSwitch`/`TextAppearance` với các nhóm khác;
+  bật/tắt simple mode, word wrap, soft tab được lưu qua `OpenCodeSettings`.
 - Build + unit test trên GitHub Actions là bước biên dịch chính (máy local không có JDK/Android SDK).
 - Không thêm dependency mới: Files/picker dùng `RecyclerView`, `BottomSheetDialog`, `ListAdapter`
   sẵn có; cold start không bị ảnh hưởng bởi thư viện nặng.

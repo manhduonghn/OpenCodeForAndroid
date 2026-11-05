@@ -32,6 +32,7 @@ object OpenCodeSettings {
     private const val KEY_EDITOR_SOFT_TAB = "editor_soft_tab"
     private const val KEY_EDITOR_RECENT = "editor_recent_files"
     private const val KEY_EDITOR_LANGUAGES = "editor_language_overrides"
+    private const val KEY_EDITOR_A11Y_PROMPT = "editor_a11y_prompt_shown"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -281,5 +282,16 @@ object OpenCodeSettings {
         } catch (e: Exception) {
             // A broken preference must not break the editor.
         }
+    }
+
+    /**
+     * False until the editor offered the simple (native) renderer once to a TalkBack user.
+     * The prompt is only a suggestion; the explicit setting stays under the user's control.
+     */
+    fun editorA11yPromptShown(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_EDITOR_A11Y_PROMPT, false)
+
+    fun setEditorA11yPromptShown(context: Context, shown: Boolean) {
+        prefs(context).edit().putBoolean(KEY_EDITOR_A11Y_PROMPT, shown).apply()
     }
 }

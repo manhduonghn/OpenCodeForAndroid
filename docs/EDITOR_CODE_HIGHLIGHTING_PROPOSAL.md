@@ -7,23 +7,41 @@ Tài liệu này nối tiếp [`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_E
 tìm/thay thế, nhiều con trỏ, tự động hoàn thành và các tiện ích cấp tệp — nhưng vẫn giữ
 `TextFileIO` là nguồn chân lý duy nhất về encoding, BOM, newline và ghi atomic.
 
-> **Trạng thái (cập nhật 2026-11-05):** triển khai nền tảng Phase 0–2 và một phần Phase 3 đã
-> được đưa vào cây mã nguồn (chưa commit). Chưa chạy build Android/Gradle trong môi trường này và
-> chưa có QA thiết bị. Phần còn lại: xác minh build, kiểm thử thiết bị, recovery snapshot bền
-> vững, tối ưu hiệu năng tệp lớn, và các tính năng nâng cao chưa đấu nối đầy đủ.
+> **Trạng thái (cập nhật 2026-11-05, sau khi hoàn tất phần mã nguồn khả thi):** Phase 0–2, phần
+> lớn Phase 3 và các mục Phase 4 không phụ thuộc Node đã có trong cây mã nguồn. Unit test JVM cho
+> registry, protocol, theme, Markdown và `TextFileIO` đã được thêm nhưng **chưa chạy** vì môi trường
+> này không có JDK/Android SDK. Chưa có QA thiết bị. Các phần còn lại là xác minh build/test, QA
+> thiết bị, và các tính năng chỉ nằm trong bundle JS (`indentGuides`, `rainbowBrackets`,
+> `showWhitespace`) hoặc thuộc Phase 4 lớn (tab/session đầy đủ, LSP, format).
 >
 > **Đã triển khai (mã nguồn):** `tools/editor/` (CodeMirror 6, esbuild, code splitting),
 > `app/src/main/assets/editor/` (bundle offline đã sinh), `EditorRenderer` +
-> `CodeMirrorEditorRenderer` + `NativeEditorRenderer`, `EditorBridge`, `EditorTheme`/
-> `EditorThemeBuilder`, `OpenCodeWebTheme.tokens()`, `EditorLanguageRegistry`,
+> `CodeMirrorEditorRenderer` + `NativeEditorRenderer`, `EditorBridge` + `EditorProtocol`,
+> `EditorTheme`/`EditorThemeBuilder`, `OpenCodeWebTheme.tokens()`, `EditorLanguageRegistry`,
 > `EditorScreen` refactor (renderer, save/conflict/auto-commit giữ nguyên), layout/menu editor
 > (WebView host + native fallback, ngôn ngữ/đi tới dòng/tệp gần đây/word wrap/chế độ đơn giản),
 > `OpenCodeSettings` cho tùy chọn editor, `AndroidManifest` `adjustResize`, `checkEditorAssets`.
 >
-> **Chưa hoàn tất / cần xác minh:** biên dịch APK, QA trên thiết bị/WebView thật, fallback
-> readiness timeout theo thiết bị chậm, snapshot recovery khi nền/kill process, giới hạn/đường
-> đi tệp rất lớn, unit test registry/protocol, cài gói npm reproducible hoàn toàn trong CI (đã
-> dùng registry npm; có thể cần commit lockfile/pinning bổ sung).
+> **Đã bổ sung trong lần này:** `EditorRecoveryStore` ghi bản nháp chưa lưu vào
+> `filesDir/editor-recovery` (text + metadata, ghi atomic) khi activity `onStop`; lần mở sau hỏi
+> khôi phục/bỏ/để sau, giữ nguyên `baseHash` để lỗi xung đột vẫn hoạt động; `load(..., draftText)`
+> cho cả hai renderer (kể cả khi fallback sang native); "Để sau" giữ snapshot qua các lần
+> background; readiness timeout 8 giây trong `CodeMirrorEditorRenderer`; dọn renderer lỗi để không
+> còn callback "zombie"; test JVM cho `EditorLanguageRegistry`, `EditorProtocol`, `EditorThemeBuilder`,
+> `MarkdownRenderer` và `TextFileIO`.
+>
+> **Đã bổ sung (tính năng cấp tệp):** hạ cấp trang trí cho tệp lớn (> 512 KB hoặc > 20.000 dòng tắt
+> highlight/fold/indent/autocomplete; ≥ 1 MB tắt active-line) nhưng vẫn cho sửa; xem trước Markdown
+> bằng renderer Kotlin không phụ thuộc mạng (HTML escape, JavaScript tắt, ảnh chỉ hiện alt text,
+> link qua `EditorProtocol.isSafeLink` và dialog xác nhận); kiểm tra cú pháp nhẹ JSON/XML (chỉ
+> parse, không phải linter); gợi ý một lần dùng trình sửa đơn giản cho người dùng TalkBack; mục
+> "Trình sửa" trong Cài đặt cho simple mode/word wrap/soft tab.
+>
+> **Chưa hoàn tất / cần xác minh:** biên dịch APK, QA trên thiết bị/WebView thật, chạy unit test
+> trong CI, đo ngân sách APK/hiệu năng. Bundle CodeMirror đã được vá thủ công cho `baseText` trong
+> môi trường không có Node; cần chạy lại `npm run build` trong `tools/editor` khi có Node để xác
+> nhận bundle sinh lại khớp. `indentGuides`, `rainbowBrackets`, `showWhitespace` mới có cờ trong
+> `settings.ts` và chưa được hiện thực; tab/session đầy đủ, LSP và format vẫn để Phase 4.
 >
 > Tài liệu được viết sau khi đọc mã nguồn Acode; mọi tên tệp/API của Acode đều kèm đường dẫn để
 > đối chiếu.
@@ -1089,8 +1107,8 @@ interface EditorSnapshot {
 - `onCursorChanged` debounce 50–100 ms ở phía JS để không spam bridge.
 - `onDirtyChanged` chỉ gọi khi giá trị đổi, không gọi mỗi transaction.
 - `evaluateJavascript` phải gọi trên main thread.
-- Khi Activity `onStop`, gọi `renderer.snapshot("background")` nếu dirty để ghi recovery; không
-  chặn UI quá 100 ms.
+- Khi Activity `onStop`, gọi `renderer.snapshot(SnapshotReason.RECOVERY)` nếu dirty và ghi
+  snapshot vào `EditorRecoveryStore`; không chặn UI quá 100 ms.
 
 ### 8.8. Bảo mật bridge
 
@@ -1224,12 +1242,13 @@ Các ngôn ngữ khác có thể thêm sau bằng một chunk mới + một dòn
 
 ### 10.3. Phase 4 (tuỳ chọn)
 
-- Markdown preview (xem 13.3).
-- Format on save / format command với Prettier? **Không** mang Prettier vào APK ngay; nếu cần,
-  chỉ format cho JSON/XML bằng parser có sẵn, hoặc gọi binary local nếu người dùng cài.
-- Lint gutter: chỉ khi có nguồn lỗi (ví dụ JSON parse error) — có thể dùng `linter()` với
-  parser của CodeMirror để báo lỗi cú pháp, không cần LSP.
+- Markdown preview: **đã làm bằng Kotlin** (xem 13.3), không cần `markdown-it`/Node.
+- Format on save / format command với Prettier? **Không** mang Prettier vào APK; bản này chỉ kiểm
+  tra parse JSON/XML, không tự format.
+- Lint gutter: **đã làm ở mức nhẹ** bằng `EditorSyntaxCheck` (parse JSON/XML, hiện dialog); chưa
+  dùng `@codemirror/lint`/`linter()` để gạch chân trong gutter.
 - LSP: để ngỏ, không hứa trong tài liệu này.
+- Tab/session đầy đủ: **chưa làm**, xem 13.2.
 
 ### 10.4. Không làm để tránh phình
 
@@ -1275,14 +1294,22 @@ Manifest hiện không khai báo `uiMode`, nên đổi dark/light sẽ recreate 
 
 - Android có thể giết tiến trình khi ở background. `EditText` hiện tại cũng mất buffer nếu
   không lưu; đây không phải regression, nhưng có thể cải thiện.
-- Đề xuất recovery nhẹ:
-  - Khi `onStop` và dirty, ghi JSON `{path, baseHash, text, selection, scroll, savedAt}` vào
-    `cacheDir/editor-recovery/`.
-  - Khi mở lại tệp, nếu recovery tồn tại, `baseHash` khớp hash hiện tại, và `savedAt` mới hơn
-    lần sửa cuối → hỏi "Khôi phục thay đổi chưa lưu?".
-  - Xoá recovery sau khi lưu thành công hoặc người dùng chọn bỏ.
-  - Giới hạn: chỉ một recovery cho mỗi path, tổng dung lượng ≤ 8 MB; xoá cũ nhất.
-- Không mã hoá; thư mục cache là app-private. Không backup (app đã `allowBackup=false`).
+- Đã triển khai (`EditorRecoveryStore`):
+  - Khi `Activity.onStop` và buffer dirty, ghi text UTF-8 cùng JSON metadata
+    `{path, baseHash, language, anchor, head, scrollTop, scrollLeft, length, savedAt}` vào
+    `filesDir/editor-recovery/`. Metadata được ghi sau text và cả hai dùng file tạm + rename,
+    nên lần ghi bị giết giữa chừng bị bỏ qua thay vì khôi phục nửa tài liệu.
+  - Tên file là SHA-256 của absolute path, nên mỗi path có tối đa một recovery. Text giới hạn
+    4.194.304 ký tự (4 × 1024 × 1024); recovery lớn hơn không được ghi và không ảnh hưởng tới
+    việc lưu tệp.
+  - Khi mở lại tệp, nếu path và độ dài text khớp, hỏi "Khôi phục thay đổi chưa lưu?" với các lựa
+    chọn Khôi phục / Bỏ bản nháp / Để sau.
+  - Nếu `baseHash` khác hash hiện tại, vẫn cho khôi phục nhưng giữ `baseHash` cũ để lần lưu đầu
+    tiên trả `TextSave.Conflict` thay vì ghi đè thay đổi của tiến trình khác.
+  - Xoá recovery sau khi lưu thành công, khi người dùng chọn bỏ, hoặc khi reload từ đĩa.
+    "Để sau" (và đóng dialog) giữ file recovery qua lần background/process death kế tiếp để lần
+    mở sau còn hỏi lại; buffer đang hiển thị khi đó là nội dung trên đĩa và không dirty.
+  - Recovery không mã hoá; thư mục là app-private, không backup (app đã `allowBackup=false`).
 
 ### 11.4. Đóng editor
 
@@ -1340,7 +1367,8 @@ Tách một `probe.js` rất nhỏ, chỉ dùng cú pháp cơ bản (không `eva
 
 Trong `editor.js`, nếu `window.__ocEditorSupported !== true` thì dừng ngay, không khởi tạo
 CodeMirror. Nếu `import()` hoặc khởi tạo ném lỗi, `window.onerror`/`unhandledrejection` gọi
-`onError("init", message)`. Native có timeout 3 giây để fallback nếu không nhận `onReady`.
+`onError("init", message)`. `CodeMirrorEditorRenderer` có readiness timeout 8 giây để fallback
+sang native nếu không nhận `onReady` (ví dụ WebView bị treo trên thiết bị chậm).
 
 ### 12.3. Tệp lớn
 
@@ -1388,6 +1416,10 @@ CodeMirror trong WebView thường hoạt động với TalkBack ở mức cơ b
 
 ### 13.2. Tab / phiên nhiều tệp
 
+**Trạng thái: chưa triển khai trong bản này.** Mở nhiều tệp vẫn dùng "Tệp gần đây" và quay lại
+`FilesScreen`; mỗi lần mở lại đi qua `TextFileIO` và recovery hiện có. Thiết kế dưới đây giữ lại
+làm mốc cho Phase 4.
+
 Đây là thay đổi lớn, chỉ làm sau khi MVP ổn định.
 
 Mô hình đề xuất:
@@ -1420,24 +1452,26 @@ class EditorSession {
 
 ### 13.3. Xem trước Markdown
 
-- Acode dùng `markdown-it` + `DOMPurify` (xem `package.json` và `src/pages/markdownPreview`).
-- Đề xuất Phase 4:
-  - Thêm chunk `markdown-preview.js` dùng `markdown-it` + `DOMPurify` (hoặc một renderer nhỏ
-    hơn) chạy trong cùng WebView editor, chế độ `preview`.
-  - Hoặc một WebView riêng chỉ để preview, không có bridge quyền ghi.
-- Bảo mật:
-  - Sanitize HTML bằng DOMPurify.
-  - CSP `default-src 'none'; img-src 'self' data: file:; style-src 'self' 'unsafe-inline'`.
-  - Không cho script trong Markdown chạy.
-  - Link ngoài mở qua native với xác nhận.
-  - Ảnh local: nếu muốn hiển thị, cần `allowFileAccess` giới hạn; đây là rủi ro. Có thể chỉ
-    hiển thị ảnh `data:` và ảnh trong cùng thư mục nếu dùng custom loader. Phase 4 có thể chỉ
-    render text/code/link, chưa hỗ trợ ảnh local.
-- Toggle Preview/Edit trên toolbar; giữ vị trí scroll tương đối nếu có thể.
+**Trạng thái: đã triển khai** trong `MarkdownPreview.kt`:
+
+- Renderer Kotlin nội bộ, không thêm dependency và không cần Node. Hỗ trợ heading, đoạn, danh sách
+  (kể cả checkbox), quote, code fence/inline, đậm/nghiêng, link và đường kẻ ngang.
+- HTML được escape trước khi thêm markup; ảnh chỉ hiện alt text (`<em>`), không tải file/network.
+- Mở trong `Dialog` toàn màn hình với `WebView` có `javaScriptEnabled = false`,
+  `allowFileAccess/allowContentAccess = false`, `blockNetworkLoads = true`, cache tắt và CSP
+  `default-src 'none'; img-src data:; style-src 'unsafe-inline'`.
+- Link chỉ được mở nếu `EditorProtocol.isSafeLink` chấp nhận (http/https/mailto) và luôn qua dialog
+  xác nhận; link `javascript:`, `file:`, `content:` bị giữ làm text.
+- Snapshot lấy từ buffer hiện tại qua `SnapshotReason.PREVIEW`; nếu renderer chưa sẵn sàng
+  (`requestId == 0`) thì dùng bản nháp recovery hoặc text đã lưu.
+- Menu "Xem trước Markdown" chỉ bật khi ngôn ngữ hiện tại là `markdown`.
+
+Không dùng `markdown-it`/`DOMPurify` hay ảnh local trong bản này; nếu cần ảnh local sau này phải
+thiết kế loader an toàn và mở rộng CSP có kiểm soát.
 
 ### 13.4. Màu nhận diện ngôn ngữ trong Files (tuỳ chọn)
 
-Ngoài syntax highlighting, có thể tô màu icon/tên tệp theo ngôn ngữ trong `FilesScreen`:
+**Trạng thái: chưa làm (tuỳ chọn, sau MVP).** Hướng dẫn giữ lại:
 
 - Thêm `EditorLanguageRegistry.colorFor(language)` trả một màu từ palette (primary, tertiary,
   secondary…), không hard-code hex.
@@ -1583,7 +1617,7 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 | Thời gian gõ → hiển thị | ≤ 16 ms mỗi ký tự ở tệp 100 KB |
 | Bộ nhớ tăng thêm | ≤ 80 MB khi editor mở |
 | APK tăng | ≤ 3 MB trước nén / ≤ 1 MB trong APK |
-| Bridge message | ≤ 4 MiB; text chỉ gửi khi load/save/recovery |
+| Bridge message | ≤ 4.194.304 ký tự text + 64K envelope; text chỉ gửi khi load/save/recovery |
 | Thời gian lưu 1 MB | ≤ 500 ms trên thiết bị trung bình |
 
 ### 15.4. Tiêu chí nghiệm thu MVP
@@ -1631,7 +1665,8 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 
 - Bật edit, save, conflict, search, undo/redo, status, dirty.
 - Native search bar điều khiển CodeMirror.
-- `editorRenderer=auto` dùng CodeMirror cho tệp ≤ 512 KB và không phải read-only.
+- `editorRenderer=auto` dùng CodeMirror cho tệp ≤ 1,5 MB và không phải read-only; tệp lớn hơn
+  512 KB hoặc 20.000 dòng tắt highlight/fold/indent/autocomplete nhưng vẫn sửa được.
 - Giữ native cho tệp lớn/không hỗ trợ và cho setting "đơn giản".
 - Thêm recovery cơ bản nếu kịp.
 
@@ -1676,7 +1711,7 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 | TalkBack kém hơn `EditText` | Cao với người dùng trợ năng | Chế độ đơn giản + banner; giữ toolbar native |
 | Hai WebView tốn bộ nhớ | Trung bình | Disposal khi đóng; đo memory; có thể dùng chung process |
 | Bridge đồng bộ text sai | Cao | Chỉ gửi text khi save/load; version + hash; unit test protocol |
-| Mất dữ liệu khi process death | Trung bình | Recovery cache + dialog khôi phục |
+| Mất dữ liệu khi process death | Trung bình | `EditorRecoveryStore` bền vững + dialog khôi phục/bỏ/để sau |
 | Bundle trôi phiên bản | Trung bình | Pin version + CI verify + hash |
 | APK tăng quá ngân sách | Trung bình | Cắt ngôn ngữ ít dùng; lazy chunk |
 | Theme lệch native/web | Thấp | Một nguồn `OpenCodeWebTheme.tokens` |
@@ -1696,13 +1731,16 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 | Phase 0: `checkEditorAssets` | ✅ Đã làm | Wired vào `preBuild`/asset merge. |
 | Phase 1: trang CodeMirror + theme + load | ✅ Đã làm (chưa QA thiết bị) | Local asset, `WebViewAssetLoader`, bridge. |
 | Phase 2: edit/save/conflict/search/undo/status | ⚠️ Một phần, đã đấu nối cốt lõi | `EditorScreen` dùng renderer snapshot + `TextFileIO`; search/goto/language/recent/simple mode có trong UI; chưa verify IME/rotation/thiết bị thật. |
-| Phase 2: fallback/readiness | ⚠️ Một phần | Fallback khi renderer error/no WebView/simple mode; chưa có timeout readiness riêng cho thiết bị chậm. |
-| Phase 3: fold/multi-cursor/autocomplete/search nâng cao | ⚠️ Nền tảng có, chưa hoàn thiện UX | CodeMirror cung cấp nhiều tính năng; chưa productize đầy đủ (rainbow/indent guides toggles, tab/session đầy đủ). |
-| Phase 4: Markdown preview/LSP/format | ⏳ Chưa làm | Ngoài phạm vi triển khai hiện tại. |
-| Recovery snapshot bền vững | ⏳ Chưa làm | Chưa lưu snapshot ra đĩa/khôi phục sau process death. |
-| Unit tests (registry/theme/protocol/TextFileIO) | ⏳ Chưa làm/chạy | Dự án chưa có hạ tầng test; chưa verify compile/test. |
+| Phase 2: fallback/readiness | ✅ Đã làm (chưa QA thiết bị) | Fallback khi renderer error/no WebView/simple mode + timeout 8 giây; renderer lỗi được dispose để không còn callback cũ. |
+| Phase 3: fold/multi-cursor/autocomplete/search nâng cao | ⚠️ Nền tảng có, một phần đã đấu nối | `settings.ts` bật fold/bracket/indent/autocomplete; `indentGuides`/`rainbowBrackets`/`showWhitespace` mới có cờ, chưa hiện thực trong bundle; tab/session đầy đủ để Phase 4. |
+| Phase 4: Markdown preview/LSP/format | 🟡 Preview + kiểm tra cú pháp nhẹ đã làm; LSP/format chưa | `MarkdownRenderer`/`MarkdownPreviewDialog` thuần Kotlin, offline, JavaScript tắt; `EditorSyntaxCheck` parse JSON/XML. LSP và format vẫn ngoài phạm vi. |
+| Recovery snapshot bền vững | ✅ Đã làm (chưa QA thiết bị) | `EditorRecoveryStore` ghi text + metadata atomic khi `onStop`; hỏi khôi phục/bỏ/để sau; giữ `baseHash` cho conflict; `draftText` cho cả hai renderer. |
+| Tệp lớn / hạ cấp trang trí | ✅ Đã làm (chưa đo thiết bị) | > 512 KB hoặc > 20.000 dòng: tắt highlight/fold/indent/autocomplete; ≥ 1 MB: tắt active-line; vẫn sửa được. |
+| TalkBack / chế độ đơn giản | ✅ Đã làm (chưa QA thiết bị) | Gợi ý một lần khi `isTouchExplorationEnabled`; lựa chọn được lưu, không ép; switch trong Cài đặt. |
+| Cài đặt editor trong Settings | ✅ Đã làm | Simple mode, word wrap, soft tab; menu editor vẫn giữ toggle tương ứng. |
+| Unit tests (registry/theme/protocol/Markdown/TextFileIO) | 🟡 Đã thêm, chưa chạy | JUnit cho registry, protocol, theme, Markdown, `TextFileIO`; môi trường này không có JDK để chạy. |
 | Build Android/CI xanh | ⏳ Chưa xác minh | Môi trường hiện tại không có `JAVA_HOME`/SDK để chạy Gradle. |
-| QA thiết bị (IME/encoding/newline/xoay/vòng đời/fallback) | ⏳ Chưa xác minh | Cần thiết bị/WebView thật. |
+| QA thiết bị (IME/encoding/newline/xoay/vòng đời/fallback/preview/TalkBack) | ⏳ Chưa xác minh | Cần thiết bị/WebView thật. |
 | APK size/perf budget | ⏳ Chưa đo | Cần build release/benchmark thiết bị. |
 
 ### 17.2. Câu hỏi cần chốt (đã chọn tạm trong triển khai)
@@ -1711,15 +1749,15 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 2. **Giữ editor native:** **Đã chọn:** giữ `NativeEditorRenderer` làm fallback kỹ thuật + chế độ đơn giản (menu/setting), không xoá.
 3. **Bộ ngôn ngữ:** **Đã chọn tạm:** triển khai registry/bundle cho các ngôn ngữ thực dụng trong repo/app (Kotlin, Java, XML, JSON/JSONC, YAML, Markdown, JS/TS/JSX/TSX, HTML, CSS/SCSS/Less, Shell, Python, Groovy/Gradle, properties/INI/env, TOML, Dockerfile, diff, C/C++, Go, Rust, SQL, PHP, C#/Scala/Dart/Objective-C qua loader/registry tương ứng) — một số dùng Lezer, một số dùng legacy stream parser; cần QA độ chính xác tô màu.
    Properties, TOML, Dockerfile, Diff, C/C++, Go, Rust, SQL).
-4. **Tab/session:** có nằm trong phạm vi bản này không? Đề xuất: Phase 3, sau khi MVP ổn định.
-5. **Markdown preview:** có cần ảnh local không? Nếu có, phải thiết kế loader an toàn; nếu
-   không, chỉ render text/code/link.
-6. **Lint/format:** chỉ lint cú pháp nhẹ hay chờ LSP? Đề xuất: lint nhẹ ở Phase 4, LSP tách
-   tài liệu riêng.
-7. **Autosave:** có thêm setting không? Đề xuất: không bật mặc định; chỉ explicit save.
-8. **Màu icon tệp trong Files:** có làm không? Đề xuất: tuỳ chọn, sau MVP.
-9. **Ngưỡng lớn:** giữ 512 KB cho highlight hay nâng lên 1 MB? Đề xuất: 512 KB, đo lại trên
-   thiết bị.
+4. **Tab/session:** **Đã chốt tạm:** chưa làm trong bản này; giữ Phase 4 sau khi MVP và recovery ổn
+   định trên thiết bị. Mở nhiều tệp vẫn dùng "Tệp gần đây" + quay lại Files.
+5. **Markdown preview:** **Đã chọn:** renderer Kotlin nội bộ, không ảnh local/remote; ảnh hiện alt
+   text, link chỉ mở sau xác nhận và chỉ http/https/mailto. Không cần loader ảnh ở bản này.
+6. **Lint/format:** **Đã chọn:** chỉ kiểm tra parse JSON/XML trong app; không thêm LSP/format.
+7. **Autosave:** **Đã chốt:** không bật mặc định; chỉ explicit save, recovery chỉ cho process death.
+8. **Màu icon tệp trong Files:** **Đã chốt:** để tuỳ chọn sau MVP; chưa đổi tint icon.
+9. **Ngưỡng lớn:** **Đã chọn:** 512 KB / 20.000 dòng cho highlight; 1 MB cho active-line; cần đo lại
+   trên thiết bị.
 10. **WebView dùng chung hay riêng:** Đề xuất riêng để cô lập bảo mật và tránh reload OpenCode.
 
 ---
@@ -1812,10 +1850,19 @@ JS → Kotlin  (window.OpenCodeEditorBridge)
 - `app/src/main/kotlin/com/opencode/android/NativeEditorRenderer.kt`
 - `app/src/main/kotlin/com/opencode/android/CodeMirrorEditorRenderer.kt`
 - `app/src/main/kotlin/com/opencode/android/EditorBridge.kt`
+- `app/src/main/kotlin/com/opencode/android/EditorProtocol.kt`
 - `app/src/main/kotlin/com/opencode/android/EditorLanguageRegistry.kt`
 - `app/src/main/kotlin/com/opencode/android/EditorThemeBuilder.kt`
-- `app/src/main/kotlin/com/opencode/android/EditorSession.kt` (Phase 3)
-- `app/src/main/kotlin/com/opencode/android/EditorRecovery.kt` (Phase 2/3)
+- `app/src/main/kotlin/com/opencode/android/EditorSyntaxCheck.kt`
+- `app/src/main/kotlin/com/opencode/android/MarkdownPreview.kt`
+- `app/src/main/kotlin/com/opencode/android/EditorRecovery.kt`
+- `app/src/main/kotlin/com/opencode/android/EditorSession.kt` (Phase 4, chưa thêm)
+- `app/src/test/kotlin/com/opencode/android/EditorLanguageRegistryTest.kt`
+- `app/src/test/kotlin/com/opencode/android/EditorProtocolTest.kt`
+- `app/src/test/kotlin/com/opencode/android/EditorThemeBuilderTest.kt`
+- `app/src/test/kotlin/com/opencode/android/EditorSyntaxCheckTest.kt`
+- `app/src/test/kotlin/com/opencode/android/MarkdownRendererTest.kt`
+- `app/src/test/kotlin/com/opencode/android/TextFileIOTest.kt`
 - `tools/editor/package.json`
 - `tools/editor/package-lock.json`
 - `tools/editor/build.mjs`

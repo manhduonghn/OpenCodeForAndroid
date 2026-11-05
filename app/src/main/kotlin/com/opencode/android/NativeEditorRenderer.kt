@@ -38,6 +38,7 @@ class NativeEditorRenderer(
     private var dirty = false
     private var readOnly = false
     private var document: TextDocument? = null
+    private var language = EditorLanguageRegistry.byId("plaintext")
     private var matches: List<IntRange> = emptyList()
     private var matchIndex = -1
     private var lastSnapshotText = ""
@@ -87,16 +88,19 @@ class NativeEditorRenderer(
         language: EditorLanguage,
         state: EditorViewState?,
         readOnly: Boolean,
+        draftText: String?,
     ) {
         this.document = document
+        this.language = language
         this.readOnly = readOnly || document.readOnlyReason != null
+        val shownText = draftText ?: document.text
         savedText = document.text
-        version = 0
-        dirty = false
-        lastSnapshotText = document.text
+        version = if (draftText != null && draftText != document.text) 1L else 0L
+        dirty = shownText != savedText
+        lastSnapshotText = shownText
         resetHistory()
         suppressWatcher = true
-        editor.setText(document.text)
+        editor.setText(shownText)
         val length = editor.text?.length ?: 0
         if (state != null) {
             editor.setSelection(
@@ -115,7 +119,7 @@ class NativeEditorRenderer(
         renderGutter()
         notifyCursor()
         notifyHistory()
-        listener?.onDirtyChanged(false, length)
+        listener?.onDirtyChanged(dirty, length)
     }
 
     override fun snapshot(reason: SnapshotReason, callback: (EditorSnapshot) -> Unit) {
@@ -135,7 +139,7 @@ class NativeEditorRenderer(
                 scrollTop = editor.scrollY,
                 scrollLeft = editor.scrollX,
                 dirty = text != savedText,
-                languageId = "plaintext",
+                languageId = language.id,
             ),
         )
     }
@@ -174,7 +178,10 @@ class NativeEditorRenderer(
         scheduleGutter()
     }
 
-    override fun setLanguage(language: EditorLanguage) = Unit
+    override fun setLanguage(language: EditorLanguage) {
+        // Only used for recovery metadata; the native view has no syntax highlighting.
+        this.language = language
+    }
 
     override fun find(options: FindOptions) {
         lastQuery = options

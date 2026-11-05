@@ -58,6 +58,7 @@ class CodeMirrorEditorRenderer(
     private var savedVersion = 0L
     private var canUndo = false
     private var canRedo = false
+    private var readyTimeout: Runnable? = null
 
     override val view: View get() = webView ?: host
 
@@ -66,6 +67,7 @@ class CodeMirrorEditorRenderer(
         val language: EditorLanguage,
         val state: EditorViewState?,
         val readOnly: Boolean,
+        val draftText: String?,
     )
 
     override fun load(
@@ -73,6 +75,7 @@ class CodeMirrorEditorRenderer(
         language: EditorLanguage,
         state: EditorViewState?,
         readOnly: Boolean,
+        draftText: String?,
     ) {
         this.document = document
         this.language = language
@@ -82,9 +85,9 @@ class CodeMirrorEditorRenderer(
         ensureWebView()
         if (ready && protocolOk) {
             sendInit()
-            sendLoad(document, language, state, this.readOnly)
+            sendLoad(document, language, state, this.readOnly, draftText)
         } else {
-            pendingLoad = PendingLoad(document, language, state, this.readOnly)
+            pendingLoad = PendingLoad(document, language, state, this.readOnly, draftText)
         }
     }
 
@@ -173,6 +176,7 @@ class CodeMirrorEditorRenderer(
     override fun dispose() {
         disposed = true
         ready = false
+        clearReadyTimeout()
         pendingLoad = null
         currentSnapshotCallback = null
         webView?.let { view ->
@@ -246,7 +250,31 @@ class CodeMirrorEditorRenderer(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         }
+        scheduleReadyTimeout()
         view.loadUrl("$ASSET_URL/index.html")
+    }
+
+    /**
+     * A WebView that never reports the protocol is useless, but it must not leave a blank
+     * editor forever on a slow or broken device. The native renderer is always available.
+     */
+    private fun scheduleReadyTimeout() {
+        clearReadyTimeout()
+        val timeout = Runnable {
+            readyTimeout = null
+            if (disposed || ready) return@Runnable
+            listener?.onRendererError(
+                "ready-timeout",
+                "The editor page did not become ready in time",
+            )
+        }
+        readyTimeout = timeout
+        handler.postDelayed(timeout, READY_TIMEOUT_MS)
+    }
+
+    private fun clearReadyTimeout() {
+        readyTimeout?.let { handler.removeCallbacks(it) }
+        readyTimeout = null
     }
 
     private fun handleProcessGone() {
@@ -255,6 +283,7 @@ class CodeMirrorEditorRenderer(
             val view = webView
             webView = null
             ready = false
+            clearReadyTimeout()
             pendingLoad = null
             view?.let {
                 (it.parent as? ViewGroup)?.removeView(it)
@@ -280,14 +309,17 @@ class CodeMirrorEditorRenderer(
         language: EditorLanguage,
         state: EditorViewState?,
         readOnly: Boolean,
+        draftText: String?,
     ) {
-        val text = normalizeForEditor(document.text)
+        val baseText = normalizeForEditor(document.text)
+        val text = draftText?.let { normalizeForEditor(it) } ?: baseText
         val payload = JSONObject()
             .put("protocol", EditorTheme.PROTOCOL)
             .put("path", document.file.absolutePath)
             .put("name", document.file.name)
             .put("text", text)
-            .put("version", 0)
+            .put("baseText", baseText)
+            .put("version", if (draftText != null && text != baseText) 1 else 0)
             .put("baseHash", document.hash)
             .put("language", language.id)
             .put("languageSource", "filename")
@@ -365,6 +397,7 @@ class CodeMirrorEditorRenderer(
                 if (disposed) return@post
                 if (protocol != EditorTheme.PROTOCOL) {
                     protocolOk = false
+                    clearReadyTimeout()
                     listener?.onRendererError(
                         "protocol",
                         "Editor protocol $protocol is not supported",
@@ -373,10 +406,11 @@ class CodeMirrorEditorRenderer(
                 }
                 protocolOk = true
                 ready = true
+                clearReadyTimeout()
                 sendInit()
                 pendingLoad?.let {
                     pendingLoad = null
-                    sendLoad(it.document, it.language, it.state, it.readOnly)
+                    sendLoad(it.document, it.language, it.state, it.readOnly, it.draftText)
                 }
                 listener?.onReady()
             }
@@ -440,6 +474,9 @@ class CodeMirrorEditorRenderer(
     private companion object {
         const val ASSET_URL = "https://appassets.androidplatform.net/editor"
         const val BRIDGE_NAME = "OpenCodeEditorBridge"
+
+        /** Long enough for a cold start on an old device, short enough to avoid a blank screen. */
+        const val READY_TIMEOUT_MS = 8_000L
     }
 }
 

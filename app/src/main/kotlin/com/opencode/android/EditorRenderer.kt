@@ -10,6 +10,7 @@ enum class SnapshotReason(val wire: String) {
     BACKGROUND("background"),
     RECOVERY("recovery"),
     TAB_SWITCH("tab-switch"),
+    PREVIEW("preview"),
 }
 
 /** Caret, selection and scroll position restored when a document is opened again. */
@@ -52,11 +53,19 @@ interface EditorRenderer {
     val view: View
     var listener: Listener?
 
+    /**
+     * Show [document].
+     *
+     * [draftText] is an unsaved recovery buffer: it becomes the visible text while
+     * `document.text` stays the last saved baseline, so the dirty flag and the conflict check
+     * keep working exactly as after a normal edit.
+     */
     fun load(
         document: TextDocument,
         language: EditorLanguage,
         state: EditorViewState? = null,
         readOnly: Boolean = document.readOnlyReason != null,
+        draftText: String? = null,
     )
 
     fun snapshot(reason: SnapshotReason, callback: (EditorSnapshot) -> Unit)

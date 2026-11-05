@@ -132,6 +132,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var bootStartSwitch: MaterialSwitch
     private lateinit var watchdogSwitch: MaterialSwitch
     private lateinit var keepAliveHelpButton: Button
+    private lateinit var editorSimpleSwitch: MaterialSwitch
+    private lateinit var editorWordWrapSwitch: MaterialSwitch
+    private lateinit var editorSoftTabSwitch: MaterialSwitch
     private lateinit var infoAppVersion: TextView
     private lateinit var infoOpencodeVersion: TextView
 
@@ -483,6 +486,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         bootStartSwitch = findViewById(R.id.boot_start_switch)
         watchdogSwitch = findViewById(R.id.watchdog_switch)
         keepAliveHelpButton = findViewById(R.id.keepalive_help_button)
+        editorSimpleSwitch = findViewById(R.id.settings_editor_simple)
+        editorWordWrapSwitch = findViewById(R.id.settings_editor_word_wrap)
+        editorSoftTabSwitch = findViewById(R.id.settings_editor_soft_tab)
         infoAppVersion = findViewById(R.id.info_app_version)
         infoOpencodeVersion = findViewById(R.id.info_opencode_version)
     }
@@ -642,6 +648,18 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             OpenCodeWatchdog.setEnabled(this, checked)
         }
         keepAliveHelpButton.setOnClickListener { showKeepAliveHelp() }
+        editorSimpleSwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeSettings.setEditorSimpleMode(this, checked)
+        }
+        editorWordWrapSwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeSettings.setEditorWordWrap(this, checked)
+        }
+        editorSoftTabSwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressSettingsCallbacks) return@setOnCheckedChangeListener
+            OpenCodeSettings.setEditorSoftTab(this, checked)
+        }
 
         onBackPressedDispatcher.addCallback(
             this,
@@ -1030,6 +1048,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         wakeLockSwitch.isChecked = OpenCodeSettings.wakeLockEnabled(this)
         bootStartSwitch.isChecked = OpenCodeSettings.bootStartEnabled(this)
         watchdogSwitch.isChecked = OpenCodeSettings.watchdogEnabled(this)
+        editorSimpleSwitch.isChecked = OpenCodeSettings.editorSimpleMode(this)
+        editorWordWrapSwitch.isChecked = OpenCodeSettings.editorWordWrap(this)
+        editorSoftTabSwitch.isChecked = OpenCodeSettings.editorSoftTab(this)
         suppressSettingsCallbacks = false
 
         val installed = OpenCodeBootstrap.getInstalledVersion().ifEmpty { "-" }
@@ -1271,6 +1292,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     override fun onStop() {
+        // Android can kill the process after this callback without calling onDestroy. Give the
+        // editor one last chance to put an unsaved buffer into its recovery file.
+        if (::editorScreen.isInitialized) editorScreen.onBackground()
         viewModel.ui = null
         // While the activity is gone the notification keeps the server alive; the page is checked
         // and woken up again in onResume, so the periodic check is not needed here.
