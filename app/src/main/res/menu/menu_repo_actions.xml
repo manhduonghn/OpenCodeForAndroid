@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_repo_download"
+        android:icon="@drawable/ic_download"
+        android:title="@string/opencode_github_repo_download" />
+    <item
+        android:id="@+id/action_repo_open_folder"
+        android:icon="@drawable/ic_folder_open"
+        android:title="@string/opencode_github_detail_open_folder" />
+    <item
+        android:id="@+id/action_repo_web"
+        android:icon="@drawable/ic_open_in_new"
+        android:title="@string/opencode_github_repo_web" />
+    <item
+        android:id="@+id/action_repo_copy_url"
+        android:icon="@drawable/ic_copy"
+        android:title="@string/opencode_github_repo_copy_url" />
+</menu>

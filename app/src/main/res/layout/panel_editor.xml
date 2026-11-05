@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- In-app text editor: native monospace EditText with a synced gutter and a status bar. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/editor_panel"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="vertical"
+    android:visibility="gone">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/editor_toolbar"
+        style="@style/Widget.OpenCode.Toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/toolbar_height"
+        app:menu="@menu/menu_editor"
+        app:navigationContentDescription="@string/opencode_files_back"
+        app:navigationIcon="@drawable/ic_arrow_back" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:alpha="0.6"
+        android:background="?attr/colorOutlineVariant" />
+
+    <LinearLayout
+        android:id="@+id/editor_search_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurfaceContainerLow"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingTop="@dimen/spacing_xs"
+        android:paddingEnd="@dimen/spacing_sm"
+        android:paddingBottom="@dimen/spacing_xs"
+        android:visibility="gone">
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/editor_search_layout"
+            style="@style/Widget.OpenCode.TextInputLayout"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="@string/opencode_editor_search_hint">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/editor_search"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:maxLines="1" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:id="@+id/editor_search_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/spacing_sm"
+            android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/editor_search_prev"
+            style="@style/Widget.OpenCode.Button.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:minWidth="0dp"
+            android:text="@string/opencode_editor_prev" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/editor_search_next"
+            style="@style/Widget.OpenCode.Button.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:minWidth="0dp"
+            android:text="@string/opencode_editor_next" />
+
+        <ImageButton
+            android:id="@+id/editor_search_close"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_icon_button"
+            android:contentDescription="@string/opencode_editor_close_search"
+            android:padding="10dp"
+            android:src="@drawable/ic_close"
+            android:tint="?attr/colorOnSurfaceVariant" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:id="@+id/editor_body"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/editor_gutter"
+                android:layout_width="48dp"
+                android:layout_height="match_parent"
+                android:background="?attr/colorSurfaceContainerLow"
+                android:ellipsize="none"
+                android:fontFamily="monospace"
+                android:gravity="top|end"
+                android:includeFontPadding="false"
+                android:lineSpacingMultiplier="1.0"
+                android:maxLines="100000"
+                android:paddingStart="@dimen/spacing_xs"
+                android:paddingTop="@dimen/spacing_md"
+                android:paddingEnd="@dimen/spacing_sm"
+                android:scrollbars="none"
+                android:textAppearance="@style/TextAppearance.OpenCode.Editor"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <EditText
+                android:id="@+id/editor_text"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@null"
+                android:fontFamily="monospace"
+                android:gravity="top|start"
+                android:imeOptions="flagNoExtractUi"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:lineSpacingMultiplier="1.0"
+                android:padding="@dimen/spacing_md"
+                android:scrollHorizontally="true"
+                android:scrollbars="vertical|horizontal"
+                android:textAppearance="@style/TextAppearance.OpenCode.Editor"
+                android:textColor="?attr/colorOnSurface"
+                android:textColorHighlight="?attr/colorSecondaryContainer" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/editor_placeholder"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="?attr/colorSurface"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="@dimen/spacing_xl"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_file"
+                android:tint="?attr/colorPrimary" />
+
+            <TextView
+                android:id="@+id/editor_placeholder_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/spacing_md"
+                android:gravity="center"
+                android:textAppearance="@style/TextAppearance.OpenCode.BodyLarge"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/editor_placeholder_external"
+                style="@style/Widget.OpenCode.Button.Outlined"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/spacing_md"
+                android:minWidth="0dp"
+                android:text="@string/opencode_editor_external" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/editor_status_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurfaceContainerLow"
+        android:gravity="center_vertical"
+        android:minHeight="40dp"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin">
+
+        <TextView
+            android:id="@+id/editor_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textAppearance="@style/TextAppearance.OpenCode.MonoSmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <TextView
+            android:id="@+id/editor_readonly"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/spacing_sm"
+            android:background="@drawable/bg_chip_warn"
+            android:paddingStart="@dimen/spacing_sm"
+            android:paddingTop="2dp"
+            android:paddingEnd="@dimen/spacing_sm"
+            android:paddingBottom="2dp"
+            android:text="@string/opencode_editor_readonly"
+            android:textAppearance="@style/TextAppearance.OpenCode.LabelSmall"
+            android:textColor="@color/oc_warning"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>

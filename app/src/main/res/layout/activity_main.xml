@@ -718,6 +718,50 @@
             android:layout_weight="1"
             android:orientation="vertical">
 
+            <!-- Source switch: local storage is the default, GitHub opens the full-screen destination. -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/screen_margin"
+                android:paddingTop="@dimen/spacing_xs"
+                android:paddingEnd="@dimen/screen_margin">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/files_source_device"
+                    style="@style/Widget.OpenCode.Button.Outlined"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="40dp"
+                    android:minWidth="0dp"
+                    android:text="@string/opencode_files_source_device" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/files_source_github"
+                    style="@style/Widget.OpenCode.Button.Text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/spacing_xs"
+                    android:minHeight="40dp"
+                    android:minWidth="0dp"
+                    android:paddingStart="@dimen/spacing_sm"
+                    android:paddingEnd="@dimen/spacing_sm"
+                    android:text="@string/opencode_files_source_github" />
+
+                <TextView
+                    android:id="@+id/files_source_status"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/spacing_sm"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:gravity="end"
+                    android:maxLines="1"
+                    android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+            </LinearLayout>
+
             <HorizontalScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -931,4 +975,13 @@
                 android:textColor="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Full-screen destinations above Files: GitHub, Git changes, editor and image preview. -->
+    <include layout="@layout/panel_github" />
+
+    <include layout="@layout/panel_git" />
+
+    <include layout="@layout/panel_editor" />
+
+    <include layout="@layout/panel_image" />
 </FrameLayout>

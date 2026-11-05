@@ -57,6 +57,41 @@ object OpenCodeGitHub {
     /** scp-like (`git@github.com:owner/repo`) and `ssh://git@github.com/owner/repo` URLs. */
     private val SSH_GITHUB_URL = Regex("^(?:ssh://)?git@github\\.com[:/](.+)$")
 
+    /**
+     * Generation of the device login. A new login invalidates the polling loop of the previous
+     * one, so a delayed response from GitHub can never finish a login the user already replaced
+     * or cancelled.
+     */
+    @Volatile
+    private var loginSession = 0
+
+    /** Session cancelled by [cancelLogin]; it is cleared by the next [beginLogin]. */
+    @Volatile
+    private var cancelledSession = -1
+
+    class LoginCancelledException : IllegalStateException("Đã huỷ đăng nhập.")
+
+    /** Start a new device login and return the session token to pass to [completeLogin]. */
+    @Synchronized
+    fun beginLogin(): Int {
+        loginSession += 1
+        cancelledSession = -1
+        return loginSession
+    }
+
+    /** Kept for callers that only want to reset the cancellation flag. */
+    fun resetLoginCancel() {
+        beginLogin()
+    }
+
+    @Synchronized
+    fun cancelLogin() {
+        cancelledSession = loginSession
+    }
+
+    private fun loginCancelled(session: Int): Boolean =
+        session != loginSession || cancelledSession == session
+
     data class DeviceCode(
         val deviceCode: String,
         val userCode: String,
@@ -69,8 +104,38 @@ object OpenCodeGitHub {
         val name: String,
         val description: String,
         val privateRepo: Boolean,
+        /** Clone URL used by `git clone`. */
         val url: String,
+        val webUrl: String = "https://github.com/$name",
+        val updatedAt: String = "",
+        val pushedAt: String = "",
+        val primaryLanguage: String = "",
+        val isFork: Boolean = false,
+        val isArchived: Boolean = false,
     )
+
+    /**
+     * Cancellation token of an in-flight clone. [run] attaches the git process, so cancelling
+     * terminates it instead of waiting for a large repository to finish.
+     */
+    class CloneHandle {
+        @Volatile
+        var cancelled: Boolean = false
+            private set
+
+        @Volatile
+        private var process: Process? = null
+
+        internal fun attach(started: Process) {
+            process = started
+            if (cancelled) started.destroy()
+        }
+
+        fun cancel() {
+            cancelled = true
+            process?.destroy()
+        }
+    }
 
     /** One entry of `git status --porcelain`, with the two-letter status code of git. */
     data class GitChange(val path: String, val indexStatus: Char, val workTreeStatus: Char) {
@@ -260,11 +325,18 @@ object OpenCodeGitHub {
         )
     }
 
-    /** Poll GitHub until the user confirms the code, then store the token in gh. */
-    fun completeLogin(device: DeviceCode) {
+    /**
+     * Poll GitHub until the user confirms the code, then store the token in gh.
+     *
+     * [session] is the value returned by [beginLogin]. When another login starts, or when
+     * [cancelLogin] is called, this loop throws [LoginCancelledException] even if a request was
+     * already in flight.
+     */
+    fun completeLogin(device: DeviceCode, session: Int = loginSession) {
         val deadline = SystemClock.uptimeMillis() + device.expiresIn * 1000L
         var interval = maxOf(5, device.interval)
         while (SystemClock.uptimeMillis() < deadline) {
+            if (loginCancelled(session)) throw LoginCancelledException()
             val body = postForm(
                 ACCESS_TOKEN_URL,
                 mapOf(
@@ -273,6 +345,7 @@ object OpenCodeGitHub {
                     "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
                 ),
             )
+            if (loginCancelled(session)) throw LoginCancelledException()
             val json = JSONObject(body)
             val token = json.optString("access_token", "")
             if (token.isNotEmpty()) {
@@ -312,13 +385,18 @@ object OpenCodeGitHub {
                     )
                 }
             }
-            try {
-                Thread.sleep(interval * 1000L)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw IllegalStateException("Đã huỷ đăng nhập.")
+            val wake = SystemClock.uptimeMillis() + interval * 1000L
+            while (SystemClock.uptimeMillis() < wake) {
+                if (loginCancelled(session)) throw LoginCancelledException()
+                try {
+                    Thread.sleep(250L)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw LoginCancelledException()
+                }
             }
         }
+        if (loginCancelled(session)) throw LoginCancelledException()
         throw IllegalStateException("Hết thời gian chờ xác thực. Bấm Đăng nhập lại để lấy mã mới.")
     }
 
@@ -326,7 +404,9 @@ object OpenCodeGitHub {
         return runGh(
             arrayOf(
                 "repo", "list", "--limit", "100",
-                "--json", "nameWithOwner,description,isPrivate,url",
+                "--json",
+                "nameWithOwner,description,isPrivate,url,updatedAt,pushedAt," +
+                    "primaryLanguage,isFork,isArchived",
             ),
         )
     }
@@ -345,12 +425,27 @@ object OpenCodeGitHub {
             val description = item.optString("description", "").let {
                 if (it == "null") "" else it
             }
+            val webUrl = item.optString("url", "").let {
+                if (it.isEmpty() || it == "null") "https://github.com/$name" else it
+            }
             repos.add(
                 Repo(
                     name = name,
                     description = description,
                     privateRepo = item.optBoolean("isPrivate", false),
                     url = "https://github.com/$name.git",
+                    webUrl = webUrl,
+                    updatedAt = item.optString("updatedAt", "").let {
+                        if (it == "null") "" else it
+                    },
+                    pushedAt = item.optString("pushedAt", "").let {
+                        if (it == "null") "" else it
+                    },
+                    primaryLanguage = item.optJSONObject("primaryLanguage")
+                        ?.optString("name", "")
+                        .orEmpty(),
+                    isFork = item.optBoolean("isFork", false),
+                    isArchived = item.optBoolean("isArchived", false),
                 ),
             )
         }
@@ -400,12 +495,18 @@ object OpenCodeGitHub {
     }
 
     /**
-     * Clone [repoUrl] into the app HOME. Every output line is handed to [onLine] while git is
-     * still running, so the settings card can show live progress.
+     * Clone [repoUrl] into [destination]. Every output line is handed to [onLine] while git is
+     * still running. [handle] can terminate the process when the user cancels the progress dialog.
      */
-    fun clone(repoUrl: String, onLine: ((String) -> Unit)? = null): Result {
+    fun clone(
+        repoUrl: String,
+        destination: File,
+        onLine: ((String) -> Unit)? = null,
+        handle: CloneHandle = CloneHandle(),
+    ): Result {
         val url = normalizeCloneUrl(repoUrl)
         if (url.isEmpty()) return Result(-1, "empty URL")
+        if (handle.cancelled) return Result(-2, "cancelled")
         val extraEnv = gitNetworkEnv()
         val cert = File(OpenCodeBootstrap.PREFIX, "etc/tls/cert.pem")
         if (!cert.isFile) {
@@ -420,14 +521,22 @@ object OpenCodeGitHub {
         // Pass the bundle of this prefix explicitly, even when etc/gitconfig was not written yet.
         command += "-c"
         command += "http.sslCAInfo=${cert.absolutePath}"
-        command += listOf("clone", "--progress", "--", url)
+        command += listOf(
+            "clone",
+            "--progress",
+            "--",
+            url,
+            destination.absolutePath,
+        )
         return run(
             command.toTypedArray(),
-            directory = File(OpenCodeBootstrap.HOME),
+            directory = destination.parentFile ?: File(OpenCodeBootstrap.HOME),
             input = null,
             timeoutMs = 900000L,
             extraEnv = extraEnv,
             onLine = onLine,
+            onProcess = { handle.attach(it) },
+            isCancelled = { handle.cancelled },
         )
     }
 
@@ -498,26 +607,100 @@ object OpenCodeGitHub {
     }
 
     /**
-     * Stage every change of [root] and create a local commit with [message]. Nothing is sent to
-     * GitHub, so automatic calls of this method cannot create commits on the remote.
+     * Create a local commit with [message].
+     *
+     * When [all] is true every change is staged first; otherwise only the files the user staged
+     * explicitly are committed. Nothing is sent to GitHub, so automatic calls cannot create
+     * commits on the remote.
      */
-    fun commit(root: File, message: String): Result {
+    fun commit(root: File, message: String, all: Boolean = true): Result {
         val text = message.trim()
         if (text.isEmpty()) return Result(-1, "Commit message is empty")
         if (!gitAvailable()) return Result(-1, "git is not installed")
-        val add = run(
-            gitBase(root) + arrayOf("add", "--all"),
-            File(OpenCodeBootstrap.HOME),
-            null,
-            120000L,
-        )
-        if (!add.ok) return add
+        if (all) {
+            val add = run(
+                gitBase(root) + arrayOf("add", "--all"),
+                File(OpenCodeBootstrap.HOME),
+                null,
+                120000L,
+            )
+            if (!add.ok) return add
+        }
         return run(
             gitBase(root) + arrayOf("commit", "-m", text),
             File(OpenCodeBootstrap.HOME),
             null,
             120000L,
         )
+    }
+
+    /** Stage one path of [root]. */
+    fun stage(root: File, path: String): Result = run(
+        gitBase(root) + arrayOf("add", "--", path),
+        File(OpenCodeBootstrap.HOME),
+        null,
+        120000L,
+    )
+
+    /** Remove one path from the index, keeping its working-tree content. */
+    fun unstage(root: File, path: String): Result {
+        val reset = run(
+            gitBase(root) + arrayOf("reset", "--", path),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+        if (reset.ok) return reset
+        // An unborn branch has no HEAD to reset to; dropping the entry from the index has the
+        // same visible effect for a repository without commits.
+        return run(
+            gitBase(root) + arrayOf("rm", "--cached", "--ignore-unmatch", "--", path),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+    }
+
+    /**
+     * Unified diff of one path. Untracked files have no diff against HEAD, so their content is
+     * rendered as additions instead of showing an empty dialog.
+     */
+    fun diff(root: File, path: String): Result {
+        // Compare against HEAD, not the index: a file that is already staged has no output with
+        // plain `git diff`, and tapping its row should still show the change being committed.
+        val head = run(
+            gitBase(root) + arrayOf("diff", "--no-color", "HEAD", "--", path),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+        if (head.ok && head.output.isNotBlank()) return head
+        // An unborn branch has no HEAD. `--cached` shows what was staged, plain `diff` the
+        // working tree; either one is better than an empty dialog.
+        val staged = run(
+            gitBase(root) + arrayOf("diff", "--cached", "--no-color", "--", path),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+        if (staged.ok && staged.output.isNotBlank()) return staged
+        val working = run(
+            gitBase(root) + arrayOf("diff", "--no-color", "--", path),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+        if (working.ok && working.output.isNotBlank()) return working
+        val file = File(root, path)
+        if (file.isFile && file.length() <= 512L * 1024L) {
+            return try {
+                val text = file.readText()
+                Result(0, text.lineSequence().joinToString("\n") { "+$it" })
+            } catch (e: Exception) {
+                head
+            }
+        }
+        return head
     }
 
     /**
@@ -591,8 +774,11 @@ object OpenCodeGitHub {
         extraEnv: Map<String, String>? = null,
         onLine: ((String) -> Unit)? = null,
         persistToken: Boolean = false,
+        onProcess: ((Process) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
     ): Result {
         return try {
+            if (isCancelled?.invoke() == true) return Result(-2, "cancelled")
             val builder = ProcessBuilder(*command)
             builder.directory(directory)
             builder.redirectErrorStream(true)
@@ -646,6 +832,7 @@ object OpenCodeGitHub {
             }
 
             val process = builder.start()
+            onProcess?.invoke(process)
             val output = StringBuilder()
             val reader = Thread {
                 try {
@@ -688,8 +875,14 @@ object OpenCodeGitHub {
             }
 
             var exitCode = -1
+            var cancelled = false
             val deadline = SystemClock.uptimeMillis() + timeoutMs
             while (true) {
+                if (isCancelled?.invoke() == true) {
+                    cancelled = true
+                    process.destroy()
+                    break
+                }
                 try {
                     exitCode = process.exitValue()
                     break
@@ -702,13 +895,17 @@ object OpenCodeGitHub {
                         Thread.sleep(50L)
                     } catch (e: InterruptedException) {
                         Thread.currentThread().interrupt()
+                        cancelled = true
                         process.destroy()
                         break
                     }
                 }
             }
             reader.join(1500L)
-            Result(exitCode, synchronized(output) { output.toString() })
+            Result(
+                if (cancelled) -2 else exitCode,
+                synchronized(output) { output.toString() },
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Could not run ${command.firstOrNull()}", e)
             Result(-1, e.message ?: e.toString())

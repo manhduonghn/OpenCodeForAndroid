@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_change_diff"
+        android:icon="@drawable/ic_visibility"
+        android:title="@string/opencode_git_diff" />
+    <item
+        android:id="@+id/action_change_stage"
+        android:icon="@drawable/ic_check_circle"
+        android:title="@string/opencode_git_stage" />
+    <item
+        android:id="@+id/action_change_unstage"
+        android:icon="@drawable/ic_undo"
+        android:title="@string/opencode_git_unstage" />
+    <item
+        android:id="@+id/action_change_open"
+        android:icon="@drawable/ic_edit"
+        android:title="@string/opencode_git_open_file" />
+    <item
+        android:id="@+id/action_change_folder"
+        android:icon="@drawable/ic_folder_open"
+        android:title="@string/opencode_github_detail_open_folder" />
+</menu>

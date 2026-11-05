@@ -4,6 +4,9 @@ Tài liệu đề xuất cho giao diện native của app. Mục tiêu: **đẹp
 làm mất bản sắc Material You / tiếng Việt hiện có. Phase 0–4 đã được triển khai trong
 `app/src/main`; Phase 5 đã chạy các kiểm tra tĩnh và chờ kiểm tra trên thiết bị thật.
 
+Phần GitHub/editor nối tiếp tài liệu này nằm ở
+[`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_EDITOR_PROPOSAL.md).
+
 ## 1. Phạm vi
 
 Giao diện native gồm:
@@ -324,9 +327,9 @@ overlay toàn màn hình, không thay thế WebView, để không mất phiên �
 Đã triển khai: panel được nhóm theo 5 section có tiêu đề, dùng token spacing/typography,
 thêm hàng Khởi động lại / Dừng server và card Thông tin (phiên bản app, phiên bản OpenCode).
 `settings_panel` vẫn là `NestedScrollView` với các id cũ, nên toàn bộ binding hiện tại giữ nguyên.
-Form GitHub đã tách sang `sheet_github.xml` (mở từ card GitHub gọn trong Cài đặt) ở Phase 4.
-Việc chuyển toàn bộ Cài đặt sang `RecyclerView` + item layouts được giữ lại như bước tối ưu
-sau, vì panel hiện tại đã đúng nhóm, đúng token và không còn layout nhảy.
+Form GitHub đã được thay bằng destination toàn màn hình `github_panel` (`GithubScreen.kt`), mở
+từ nguồn GitHub trong Files; entry GitHub trong Cài đặt đã bỏ. Việc chuyển toàn bộ Cài đặt sang
+`RecyclerView` + item layouts được giữ lại như bước tối ưu sau, vì panel hiện tại đã đúng nhóm, đúng token và không còn layout nhảy.
 
 ### Phase 3 — Tệp & chọn thư mục
 
@@ -355,8 +358,10 @@ sau, vì panel hiện tại đã đúng nhóm, đúng token và không còn layo
 
 Đã triển khai:
 
-- Form GitHub chuyển vào `sheet_github.xml`, mở từ card tóm tắt trong Cài đặt; các trạng thái
-  cài đặt / đăng nhập / clone / danh sách repo giữ nguyên logic cũ.
+- Form GitHub chuyển vào destination toàn màn hình `github_panel` (`GithubScreen.kt`), mở từ
+  nguồn GitHub trong Files; các trạng thái cài đặt / đăng nhập / clone / danh sách repo giữ
+  nguyên logic cũ. `sheet_github.xml` và `sheet_git.xml` đã bị xoá; xem
+  [`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_EDITOR_PROPOSAL.md).
 - Toast còn lại trong Activity đổi sang Snackbar (`showSnack`), có action khi phù hợp.
 - Nút xác nhận Dừng server dùng màu error; empty/error state của Files và picker có text rõ ràng.
 - `OverlayMotion` thêm fade ngắn cho Cài đặt/Files, không detach WebView.

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Folder chooser shared by clone destinations and local repository mapping. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="@dimen/spacing_md">
+
+    <TextView
+        android:id="@+id/picker_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingEnd="@dimen/screen_margin"
+        android:text="@string/opencode_directory_picker_title"
+        android:textAppearance="@style/TextAppearance.OpenCode.TitleMedium"
+        android:textColor="?attr/colorOnSurface" />
+
+    <TextView
+        android:id="@+id/picker_path"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="middle"
+        android:maxLines="1"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingTop="@dimen/spacing_xs"
+        android:paddingEnd="@dimen/screen_margin"
+        android:textAppearance="@style/TextAppearance.OpenCode.Mono"
+        android:textColor="?attr/colorOnSurfaceVariant" />
+
+    <TextView
+        android:id="@+id/picker_free"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingTop="2dp"
+        android:paddingEnd="@dimen/screen_margin"
+        android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="320dp"
+        android:layout_marginTop="@dimen/spacing_xs">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/picker_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingBottom="@dimen/spacing_sm"
+            android:scrollbars="vertical" />
+
+        <TextView
+            android:id="@+id/picker_empty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="@string/opencode_directory_picker_empty"
+            android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/picker_error"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/screen_margin"
+        android:layout_marginTop="@dimen/spacing_xs"
+        android:layout_marginEnd="@dimen/screen_margin"
+        android:background="@drawable/bg_input"
+        android:padding="@dimen/spacing_sm"
+        android:text="@string/opencode_directory_picker_unreadable"
+        android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
+        android:textColor="?attr/colorError"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/spacing_sm"
+        android:paddingTop="@dimen/spacing_xs"
+        android:paddingEnd="@dimen/spacing_sm"
+        android:paddingBottom="@dimen/spacing_sm">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/picker_up"
+            style="@style/Widget.OpenCode.Button.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="@dimen/touch_target"
+            android:minWidth="0dp"
+            android:text="@string/opencode_directory_picker_up" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/picker_cancel"
+            style="@style/Widget.OpenCode.Button.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="@dimen/touch_target"
+            android:minWidth="0dp"
+            android:text="@string/opencode_directory_picker_cancel" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/picker_choose"
+            style="@style/Widget.OpenCode.Button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/spacing_xs"
+            android:minHeight="@dimen/touch_target"
+            android:minWidth="0dp"
+            android:text="@string/opencode_directory_picker_choose" />
+    </LinearLayout>
+</LinearLayout>

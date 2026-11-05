@@ -1,6 +1,7 @@
 package com.opencode.android
 
 import android.content.Context
+import org.json.JSONObject
 
 /**
  * Preferences of the settings screen.
@@ -20,6 +21,8 @@ object OpenCodeSettings {
     private const val KEY_GIT_AUTO_COMMIT = "git_auto_commit"
     private const val KEY_LAST_SESSION = "last_session_id"
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
+    private const val KEY_REPO_PATHS = "repo_local_paths"
+    private const val KEY_LAST_CLONE_DIR = "clone_last_dir"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -111,5 +114,56 @@ object OpenCodeSettings {
 
     fun setBatteryPromptShown(context: Context, shown: Boolean) {
         prefs(context).edit().putBoolean(KEY_BATTERY_PROMPT_SHOWN, shown).apply()
+    }
+
+    /**
+     * Local checkout of a GitHub repository, keyed by `owner/repo`.
+     *
+     * The mapping is stored as JSON so cloning the same repository again is detected, and the
+     * repository detail can offer "Open folder" and "Git changes" without scanning the device.
+     */
+    fun repoPath(context: Context, repo: String): String? {
+        val raw = prefs(context).getString(KEY_REPO_PATHS, null) ?: return null
+        return try {
+            val json = JSONObject(raw)
+            json.optString(repo, "").takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun setRepoPath(context: Context, repo: String, path: String) {
+        if (repo.isEmpty() || path.isEmpty()) return
+        val json = readRepoPaths(context)
+        try {
+            json.put(repo, path)
+            prefs(context).edit().putString(KEY_REPO_PATHS, json.toString()).apply()
+        } catch (e: Exception) {
+            // A broken preference must not break the screen.
+        }
+    }
+
+    fun removeRepoPath(context: Context, repo: String) {
+        val json = readRepoPaths(context)
+        if (!json.has(repo)) return
+        json.remove(repo)
+        prefs(context).edit().putString(KEY_REPO_PATHS, json.toString()).apply()
+    }
+
+    private fun readRepoPaths(context: Context): JSONObject {
+        val raw = prefs(context).getString(KEY_REPO_PATHS, null) ?: return JSONObject()
+        return try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            JSONObject()
+        }
+    }
+
+    /** The folder the previous clone dialog used, falling back to the app HOME. */
+    fun lastCloneDir(context: Context): String? =
+        prefs(context).getString(KEY_LAST_CLONE_DIR, null)?.takeIf { it.isNotEmpty() }
+
+    fun setLastCloneDir(context: Context, path: String) {
+        prefs(context).edit().putString(KEY_LAST_CLONE_DIR, path).apply()
     }
 }

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_editor_save"
+        android:icon="@drawable/ic_save"
+        android:title="@string/opencode_editor_save"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_editor_search"
+        android:icon="@drawable/ic_search"
+        android:title="@string/opencode_editor_search"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_editor_undo"
+        android:icon="@drawable/ic_undo"
+        android:title="@string/opencode_editor_undo"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_redo"
+        android:icon="@drawable/ic_redo"
+        android:title="@string/opencode_editor_redo"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_external"
+        android:icon="@drawable/ic_open_in_new"
+        android:title="@string/opencode_editor_external"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_properties"
+        android:icon="@drawable/ic_info"
+        android:title="@string/opencode_editor_properties"
+        app:showAsAction="never" />
+</menu>
