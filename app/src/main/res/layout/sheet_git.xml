@@ -62,6 +62,23 @@
             android:maxLines="3" />
     </com.google.android.material.textfield.TextInputLayout>
 
+    <com.google.android.material.materialswitch.MaterialSwitch
+        android:id="@+id/sheet_git_auto"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/spacing_sm"
+        android:minHeight="@dimen/touch_target"
+        android:text="@string/opencode_files_git_auto_toggle"
+        android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium"
+        android:textColor="?attr/colorOnSurface" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/opencode_files_git_auto_hint"
+        android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant" />
+
     <ProgressBar
         android:id="@+id/sheet_git_progress"
         android:layout_width="wrap_content"
@@ -86,13 +103,23 @@
             android:text="@string/opencode_cancel" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/sheet_git_push"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/spacing_sm"
+            android:minWidth="0dp"
+            android:text="@string/opencode_files_git_push"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/sheet_git_commit"
             style="@style/Widget.Material3.Button"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="@dimen/spacing_sm"
             android:minWidth="0dp"
-            android:text="@string/opencode_files_git_commit_push"
+            android:text="@string/opencode_files_git_commit"
             app:icon="@drawable/ic_git_repo"
             app:iconGravity="textStart" />
     </LinearLayout>

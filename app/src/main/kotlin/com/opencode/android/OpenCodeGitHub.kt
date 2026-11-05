@@ -498,14 +498,35 @@ object OpenCodeGitHub {
     }
 
     /**
-     * Stage every change of [root], commit it with [message] and push the current branch.
+     * Stage every change of [root] and create a local commit with [message]. Nothing is sent to
+     * GitHub, so automatic calls of this method cannot create commits on the remote.
+     */
+    fun commit(root: File, message: String): Result {
+        val text = message.trim()
+        if (text.isEmpty()) return Result(-1, "Commit message is empty")
+        if (!gitAvailable()) return Result(-1, "git is not installed")
+        val add = run(
+            gitBase(root) + arrayOf("add", "--all"),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+        if (!add.ok) return add
+        return run(
+            gitBase(root) + arrayOf("commit", "-m", text),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+    }
+
+    /**
+     * Push the commits of the current branch of [root] to GitHub.
      *
      * The push uses the same token header as [clone]; the credential helper of `gh` cannot run in
      * this sandbox. When the branch has no upstream yet it is pushed with `-u origin HEAD`.
      */
-    fun commitAndPush(root: File, message: String): Result {
-        val text = message.trim()
-        if (text.isEmpty()) return Result(-1, "Commit message is empty")
+    fun push(root: File): Result {
         if (!gitAvailable()) return Result(-1, "git is not installed")
         val cert = File(OpenCodeBootstrap.PREFIX, "etc/tls/cert.pem")
         if (!cert.isFile) {
@@ -515,21 +536,7 @@ object OpenCodeGitHub {
                     "Hãy mở app để nó cài lại gói ca-certificates rồi thử lại.",
             )
         }
-        val base = arrayOf(
-            gitBinary(),
-            "-c", "http.sslCAInfo=${cert.absolutePath}",
-            "-c", "safe.directory=*",
-            "-C", root.absolutePath,
-        )
-        val add = run(base + arrayOf("add", "--all"), File(OpenCodeBootstrap.HOME), null, 120000L)
-        if (!add.ok) return add
-        val commit = run(
-            base + arrayOf("commit", "-m", text),
-            File(OpenCodeBootstrap.HOME),
-            null,
-            120000L,
-        )
-        if (!commit.ok) return commit
+        val base = gitBase(root, cert.absolutePath)
         val upstream = run(
             base + arrayOf("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"),
             File(OpenCodeBootstrap.HOME),
@@ -542,15 +549,27 @@ object OpenCodeGitHub {
         } else {
             arrayOf("push", "--set-upstream", "origin", "HEAD")
         }
-        val pushed = run(
+        return run(
             base + pushArgs,
             File(OpenCodeBootstrap.HOME),
             null,
             300000L,
             extraEnv = gitNetworkEnv(),
         )
-        if (!pushed.ok) return pushed
-        return Result(0, (commit.output.trim() + "\n" + pushed.output.trim()).trim())
+    }
+
+    private fun gitBase(root: File, sslCert: String? = null): Array<String> {
+        val args = ArrayList<String>()
+        args.add(gitBinary())
+        args.add("-c")
+        args.add("safe.directory=*")
+        if (sslCert != null) {
+            args.add("-c")
+            args.add("http.sslCAInfo=$sslCert")
+        }
+        args.add("-C")
+        args.add(root.absolutePath)
+        return args.toTypedArray()
     }
 
     /** Run gh with the environment of the app prefix. gh must be able to persist a token. */

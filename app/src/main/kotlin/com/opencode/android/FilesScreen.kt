@@ -31,6 +31,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
@@ -110,6 +111,15 @@ class FilesScreen(
     private var gitTicket = 0
     private var gitSheet: BottomSheetDialog? = null
 
+    /** Set when a text file was opened externally, so returning to Files can auto-commit it. */
+    private var pendingExternalEdit = false
+
+    @Volatile
+    private var autoCommitInFlight = false
+
+    @Volatile
+    private var gitPushInFlight = false
+
     init {
         recycler.layoutManager = LinearLayoutManager(activity)
         recycler.adapter = adapter
@@ -119,7 +129,7 @@ class FilesScreen(
         clipboardPaste.setOnClickListener { pasteClipboard() }
         clipboardCancel.setOnClickListener { clearClipboard() }
         gitBar.setOnClickListener { showGitSheet() }
-        gitAction.setOnClickListener { showGitSheet() }
+        gitAction.setOnClickListener { onGitAction() }
         renderMenu()
         renderShortcuts()
     }
@@ -495,7 +505,55 @@ class FilesScreen(
         gitBar.visibility = View.VISIBLE
         gitTitle.text = activity.getString(R.string.opencode_files_git_title, status.branch)
         gitSummary.text = gitSummaryText(status)
-        gitAction.visibility = if (status.isClean) View.GONE else View.VISIBLE
+        when {
+            !status.isClean -> {
+                gitAction.visibility = View.VISIBLE
+                gitAction.setText(R.string.opencode_files_git_commit)
+            }
+            status.ahead > 0 -> {
+                gitAction.visibility = View.VISIBLE
+                gitAction.setText(R.string.opencode_files_git_push)
+            }
+            else -> gitAction.visibility = View.GONE
+        }
+        gitAction.isEnabled = true
+    }
+
+    /** The banner offers Commit while there are edits, then Push once they are committed. */
+    private fun onGitAction() {
+        val status = gitStatus ?: return
+        if (status.isClean && status.ahead > 0) pushNow() else showGitSheet()
+    }
+
+    private fun pushNow() {
+        val status = gitStatus ?: return
+        if (gitPushInFlight) return
+        if (OpenCodeGitHub.storedToken() == null) {
+            snack(activity.getString(R.string.opencode_files_git_not_logged_in))
+            return
+        }
+        gitPushInFlight = true
+        gitAction.isEnabled = false
+        snack(activity.getString(R.string.opencode_files_git_pushing))
+        val root = status.root
+        gitExecutor.execute {
+            val result = OpenCodeGitHub.push(root)
+            activity.runOnUiThread {
+                gitPushInFlight = false
+                if (released || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                if (result.ok) {
+                    snack(activity.getString(R.string.opencode_files_git_pushed))
+                } else {
+                    snack(
+                        activity.getString(
+                            R.string.opencode_files_git_push_failed,
+                            failureDetail(result.output),
+                        ),
+                    )
+                }
+                refreshGit()
+            }
+        }
     }
 
     private fun gitSummaryText(status: OpenCodeGitHub.GitStatus): String {
@@ -525,8 +583,10 @@ class FilesScreen(
         val changes = content.findViewById<TextView>(R.id.sheet_git_changes)
         val messageLayout = content.findViewById<TextInputLayout>(R.id.sheet_git_message_layout)
         val message = content.findViewById<TextInputEditText>(R.id.sheet_git_message)
+        val auto = content.findViewById<MaterialSwitch>(R.id.sheet_git_auto)
         val progress = content.findViewById<ProgressBar>(R.id.sheet_git_progress)
         val commit = content.findViewById<MaterialButton>(R.id.sheet_git_commit)
+        val push = content.findViewById<MaterialButton>(R.id.sheet_git_push)
         val cancel = content.findViewById<MaterialButton>(R.id.sheet_git_cancel)
 
         repo.text = status.root.absolutePath
@@ -549,8 +609,25 @@ class FilesScreen(
         changes.visibility = if (dirty) View.VISIBLE else View.GONE
         messageLayout.visibility = if (dirty) View.VISIBLE else View.GONE
         commit.visibility = if (dirty) View.VISIBLE else View.GONE
-        cancel.setText(if (dirty) R.string.opencode_cancel else R.string.opencode_files_close)
+        push.visibility = if (status.ahead > 0) View.VISIBLE else View.GONE
+        cancel.setText(
+            if (dirty || status.ahead > 0) R.string.opencode_cancel
+            else R.string.opencode_files_close,
+        )
         if (dirty) message.setText(R.string.opencode_files_git_message_default)
+        auto.isChecked = OpenCodeSettings.gitAutoCommit(activity)
+        auto.setOnCheckedChangeListener { _, checked ->
+            OpenCodeSettings.setGitAutoCommit(activity, checked)
+        }
+
+        fun setBusy(busy: Boolean) {
+            commit.isEnabled = !busy
+            push.isEnabled = !busy
+            cancel.isEnabled = !busy
+            message.isEnabled = !busy
+            auto.isEnabled = !busy
+            progress.visibility = if (busy) View.VISIBLE else View.GONE
+        }
 
         cancel.setOnClickListener { sheet.dismiss() }
         commit.setOnClickListener {
@@ -559,32 +636,46 @@ class FilesScreen(
                 messageLayout.error = activity.getString(R.string.opencode_files_git_message_required)
                 return@setOnClickListener
             }
+            messageLayout.error = null
+            setBusy(true)
+            statusView.text = activity.getString(R.string.opencode_files_git_committing)
+            gitExecutor.execute {
+                val result = OpenCodeGitHub.commit(status.root, text)
+                activity.runOnUiThread {
+                    if (released || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    if (result.ok) {
+                        sheet.dismiss()
+                        snack(activity.getString(R.string.opencode_files_git_committed))
+                        refreshGit()
+                    } else {
+                        setBusy(false)
+                        statusView.text = activity.getString(
+                            R.string.opencode_files_git_commit_failed,
+                            failureDetail(result.output),
+                        )
+                    }
+                }
+            }
+        }
+        push.setOnClickListener {
             if (OpenCodeGitHub.storedToken() == null) {
                 statusView.text = activity.getString(R.string.opencode_files_git_not_logged_in)
                 return@setOnClickListener
             }
-            messageLayout.error = null
-            commit.isEnabled = false
-            cancel.isEnabled = false
-            message.isEnabled = false
-            progress.visibility = View.VISIBLE
-            statusView.text = activity.getString(R.string.opencode_files_git_running)
-            val root = status.root
+            setBusy(true)
+            statusView.text = activity.getString(R.string.opencode_files_git_pushing)
             gitExecutor.execute {
-                val result = OpenCodeGitHub.commitAndPush(root, text)
+                val result = OpenCodeGitHub.push(status.root)
                 activity.runOnUiThread {
                     if (released || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                    progress.visibility = View.GONE
                     if (result.ok) {
                         sheet.dismiss()
-                        snack(activity.getString(R.string.opencode_files_git_done))
+                        snack(activity.getString(R.string.opencode_files_git_pushed))
                         refreshGit()
                     } else {
-                        commit.isEnabled = true
-                        cancel.isEnabled = true
-                        message.isEnabled = true
+                        setBusy(false)
                         statusView.text = activity.getString(
-                            R.string.opencode_files_git_failed,
+                            R.string.opencode_files_git_push_failed,
                             failureDetail(result.output),
                         )
                     }
@@ -597,6 +688,57 @@ class FilesScreen(
         sheet.setContentView(content)
         sheet.show()
     }
+
+    /**
+     * Called from `Activity.onResume`. When the user returns from a text editor and enabled the
+     * option, the edits are committed locally. A push always needs an explicit tap.
+     */
+    fun onActivityResumed() {
+        if (!pendingExternalEdit) return
+        if (autoCommitInFlight) return
+        pendingExternalEdit = false
+        if (!isVisible) return
+        if (!OpenCodeSettings.gitAutoCommit(activity)) return
+        if (!OpenCodeGitHub.gitAvailable()) return
+        autoCommitInFlight = true
+        val target = current
+        gitExecutor.execute {
+            val root = OpenCodeGitHub.findRepoRoot(target)
+            val status = root?.let { OpenCodeGitHub.status(it) }
+            if (root == null || status == null || status.isClean) {
+                autoCommitInFlight = false
+                return@execute
+            }
+            val result = OpenCodeGitHub.commit(root, autoCommitMessage(status))
+            activity.runOnUiThread {
+                autoCommitInFlight = false
+                if (released || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                if (result.ok) {
+                    snack(
+                        activity.getString(
+                            R.string.opencode_files_git_auto_done,
+                            status.changes.size,
+                        ),
+                    )
+                } else {
+                    snack(
+                        activity.getString(
+                            R.string.opencode_files_git_auto_failed,
+                            failureDetail(result.output),
+                        ),
+                    )
+                }
+                refreshGit()
+            }
+        }
+    }
+
+    private fun autoCommitMessage(status: OpenCodeGitHub.GitStatus): String =
+        if (status.changes.size == 1) {
+            activity.getString(R.string.opencode_files_git_auto_one, status.changes.first().path)
+        } else {
+            activity.getString(R.string.opencode_files_git_auto_many, status.changes.size)
+        }
 
     private fun failureDetail(output: String): String {
         val line = output.lineSequence()
@@ -1214,10 +1356,17 @@ class FilesScreen(
 
     private fun openFile(file: File) {
         val uri = uriFor(file) ?: return
+        if (isTextFile(file)) pendingExternalEdit = true
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, mimeType(file))
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         launchChooser(intent, activity.getString(R.string.opencode_files_open_with))
+    }
+
+    /** External viewers may edit text and code; binary formats are not worth an auto-commit. */
+    private fun isTextFile(file: File): Boolean {
+        if (mimeType(file).startsWith("text/")) return true
+        return file.extension.lowercase(Locale.ROOT) in TEXT_EXTENSIONS
     }
 
     private fun shareItem(file: File) {
@@ -1409,6 +1558,16 @@ class FilesScreen(
     private companion object {
         /** Files listed in the Git sheet; larger repositories summarise the rest. */
         const val MAX_GIT_FILES = 8
+
+        /** Extensions that external editors usually treat as editable text. */
+        val TEXT_EXTENSIONS = setOf(
+            "txt", "md", "markdown", "rst", "log",
+            "json", "jsonc", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties",
+            "kt", "kts", "java", "js", "jsx", "ts", "tsx", "html", "htm", "css", "scss", "less",
+            "py", "rb", "go", "rs", "c", "h", "cpp", "hpp", "cc", "cs", "php", "swift", "lua",
+            "sh", "bash", "zsh", "fish", "bat", "ps1", "sql", "gradle", "groovy", "dart",
+            "vue", "svelte", "env", "gitignore", "gitattributes", "editorconfig",
+        )
     }
 
     private class Adapter(

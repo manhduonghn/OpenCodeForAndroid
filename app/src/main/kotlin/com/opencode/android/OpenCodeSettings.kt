@@ -17,6 +17,7 @@ object OpenCodeSettings {
     private const val KEY_USER_STOPPED = "user_stopped"
     private const val KEY_AUTO_UPDATE = "auto_update_check"
     private const val KEY_LAST_FILES = "files_last_dir"
+    private const val KEY_GIT_AUTO_COMMIT = "git_auto_commit"
     private const val KEY_LAST_SESSION = "last_session_id"
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
 
@@ -75,6 +76,14 @@ object OpenCodeSettings {
 
     fun setLastFilesDir(context: Context, path: String) {
         prefs(context).edit().putString(KEY_LAST_FILES, path).apply()
+    }
+
+    /** Commit manual edits locally after returning to Files; pushing stays a separate action. */
+    fun gitAutoCommit(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_GIT_AUTO_COMMIT, false)
+
+    fun setGitAutoCommit(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_GIT_AUTO_COMMIT, enabled).apply()
     }
 
     /**

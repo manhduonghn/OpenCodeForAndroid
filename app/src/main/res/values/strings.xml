@@ -286,16 +286,25 @@
     <string name="opencode_files_git_ahead">%1$d commit chưa push</string>
     <string name="opencode_files_git_behind">%1$d commit mới trên remote</string>
     <string name="opencode_files_git_commit">Commit</string>
+    <string name="opencode_files_git_push">Push</string>
     <string name="opencode_files_git_sheet_title">Git</string>
     <string name="opencode_files_git_sheet_more">… và %1$d tệp khác</string>
     <string name="opencode_files_git_message_hint">Mô tả thay đổi</string>
     <string name="opencode_files_git_message_required">Nhập mô tả commit.</string>
     <string name="opencode_files_git_message_default">Cập nhật từ OpenCode Android</string>
-    <string name="opencode_files_git_commit_push">Commit &amp; Push</string>
-    <string name="opencode_files_git_running">Đang commit và push…</string>
-    <string name="opencode_files_git_done">Đã commit và push lên GitHub</string>
-    <string name="opencode_files_git_failed">Không push được: %1$s</string>
+    <string name="opencode_files_git_committing">Đang commit…</string>
+    <string name="opencode_files_git_pushing">Đang push…</string>
+    <string name="opencode_files_git_committed">Đã commit trên máy (chưa push)</string>
+    <string name="opencode_files_git_pushed">Đã push lên GitHub</string>
+    <string name="opencode_files_git_commit_failed">Không commit được: %1$s</string>
+    <string name="opencode_files_git_push_failed">Không push được: %1$s</string>
     <string name="opencode_files_git_not_logged_in">Chưa đăng nhập GitHub. Mở Cài đặt → GitHub để đăng nhập.</string>
+    <string name="opencode_files_git_auto_toggle">Tự động commit khi sửa file</string>
+    <string name="opencode_files_git_auto_hint">Chỉ tạo commit trên máy, không push. Mọi thay đổi đang có trong repo sẽ được gộp vào commit này.</string>
+    <string name="opencode_files_git_auto_one">Cập nhật %1$s</string>
+    <string name="opencode_files_git_auto_many">Cập nhật %1$d tệp</string>
+    <string name="opencode_files_git_auto_done">Đã tự động commit %1$d tệp (chưa push)</string>
+    <string name="opencode_files_git_auto_failed">Tự động commit thất bại: %1$s</string>
 
     <!-- Folder picker -->
     <string name="opencode_picker_go">Đi</string>

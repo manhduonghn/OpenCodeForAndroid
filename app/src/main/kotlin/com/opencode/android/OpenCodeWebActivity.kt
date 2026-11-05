@@ -1599,6 +1599,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             renderBatteryOptimization()
         }
         if (::filesScreen.isInitialized && filesScreen.isVisible) {
+            filesScreen.onActivityResumed()
             filesScreen.onStoragePermissionResult()
         }
         offerBatteryOptimizationOnce()
