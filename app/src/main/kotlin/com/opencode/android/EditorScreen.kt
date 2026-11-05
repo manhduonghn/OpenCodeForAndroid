@@ -178,7 +178,7 @@ class EditorScreen(
                     ),
                 )
                 .setPositiveButton(R.string.opencode_editor_save_close) { _, _ ->
-                    save { close() }
+                    save(after = { close() })
                 }
                 .setNeutralButton(R.string.opencode_editor_discard) { _, _ -> close() }
                 .setNegativeButton(R.string.opencode_editor_keep_editing, null)
