@@ -96,6 +96,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Content URIs for opening and sharing files from the Files screen. The provider is
+             not exported; the receiving app only gets a temporary read grant. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 
 </manifest>

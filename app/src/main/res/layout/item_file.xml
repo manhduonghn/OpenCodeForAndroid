@@ -51,6 +51,16 @@
             android:textColor="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 
+    <ImageView
+        android:id="@+id/file_check"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_marginEnd="@dimen/spacing_sm"
+        android:contentDescription="@null"
+        android:src="@drawable/ic_radio_unchecked"
+        android:tint="?attr/colorPrimary"
+        android:visibility="gone" />
+
     <ImageButton
         android:id="@+id/file_more"
         android:layout_width="48dp"

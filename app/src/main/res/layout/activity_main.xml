@@ -932,6 +932,8 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="?attr/colorSurface"
+        android:clickable="true"
+        android:focusable="true"
         android:orientation="vertical"
         android:visibility="gone">
 
@@ -950,6 +952,77 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:orientation="vertical">
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="@dimen/screen_margin"
+                android:paddingEnd="@dimen/screen_margin"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/files_breadcrumb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="@dimen/screen_margin"
+                android:paddingEnd="@dimen/screen_margin"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/files_shortcuts"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <LinearLayout
+                android:id="@+id/files_clipboard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/screen_margin"
+                android:layout_marginTop="@dimen/spacing_sm"
+                android:layout_marginEnd="@dimen/screen_margin"
+                android:background="@drawable/bg_card"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/spacing_md"
+                android:paddingEnd="@dimen/spacing_sm"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/files_clipboard_text"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium"
+                    android:textColor="?attr/colorOnSurface" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/files_clipboard_paste"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="0dp"
+                    android:text="@string/opencode_files_paste" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/files_clipboard_cancel"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="0dp"
+                    android:text="@string/opencode_files_clipboard_clear" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/files_summary"
@@ -993,6 +1066,7 @@
                         android:tint="?attr/colorPrimary" />
 
                     <TextView
+                        android:id="@+id/files_empty_text"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/spacing_md"
@@ -1002,12 +1076,12 @@
                         android:textColor="?attr/colorOnSurfaceVariant" />
 
                     <com.google.android.material.button.MaterialButton
-                        android:id="@+id/files_empty_pick"
+                        android:id="@+id/files_empty_action"
                         style="@style/Widget.Material3.Button"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/spacing_md"
-                        android:text="@string/opencode_storage_pick" />
+                        android:text="@string/opencode_files_empty_action" />
                 </LinearLayout>
 
                 <ProgressBar
@@ -1027,7 +1101,7 @@
                 android:paddingBottom="@dimen/spacing_sm"
                 android:text="@string/opencode_files_hint"
                 android:textAppearance="@style/TextAppearance.OpenCode.BodySmall"
-                android:textColor="?attr/colorOutline" />
+                android:textColor="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

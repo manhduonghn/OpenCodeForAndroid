@@ -239,6 +239,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     ) { _ ->
         if (destroyed) return@registerForActivityResult
         renderStorage()
+        if (::filesScreen.isInitialized) filesScreen.onStoragePermissionResult()
     }
 
     /**
@@ -567,7 +568,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         filesScreen = FilesScreen(
             this,
             { directory -> openProject(directory) },
-            { pickProjectDirectory() },
+            { requestStorageAccess() },
         )
         findViewById<View>(R.id.settings_restart).setOnClickListener { confirmRestartServer() }
         findViewById<View>(R.id.settings_stop).setOnClickListener { confirmStopServer() }
@@ -613,7 +614,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     if (::filesScreen.isInitialized && filesScreen.isVisible) {
-                        filesScreen.hide()
+                        filesScreen.goBack()
                     } else if (settingsPanel.visibility == View.VISIBLE) {
                         closeSettings()
                     } else {
@@ -1681,6 +1682,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
             renderStorage()
+        }
+        if (::filesScreen.isInitialized && filesScreen.isVisible) {
+            filesScreen.onStoragePermissionResult()
         }
         offerBatteryOptimizationOnce()
     }

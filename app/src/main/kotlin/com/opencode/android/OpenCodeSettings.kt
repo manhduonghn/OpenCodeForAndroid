@@ -17,6 +17,7 @@ object OpenCodeSettings {
     private const val KEY_USER_STOPPED = "user_stopped"
     private const val KEY_AUTO_UPDATE = "auto_update_check"
     private const val KEY_LAST_PROJECT = "storage_last_project_dir"
+    private const val KEY_LAST_FILES = "files_last_dir"
     private const val KEY_LAST_SESSION = "last_session_id"
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
 
@@ -74,6 +75,14 @@ object OpenCodeSettings {
 
     fun setLastProjectDir(context: Context, path: String) {
         prefs(context).edit().putString(KEY_LAST_PROJECT, path).apply()
+    }
+
+    /** The folder the Files screen reopens on, unless it was removed or became unreadable. */
+    fun lastFilesDir(context: Context): String? =
+        prefs(context).getString(KEY_LAST_FILES, null)?.takeIf { it.isNotEmpty() }
+
+    fun setLastFilesDir(context: Context, path: String) {
+        prefs(context).edit().putString(KEY_LAST_FILES, path).apply()
     }
 
     /**

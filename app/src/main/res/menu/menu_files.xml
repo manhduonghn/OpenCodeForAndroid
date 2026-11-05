@@ -2,8 +2,39 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
+        android:id="@+id/action_files_new_folder"
+        android:icon="@drawable/ic_create_new_folder"
+        android:title="@string/opencode_files_new_folder"
+        app:showAsAction="ifRoom" />
+    <item
         android:id="@+id/action_files_refresh"
         android:icon="@drawable/ic_refresh"
         android:title="@string/opencode_files_refresh"
         app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_files_new_file"
+        android:icon="@drawable/ic_note_add"
+        android:title="@string/opencode_files_new_file"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_files_sort"
+        android:icon="@drawable/ic_sort"
+        android:title="@string/opencode_files_sort"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_files_hidden"
+        android:checkable="true"
+        android:icon="@drawable/ic_visibility"
+        android:title="@string/opencode_files_hidden"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_files_go_to"
+        android:icon="@drawable/ic_folder_open"
+        android:title="@string/opencode_files_go_to"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_files_open_project"
+        android:icon="@drawable/ic_git_repo"
+        android:title="@string/opencode_files_open_project"
+        app:showAsAction="never" />
 </menu>

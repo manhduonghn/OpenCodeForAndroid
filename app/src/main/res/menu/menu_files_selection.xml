@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_selection_copy"
+        android:icon="@drawable/ic_copy"
+        android:title="@string/opencode_files_copy"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_selection_move"
+        android:icon="@drawable/ic_file_move"
+        android:title="@string/opencode_files_move"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_selection_delete"
+        android:icon="@drawable/ic_delete"
+        android:title="@string/opencode_files_delete"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_selection_share"
+        android:icon="@drawable/ic_share"
+        android:title="@string/opencode_files_share"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_selection_select_all"
+        android:icon="@drawable/ic_select_all"
+        android:title="@string/opencode_files_select_all"
+        app:showAsAction="never" />
+</menu>
