@@ -432,8 +432,10 @@ one.
   permits cleartext only for `127.0.0.1`/`localhost` (the local OpenCode
   server); the base configuration still requires TLS, and the manifest no longer
   sets `android:usesCleartextTraffic="true"`.
-* **No broad file access in the WebView.** `allowFileAccess` and
-  `allowContentAccess` are off; only the loopback origin is loaded.
+* **Limited file access in the WebView.** `allowFileAccess` stays off (no
+  `file://` URLs), but `allowContentAccess` is on so the attach button of the
+  composer can read the `content://` URIs that the system file picker returns.
+  Only the loopback origin is loaded in the WebView.
 * **No exported services.** Both foreground services are `exported="false"`;
   the `pkg` bridge talks to them from the same UID.
 * **Secrets stay in the sandbox.** The server password is generated once, kept in

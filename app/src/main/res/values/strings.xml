@@ -24,6 +24,7 @@
     <string name="opencode_loading_ui_detail">Đang đồng bộ phiên chat với server. Giao diện chỉ hiện ra khi dữ liệu đã sẵn sàng.</string>
     <string name="opencode_reconnecting_detail">Kết nối tới server bị gián đoạn. Ứng dụng đang kết nối lại và sẽ tự mở lại phiên đang xem.</string>
     <string name="opencode_ui_boot_timeout">Giao diện chưa phản hồi kịp. Ứng dụng sẽ thử lại.</string>
+    <string name="opencode_file_picker_unavailable">Không mở được trình quản lý tệp để chọn tệp đính kèm.</string>
 
     <!-- Boot stepper and details -->
     <string name="opencode_boot_step_environment">Môi trường Linux</string>

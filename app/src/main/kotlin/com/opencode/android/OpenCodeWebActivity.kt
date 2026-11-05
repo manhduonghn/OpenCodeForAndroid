@@ -1,6 +1,8 @@
 package com.opencode.android
 
 import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -29,6 +31,7 @@ import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.JsResult
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -236,6 +239,18 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     ) { _ ->
         if (destroyed) return@registerForActivityResult
         renderStorage()
+    }
+
+    /**
+     * The system file picker of an `<input type="file">` of the web app. The callback of the
+     * WebView lives in the ViewModel, so a rotation while the picker is open keeps working.
+     */
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        viewModel.onFileChooserResult(
+            if (result.resultCode == Activity.RESULT_OK) fileChooserUris(result.data) else null,
+        )
     }
 
     private val poll: Runnable = object : Runnable {
@@ -1769,6 +1784,50 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         showJsDialog(message, result, confirm = true)
     }
 
+    /**
+     * Open the system file manager for the attach button of the composer. A WebView does not show
+     * a picker by itself: without this callback the `<input type="file">` of the web app is a
+     * no-op on Android.
+     */
+    override fun onShowFileChooser(params: WebChromeClient.FileChooserParams?) {
+        if (isFinishing || isDestroyed) {
+            viewModel.onFileChooserResult(null)
+            return
+        }
+        val intent = try {
+            params?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not build the file picker intent", e)
+            viewModel.onFileChooserResult(null)
+            showSnack(getString(R.string.opencode_file_picker_unavailable))
+            return
+        }
+        try {
+            fileChooserLauncher.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "No file manager is installed", e)
+            viewModel.onFileChooserResult(null)
+            showSnack(getString(R.string.opencode_file_picker_unavailable))
+        }
+    }
+
+    /** Turn the result of [fileChooserLauncher] into the list the WebView expects. */
+    private fun fileChooserUris(data: Intent?): Array<Uri>? {
+        if (data == null) return null
+        // Multiple files arrive as ClipData; a single file may only be in data. The WebView
+        // implementation of FileChooserParams.parseResult ignores ClipData, so parse it here.
+        val clip = data.clipData
+        if (clip != null) {
+            val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+            if (uris.isNotEmpty()) return uris.toTypedArray()
+        }
+        return data.data?.let { arrayOf(it) }
+    }
+
     private fun showJsDialog(message: String?, result: JsResult, confirm: Boolean) {
         if (isFinishing || isDestroyed) {
             result.cancel()
@@ -1894,9 +1953,11 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            // Local files and content URIs are not needed, the UI is served over loopback.
+            // The attach button of the composer reads the files returned by the system picker as
+            // content URIs, so content access has to stay enabled. Local file URLs are not needed:
+            // the UI is served over loopback.
             allowFileAccess = false
-            allowContentAccess = false
+            allowContentAccess = true
         }
         // The Pairing redirect stores the session cookie of the server here.
         CookieManager.getInstance().setAcceptCookie(true)

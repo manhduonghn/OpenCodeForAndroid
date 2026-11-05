@@ -1,6 +1,7 @@
 package com.opencode.android
 
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -8,6 +9,7 @@ import android.util.Log
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.JsResult
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.lifecycle.ViewModel
@@ -41,6 +43,13 @@ class OpenCodeWebViewModel : ViewModel() {
 
         /** Called for `confirm()` of the web app. */
         fun onJsConfirm(view: WebView, message: String?, result: JsResult)
+
+        /**
+         * The web app wants to open the files of an `<input type="file">` (the attach button of
+         * the composer). The activity starts the system picker and reports the selection through
+         * [onFileChooserResult].
+         */
+        fun onShowFileChooser(params: WebChromeClient.FileChooserParams?)
 
         /**
          * The web app completed its first successful API call. Only now is it safe to show the
@@ -99,8 +108,15 @@ class OpenCodeWebViewModel : ViewModel() {
      */
     var pairedServerGeneration = 0
 
-    /** The activity of the moment, used for the JavaScript dialogs only. */
+    /** The activity of the moment, used for the JavaScript dialogs and the file picker only. */
     var ui: Ui? = null
+
+    /**
+     * Pending callback of an `<input type="file">` of the web app. The system picker runs in an
+     * activity, so the callback has to survive the recreation of this activity (rotation) while
+     * the picker is open.
+     */
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
 
     private var webViewInstance: WebView? = null
 
@@ -140,6 +156,7 @@ class OpenCodeWebViewModel : ViewModel() {
         transportDown = false
         pageLoaded = false
         pairedServerGeneration = 0
+        cancelFileChooser()
         if (old != null) {
             (old.parent as? ViewGroup)?.removeView(old)
             try {
@@ -156,9 +173,11 @@ class OpenCodeWebViewModel : ViewModel() {
         view.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            // Local files and content URIs are not needed, the UI is served over loopback.
+            // The attach button of the composer reads the files returned by the system picker as
+            // content URIs, so content access has to stay enabled. Local file URLs are not needed:
+            // the UI is served over loopback.
             allowFileAccess = false
-            allowContentAccess = false
+            allowContentAccess = true
         }
         // The Material You stylesheet decides every color. The WebView's own algorithmic
         // darkening (API 33+) and the View-level force dark (API 29+) would process those colors
@@ -208,11 +227,47 @@ class OpenCodeWebViewModel : ViewModel() {
                 callback.onJsConfirm(view, message, result)
                 return true
             }
+
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: WebChromeClient.FileChooserParams?,
+            ): Boolean {
+                if (filePathCallback == null) return false
+                // A second request while the picker is open (or a request left behind by a
+                // destroyed activity) would otherwise wait forever.
+                cancelFileChooser()
+                fileChooserCallback = filePathCallback
+                val callback = ui
+                if (callback == null) {
+                    cancelFileChooser()
+                    return true
+                }
+                callback.onShowFileChooser(fileChooserParams)
+                return true
+            }
         }
 
         webViewInstance = view
         installBootGuard(view)
         return view
+    }
+
+    /**
+     * Deliver the selection of the system file picker to the web app. `null` means that the
+     * picker was cancelled or could not be opened; the web app clears its hidden input either way.
+     */
+    fun onFileChooserResult(uris: Array<Uri>?) {
+        val callback = fileChooserCallback ?: return
+        fileChooserCallback = null
+        callback.onReceiveValue(uris)
+    }
+
+    /** Release a pending `<input type="file">` callback without a selection. */
+    private fun cancelFileChooser() {
+        val callback = fileChooserCallback ?: return
+        fileChooserCallback = null
+        callback.onReceiveValue(null)
     }
 
     /**
@@ -368,6 +423,7 @@ class OpenCodeWebViewModel : ViewModel() {
         webReady = false
         transportDown = false
         bootGuardInstalled = false
+        cancelFileChooser()
         OpenCodeSessionTracker.setActiveSession(null)
         val view = webViewInstance
         webViewInstance = null
