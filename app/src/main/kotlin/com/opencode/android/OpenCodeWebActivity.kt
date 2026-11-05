@@ -766,6 +766,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         applyWebTheme()
         updateStatusSubtitle(connectionState, force = true)
         if (::githubScreen.isInitialized) githubScreen.onConfigurationChanged()
+        if (::editorScreen.isInitialized) editorScreen.onConfigurationChanged()
         ViewCompat.requestApplyInsets(root)
     }
 

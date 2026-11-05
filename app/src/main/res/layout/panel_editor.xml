@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- In-app text editor: native monospace EditText with a synced gutter and a status bar. -->
+<!-- In-app text editor: CodeMirror (WebView, primary) with a native EditText fallback. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/editor_panel"
@@ -98,49 +98,61 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <LinearLayout
-            android:id="@+id/editor_body"
+        <FrameLayout
+            android:id="@+id/editor_host"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="horizontal">
+            android:layout_height="match_parent">
 
-            <TextView
-                android:id="@+id/editor_gutter"
-                android:layout_width="48dp"
+            <FrameLayout
+                android:id="@+id/editor_web_host"
+                android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:background="?attr/colorSurfaceContainerLow"
-                android:ellipsize="none"
-                android:fontFamily="monospace"
-                android:gravity="top|end"
-                android:includeFontPadding="false"
-                android:lineSpacingMultiplier="1.0"
-                android:maxLines="100000"
-                android:paddingStart="@dimen/spacing_xs"
-                android:paddingTop="@dimen/spacing_md"
-                android:paddingEnd="@dimen/spacing_sm"
-                android:scrollbars="none"
-                android:textAppearance="@style/TextAppearance.OpenCode.Editor"
-                android:textColor="?attr/colorOnSurfaceVariant" />
+                android:visibility="gone" />
 
-            <EditText
-                android:id="@+id/editor_text"
-                android:layout_width="0dp"
+            <LinearLayout
+                android:id="@+id/editor_native_body"
+                android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@null"
-                android:fontFamily="monospace"
-                android:gravity="top|start"
-                android:imeOptions="flagNoExtractUi"
-                android:importantForAutofill="no"
-                android:inputType="textMultiLine|textNoSuggestions"
-                android:lineSpacingMultiplier="1.0"
-                android:padding="@dimen/spacing_md"
-                android:scrollHorizontally="true"
-                android:scrollbars="vertical|horizontal"
-                android:textAppearance="@style/TextAppearance.OpenCode.Editor"
-                android:textColor="?attr/colorOnSurface"
-                android:textColorHighlight="?attr/colorSecondaryContainer" />
-        </LinearLayout>
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/editor_gutter"
+                    android:layout_width="48dp"
+                    android:layout_height="match_parent"
+                    android:background="?attr/colorSurfaceContainerLow"
+                    android:ellipsize="none"
+                    android:fontFamily="monospace"
+                    android:gravity="top|end"
+                    android:includeFontPadding="false"
+                    android:lineSpacingMultiplier="1.0"
+                    android:maxLines="100000"
+                    android:paddingStart="@dimen/spacing_xs"
+                    android:paddingTop="@dimen/spacing_md"
+                    android:paddingEnd="@dimen/spacing_sm"
+                    android:scrollbars="none"
+                    android:textAppearance="@style/TextAppearance.OpenCode.Editor"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
+                <EditText
+                    android:id="@+id/editor_text"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:fontFamily="monospace"
+                    android:gravity="top|start"
+                    android:imeOptions="flagNoExtractUi"
+                    android:importantForAutofill="no"
+                    android:inputType="textMultiLine|textNoSuggestions"
+                    android:lineSpacingMultiplier="1.0"
+                    android:padding="@dimen/spacing_md"
+                    android:scrollHorizontally="true"
+                    android:scrollbars="vertical|horizontal"
+                    android:textAppearance="@style/TextAppearance.OpenCode.Editor"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textColorHighlight="?attr/colorSecondaryContainer" />
+            </LinearLayout>
+        </FrameLayout>
 
         <LinearLayout
             android:id="@+id/editor_placeholder"
@@ -199,6 +211,22 @@
             android:maxLines="1"
             android:textAppearance="@style/TextAppearance.OpenCode.MonoSmall"
             android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <TextView
+            android:id="@+id/editor_language"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/spacing_sm"
+            android:background="@drawable/bg_chip"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:paddingStart="@dimen/spacing_sm"
+            android:paddingTop="2dp"
+            android:paddingEnd="@dimen/spacing_sm"
+            android:paddingBottom="2dp"
+            android:textAppearance="@style/TextAppearance.OpenCode.LabelSmall"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/editor_readonly"

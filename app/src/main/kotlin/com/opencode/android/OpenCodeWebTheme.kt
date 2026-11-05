@@ -32,6 +32,28 @@ object OpenCodeWebTheme {
         val dark: Boolean,
     )
 
+    /**
+     * The subset of the palette the in-app editor needs. Both the web stylesheet and the
+     * CodeMirror page read their colors from here, so the two cannot drift apart.
+     */
+    class Tokens(
+        val dark: Boolean,
+        val syntax: Map<String, String>,
+        val markdown: Map<String, String>,
+        val editor: Map<String, String>,
+    )
+
+    /** Resolve the editor colors of [context] from the current Material You palette. */
+    fun tokens(context: Context): Tokens {
+        val palette = palette(context)
+        return Tokens(
+            dark = isDark(context),
+            syntax = syntaxColors(palette),
+            markdown = markdownColors(palette),
+            editor = editorColors(palette),
+        )
+    }
+
     /** Resolve the palette of [context] and build the injected script. */
     fun resolve(context: Context): Resolved {
         val palette = palette(context)
@@ -354,35 +376,8 @@ object OpenCodeWebTheme {
         tokens["--v2-cyan-1200"] = color(p.onSecondaryContainer)
 
         // ── Syntax and markdown: keep code readable, tint it with the same palette ──
-        tokens["--syntax-comment"] = color(p.outline)
-        tokens["--syntax-keyword"] = color(p.primary)
-        tokens["--syntax-string"] = color(p.tertiary)
-        tokens["--syntax-primitive"] = color(p.primary)
-        tokens["--syntax-property"] = color(p.secondary)
-        tokens["--syntax-type"] = color(p.tertiary)
-        tokens["--syntax-constant"] = color(p.secondary)
-        tokens["--syntax-operator"] = color(p.onSurfaceVariant)
-        tokens["--syntax-punctuation"] = color(p.onSurfaceVariant)
-        tokens["--syntax-variable"] = color(p.onSurface)
-        tokens["--syntax-object"] = color(p.onSurface)
-        tokens["--syntax-success"] = color(p.success)
-        tokens["--syntax-warning"] = color(p.warning)
-        tokens["--syntax-critical"] = color(p.error)
-        tokens["--syntax-info"] = color(p.primary)
-        tokens["--markdown-heading"] = color(p.primary)
-        tokens["--markdown-text"] = color(p.onSurface)
-        tokens["--markdown-link"] = color(p.primary)
-        tokens["--markdown-link-text"] = color(p.secondary)
-        tokens["--markdown-code"] = color(p.tertiary)
-        tokens["--markdown-block-quote"] = color(p.outline)
-        tokens["--markdown-emph"] = color(p.secondary)
-        tokens["--markdown-strong"] = color(p.primary)
-        tokens["--markdown-horizontal-rule"] = color(p.outlineVariant)
-        tokens["--markdown-list-item"] = color(p.primary)
-        tokens["--markdown-list-enumeration"] = color(p.secondary)
-        tokens["--markdown-image"] = color(p.primary)
-        tokens["--markdown-image-text"] = color(p.secondary)
-        tokens["--markdown-code-block"] = color(p.onSurface)
+        for ((name, value) in syntaxColors(p)) tokens["--syntax-$name"] = value
+        for ((name, value) in markdownColors(p)) tokens["--markdown-$name"] = value
 
         // ── Legacy tokens ──
         // The web app still renders several areas with the flat OC-2 variable names
@@ -617,6 +612,60 @@ object OpenCodeWebTheme {
             }
         """.trimIndent()
     }
+
+    private fun syntaxColors(p: Palette): Map<String, String> = linkedMapOf(
+        "comment" to color(p.outline),
+        "keyword" to color(p.primary),
+        "string" to color(p.tertiary),
+        "primitive" to color(p.primary),
+        "property" to color(p.secondary),
+        "type" to color(p.tertiary),
+        "function" to color(p.tertiary),
+        "constant" to color(p.secondary),
+        "operator" to color(p.onSurfaceVariant),
+        "punctuation" to color(p.onSurfaceVariant),
+        "variable" to color(p.onSurface),
+        "object" to color(p.onSurface),
+        "success" to color(p.success),
+        "warning" to color(p.warning),
+        "critical" to color(p.error),
+        "invalid" to color(p.error),
+        "info" to color(p.primary),
+    )
+
+    private fun markdownColors(p: Palette): Map<String, String> = linkedMapOf(
+        "heading" to color(p.primary),
+        "text" to color(p.onSurface),
+        "link" to color(p.primary),
+        "link-text" to color(p.secondary),
+        "code" to color(p.tertiary),
+        "block-quote" to color(p.outline),
+        "emph" to color(p.secondary),
+        "strong" to color(p.primary),
+        "horizontal-rule" to color(p.outlineVariant),
+        "list-item" to color(p.primary),
+        "list-enumeration" to color(p.secondary),
+        "image" to color(p.primary),
+        "image-text" to color(p.secondary),
+        "code-block" to color(p.onSurface),
+    )
+
+    private fun editorColors(p: Palette): Map<String, String> = linkedMapOf(
+        "background" to color(p.surface),
+        "foreground" to color(p.onSurface),
+        "surface" to color(p.surface),
+        "gutter" to color(p.surfaceContainerLow),
+        "gutterText" to color(p.onSurfaceVariant),
+        "caret" to color(p.primary),
+        "selection" to fade(p.secondaryContainer, 35),
+        "activeLine" to fade(p.surfaceContainerHighest, 50),
+        "searchMatch" to color(p.tertiaryContainer),
+        "searchMatchSelected" to color(p.primaryContainer),
+        "bracketMatch" to color(p.outline),
+        "indentGuide" to color(p.outlineVariant),
+        "invalid" to color(p.error),
+        "foldPlaceholder" to color(p.surfaceContainerHigh),
+    )
 
     private fun state(
         tokens: MutableMap<String, String>,

@@ -22,6 +22,28 @@
         android:title="@string/opencode_editor_redo"
         app:showAsAction="never" />
     <item
+        android:id="@+id/action_editor_goto"
+        android:title="@string/opencode_editor_goto"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_language"
+        android:title="@string/opencode_editor_language"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_word_wrap"
+        android:checkable="true"
+        android:title="@string/opencode_editor_word_wrap"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_simple"
+        android:checkable="true"
+        android:title="@string/opencode_editor_simple_mode"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_editor_recent"
+        android:title="@string/opencode_editor_recent"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_editor_external"
         android:icon="@drawable/ic_open_in_new"
         android:title="@string/opencode_editor_external"

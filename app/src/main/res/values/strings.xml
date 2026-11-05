@@ -527,6 +527,20 @@
     <string name="opencode_editor_readonly_permission">Không có quyền ghi vào tệp này.</string>
     <string name="opencode_editor_confirm_reload">Tải lại</string>
     <string name="opencode_editor_discard_and_reload">Bỏ thay đổi và tải lại</string>
+    <string name="opencode_editor_goto">Đi tới dòng</string>
+    <string name="opencode_editor_goto_hint">Số dòng</string>
+    <string name="opencode_editor_goto_invalid">Số dòng không hợp lệ.</string>
+    <string name="opencode_editor_language">Ngôn ngữ</string>
+    <string name="opencode_editor_language_auto">Tự động (%1$s)</string>
+    <string name="opencode_editor_word_wrap">Ngắt dòng mềm</string>
+    <string name="opencode_editor_simple_mode">Trình sửa đơn giản</string>
+    <string name="opencode_editor_simple_mode_desc">Dùng trình sửa cơ bản cho khả năng truy cập hoặc thiết bị yếu.</string>
+    <string name="opencode_editor_recent">Tệp gần đây</string>
+    <string name="opencode_editor_recent_empty">Chưa có tệp nào được mở gần đây.</string>
+    <string name="opencode_editor_recent_clear">Xoá danh sách</string>
+    <string name="opencode_editor_fallback">Trình sửa nâng cao không khả dụng, đã chuyển sang chế độ đơn giản.</string>
+    <string name="opencode_editor_renderer_native">Đơn giản</string>
+    <string name="opencode_editor_renderer_web">Nâng cao</string>
 
     <string name="opencode_image_title">Ảnh</string>
     <string name="opencode_image_failed">Không đọc được ảnh này.</string>

@@ -7,9 +7,26 @@ Tài liệu này nối tiếp [`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_E
 tìm/thay thế, nhiều con trỏ, tự động hoàn thành và các tiện ích cấp tệp — nhưng vẫn giữ
 `TextFileIO` là nguồn chân lý duy nhất về encoding, BOM, newline và ghi atomic.
 
-> **Trạng thái:** đây là đề xuất kỹ thuật, **chưa có mã nào được triển khai**. Tài liệu được
-> viết sau khi đọc mã nguồn Acode; mọi tên tệp/API của Acode đều kèm đường dẫn để đối chiếu.
+> **Trạng thái (cập nhật 2026-11-05):** triển khai nền tảng Phase 0–2 và một phần Phase 3 đã
+> được đưa vào cây mã nguồn (chưa commit). Chưa chạy build Android/Gradle trong môi trường này và
+> chưa có QA thiết bị. Phần còn lại: xác minh build, kiểm thử thiết bị, recovery snapshot bền
+> vững, tối ưu hiệu năng tệp lớn, và các tính năng nâng cao chưa đấu nối đầy đủ.
 >
+> **Đã triển khai (mã nguồn):** `tools/editor/` (CodeMirror 6, esbuild, code splitting),
+> `app/src/main/assets/editor/` (bundle offline đã sinh), `EditorRenderer` +
+> `CodeMirrorEditorRenderer` + `NativeEditorRenderer`, `EditorBridge`, `EditorTheme`/
+> `EditorThemeBuilder`, `OpenCodeWebTheme.tokens()`, `EditorLanguageRegistry`,
+> `EditorScreen` refactor (renderer, save/conflict/auto-commit giữ nguyên), layout/menu editor
+> (WebView host + native fallback, ngôn ngữ/đi tới dòng/tệp gần đây/word wrap/chế độ đơn giản),
+> `OpenCodeSettings` cho tùy chọn editor, `AndroidManifest` `adjustResize`, `checkEditorAssets`.
+>
+> **Chưa hoàn tất / cần xác minh:** biên dịch APK, QA trên thiết bị/WebView thật, fallback
+> readiness timeout theo thiết bị chậm, snapshot recovery khi nền/kill process, giới hạn/đường
+> đi tệp rất lớn, unit test registry/protocol, cài gói npm reproducible hoàn toàn trong CI (đã
+> dùng registry npm; có thể cần commit lockfile/pinning bổ sung).
+>
+> Tài liệu được viết sau khi đọc mã nguồn Acode; mọi tên tệp/API của Acode đều kèm đường dẫn để
+> đối chiếu.
 > **Mốc tham chiếu Acode:** nhánh `main`, commit
 > [`6962af1e805b8996e743df97cad4df3ecef687e5`](https://github.com/Acode-Foundation/Acode/commit/6962af1e805b8996e743df97cad4df3ecef687e5)
 > (2026-10-29), `package.json` phiên bản `1.13.5`, đọc ngày 2026-11-05.
@@ -1668,14 +1685,31 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 | CodeMirror đổi API | Thấp | Pin version; không auto-update |
 | Không có môi trường build local | Cao (quy trình) | Chỉ push khi CI; test trên thiết bị thật |
 
-### 17.2. Câu hỏi cần chốt
+### 17.3. Trạng thái thực hiện (đánh dấu 2026-11-05)
 
-1. **Renderer mặc định:** bật CodeMirror cho mọi tệp hỗ trợ ngay từ Phase 2, hay để người dùng
-   opt-in trong một bản trước? Đề xuất: Phase 1 opt-in, Phase 2 mặc định cho tệp ≤ 512 KB.
-2. **Giữ editor native:** có cần thiết kế như một "chế độ đơn giản" chính thức trong Cài đặt,
-   hay chỉ là fallback kỹ thuật? Đề xuất: cả hai, có setting rõ ràng.
-3. **Bộ ngôn ngữ:** có cần PHP/SQL/Rust ngay không? Đề xuất: MVP chỉ các ngôn ngữ trong repo
-   này (Kotlin, Java, XML, JSON, YAML, Markdown, JS/TS, HTML, CSS, Shell, Python, Gradle,
+| Hạng mục | Trạng thái | Ghi chú |
+| --- | --- | --- |
+| Phase 0: `OpenCodeWebTheme.tokens()` / theme builder | ✅ Đã làm | `Tokens`, `syntax/markdown/editor` maps, `--syntax-function`. |
+| Phase 0: `EditorLanguageRegistry` | ✅ Đã làm | Filename/regex/extension/shebang, override qua settings; chưa có unit test chạy. |
+| Phase 0: `EditorRenderer` + native wrapper | ✅ Đã làm | `NativeEditorRenderer` giữ fallback EditText. |
+| Phase 0: `tools/editor` + bundle skeleton | ✅ Đã làm | esbuild + code splitting + asset copy + SHA256. |
+| Phase 0: `checkEditorAssets` | ✅ Đã làm | Wired vào `preBuild`/asset merge. |
+| Phase 1: trang CodeMirror + theme + load | ✅ Đã làm (chưa QA thiết bị) | Local asset, `WebViewAssetLoader`, bridge. |
+| Phase 2: edit/save/conflict/search/undo/status | ⚠️ Một phần, đã đấu nối cốt lõi | `EditorScreen` dùng renderer snapshot + `TextFileIO`; search/goto/language/recent/simple mode có trong UI; chưa verify IME/rotation/thiết bị thật. |
+| Phase 2: fallback/readiness | ⚠️ Một phần | Fallback khi renderer error/no WebView/simple mode; chưa có timeout readiness riêng cho thiết bị chậm. |
+| Phase 3: fold/multi-cursor/autocomplete/search nâng cao | ⚠️ Nền tảng có, chưa hoàn thiện UX | CodeMirror cung cấp nhiều tính năng; chưa productize đầy đủ (rainbow/indent guides toggles, tab/session đầy đủ). |
+| Phase 4: Markdown preview/LSP/format | ⏳ Chưa làm | Ngoài phạm vi triển khai hiện tại. |
+| Recovery snapshot bền vững | ⏳ Chưa làm | Chưa lưu snapshot ra đĩa/khôi phục sau process death. |
+| Unit tests (registry/theme/protocol/TextFileIO) | ⏳ Chưa làm/chạy | Dự án chưa có hạ tầng test; chưa verify compile/test. |
+| Build Android/CI xanh | ⏳ Chưa xác minh | Môi trường hiện tại không có `JAVA_HOME`/SDK để chạy Gradle. |
+| QA thiết bị (IME/encoding/newline/xoay/vòng đời/fallback) | ⏳ Chưa xác minh | Cần thiết bị/WebView thật. |
+| APK size/perf budget | ⏳ Chưa đo | Cần build release/benchmark thiết bị. |
+
+### 17.2. Câu hỏi cần chốt (đã chọn tạm trong triển khai)
+
+1. **Renderer mặc định:** **Đã chọn tạm (code):** `auto` ưu tiên CodeMirror cho tệp thường ≤ 1.5 MB bridge budget; `native`/`web`/simple mode có trong settings/menu. Chưa có rollout opt-in theo phase trên production.
+2. **Giữ editor native:** **Đã chọn:** giữ `NativeEditorRenderer` làm fallback kỹ thuật + chế độ đơn giản (menu/setting), không xoá.
+3. **Bộ ngôn ngữ:** **Đã chọn tạm:** triển khai registry/bundle cho các ngôn ngữ thực dụng trong repo/app (Kotlin, Java, XML, JSON/JSONC, YAML, Markdown, JS/TS/JSX/TSX, HTML, CSS/SCSS/Less, Shell, Python, Groovy/Gradle, properties/INI/env, TOML, Dockerfile, diff, C/C++, Go, Rust, SQL, PHP, C#/Scala/Dart/Objective-C qua loader/registry tương ứng) — một số dùng Lezer, một số dùng legacy stream parser; cần QA độ chính xác tô màu.
    Properties, TOML, Dockerfile, Diff, C/C++, Go, Rust, SQL).
 4. **Tab/session:** có nằm trong phạm vi bản này không? Đề xuất: Phase 3, sau khi MVP ổn định.
 5. **Markdown preview:** có cần ảnh local không? Nếu có, phải thiết kế loader an toàn; nếu
