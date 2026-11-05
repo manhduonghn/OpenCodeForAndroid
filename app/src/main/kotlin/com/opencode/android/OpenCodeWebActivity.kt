@@ -133,10 +133,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var bootStartSwitch: MaterialSwitch
     private lateinit var watchdogSwitch: MaterialSwitch
     private lateinit var keepAliveHelpButton: Button
-    private lateinit var storageStatus: TextView
-    private lateinit var storageGrant: Button
-    private lateinit var storagePick: Button
-    private lateinit var storagePaths: LinearLayout
     private lateinit var githubProgress: ProgressBar
     private lateinit var githubChip: TextView
     private lateinit var githubStatus: TextView
@@ -219,7 +215,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
 
     private var updateChecking = false
-    private var storageLinksInFlight = false
     private var githubRefreshing = false
     private var githubReposLoading = false
     private var githubReposLoaded = false
@@ -238,7 +233,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { _ ->
         if (destroyed) return@registerForActivityResult
-        renderStorage()
         if (::filesScreen.isInitialized) filesScreen.onStoragePermissionResult()
     }
 
@@ -462,6 +456,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         startServerService()
         // The watchdog only needs to be scheduled once, ensureScheduled is idempotent.
         OpenCodeWatchdog.ensureScheduled(this)
+        // Keep ~/storage/shared and ~/storage/sdcardN available to the terminal/agent even though
+        // the Settings screen no longer exposes a workspace panel.
+        backgroundExecutor.execute { OpenCodeStorage.ensureLinks(this) }
         probeFailures = 0
         if (!viewModel.pageLoaded) {
             handler.post(poll)
@@ -519,10 +516,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         bootStartSwitch = findViewById(R.id.boot_start_switch)
         watchdogSwitch = findViewById(R.id.watchdog_switch)
         keepAliveHelpButton = findViewById(R.id.keepalive_help_button)
-        storageStatus = findViewById(R.id.storage_status)
-        storageGrant = findViewById(R.id.storage_grant)
-        storagePick = findViewById(R.id.storage_pick)
-        storagePaths = findViewById(R.id.storage_paths)
         githubProgress = findViewById(R.id.github_progress)
         githubChip = findViewById(R.id.github_chip)
         githubStatus = findViewById(R.id.github_status)
@@ -600,9 +593,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             OpenCodeWatchdog.setEnabled(this, checked)
         }
         keepAliveHelpButton.setOnClickListener { showKeepAliveHelp() }
-
-        storageGrant.setOnClickListener { requestStorageAccess() }
-        storagePick.setOnClickListener { pickProjectDirectory() }
 
         githubInstall.setOnClickListener { startGithubInstall() }
         githubLogin.setOnClickListener { startGithubLogin() }
@@ -1011,7 +1001,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             else R.string.opencode_battery_wakelock_off,
         )
         renderBatteryOptimization()
-        renderStorage()
     }
 
     private fun listMessage(message: String): View {
@@ -1113,27 +1102,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     /* ------------------------------------------------------------------ shared storage */
 
-    private fun renderStorage() {
-        val legacy = OpenCodeStorage.hasLegacyPermission(this)
-        val allFiles = OpenCodeStorage.hasAllFilesAccess()
-        val canReadPrimary = legacy || allFiles
-        val canReadEverything = allFiles || (legacy && Build.VERSION.SDK_INT < Build.VERSION_CODES.R)
-
-        storageStatus.text = getString(
-            when {
-                canReadEverything -> R.string.opencode_storage_granted
-                canReadPrimary -> R.string.opencode_storage_primary_only
-                else -> R.string.opencode_storage_not_granted
-            },
-        )
-        storageGrant.visibility = if (canReadEverything) View.GONE else View.VISIBLE
-        if (!canReadPrimary) {
-            storagePaths.removeAllViews()
-            return
-        }
-        setupStorageLinks()
-    }
-
     private fun requestStorageAccess() {
         val legacy = OpenCodeStorage.hasLegacyPermission(this)
         if (!legacy) {
@@ -1158,60 +1126,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             }
             return
         }
-        renderStorage()
-    }
-
-    private fun setupStorageLinks() {
-        if (storageLinksInFlight) return
-        storageLinksInFlight = true
-        backgroundExecutor.execute {
-            val linked = OpenCodeStorage.ensureLinks(this)
-            val volumes = OpenCodeStorage.volumeRoots(this)
-            handler.post {
-                if (destroyed) return@post
-                storageLinksInFlight = false
-                storagePaths.removeAllViews()
-                if (!linked) {
-                    storagePaths.addView(
-                        listMessage(getString(R.string.opencode_storage_links_missing)),
-                    )
-                    return@post
-                }
-                var secondary = 0
-                for (volume in volumes) {
-                    val text = if (OpenCodeStorage.isPrimaryRoot(volume)) {
-                        getString(
-                            R.string.opencode_storage_shared_path,
-                            volume.absolutePath,
-                        )
-                    } else {
-                        secondary++
-                        getString(
-                            R.string.opencode_storage_sd_path,
-                            secondary,
-                            volume.absolutePath,
-                        )
-                    }
-                    val row = TextView(this)
-                    row.text = text
-                    row.setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutline, getColor(R.color.oc_text_faint)))
-                    row.setTextAppearance(R.style.TextAppearance_OpenCode_MonoSmall)
-                    row.setPadding(0, dp(2), 0, dp(2))
-                    storagePaths.addView(row)
-                }
-                if (secondary == 0) {
-                    storagePaths.addView(listMessage(getString(R.string.opencode_storage_no_sd)))
-                }
-            }
-        }
-    }
-
-    private fun pickProjectDirectory() {
-        val start = OpenCodeSettings.lastProjectDir(this)?.let { File(it) }
-        DirectoryPickerSheet(this) { directory ->
-            OpenCodeSettings.setLastProjectDir(this, directory.absolutePath)
-            openProject(directory)
-        }.show(start)
     }
 
     /** Create a session in [directory] so the project appears in the web UI, then show it. */
@@ -1683,7 +1597,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         handler.postDelayed(generationWatch, GENERATION_CHECK_MS)
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
-            renderStorage()
         }
         if (::filesScreen.isInitialized && filesScreen.isVisible) {
             filesScreen.onStoragePermissionResult()

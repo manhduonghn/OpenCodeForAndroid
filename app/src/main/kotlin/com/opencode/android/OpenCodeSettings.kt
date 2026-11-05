@@ -6,7 +6,7 @@ import android.content.Context
  * Preferences of the settings screen.
  *
  * The values live in the same `opencode_cfg` file that the older Java implementation used, so an
- * update keeps the choice of the wake lock and of the last project directory.
+ * update keeps the choice of the wake lock and the last Files directory.
  */
 object OpenCodeSettings {
 
@@ -16,7 +16,6 @@ object OpenCodeSettings {
     private const val KEY_WATCHDOG = "watchdog"
     private const val KEY_USER_STOPPED = "user_stopped"
     private const val KEY_AUTO_UPDATE = "auto_update_check"
-    private const val KEY_LAST_PROJECT = "storage_last_project_dir"
     private const val KEY_LAST_FILES = "files_last_dir"
     private const val KEY_LAST_SESSION = "last_session_id"
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
@@ -68,13 +67,6 @@ object OpenCodeSettings {
 
     fun setAutoUpdateCheck(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_AUTO_UPDATE, enabled).apply()
-    }
-
-    fun lastProjectDir(context: Context): String? =
-        prefs(context).getString(KEY_LAST_PROJECT, null)?.takeIf { it.isNotEmpty() }
-
-    fun setLastProjectDir(context: Context, path: String) {
-        prefs(context).edit().putString(KEY_LAST_PROJECT, path).apply()
     }
 
     /** The folder the Files screen reopens on, unless it was removed or became unreadable. */

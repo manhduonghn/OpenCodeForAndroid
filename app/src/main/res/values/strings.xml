@@ -93,7 +93,6 @@
     <string name="opencode_settings_subtitle">Phiên chat, chạy nền, bộ nhớ, cập nhật và GitHub</string>
     <string name="opencode_settings_section_opencode">OpenCode</string>
     <string name="opencode_settings_section_server">Máy chủ</string>
-    <string name="opencode_settings_section_workspace">Không gian làm việc</string>
     <string name="opencode_settings_section_github">GitHub</string>
     <string name="opencode_settings_section_info">Thông tin</string>
     <string name="opencode_settings_app_version">Phiên bản ứng dụng</string>
@@ -157,22 +156,6 @@
     <string name="opencode_reconnecting">Server vừa khởi động lại, đang kết nối lại…</string>
 
     <!-- Shared storage / SD card -->
-    <string name="opencode_storage_title">Bộ nhớ &amp; SD card</string>
-    <string name="opencode_storage_desc">Mở dự án trong bộ nhớ máy hoặc thẻ SD.</string>
-    <string name="opencode_storage_grant">Cấp quyền</string>
-    <string name="opencode_storage_refresh">Làm mới</string>
-    <string name="opencode_storage_not_granted">Chưa cấp quyền. OpenCode chỉ mở được dự án trong thư mục ứng dụng.</string>
-    <string name="opencode_storage_primary_only">Đã cấp quyền bộ nhớ máy. Thẻ SD cần quyền “Truy cập tất cả tệp”.</string>
-    <string name="opencode_storage_granted">Đã cấp quyền truy cập bộ nhớ ngoài.</string>
-    <string name="opencode_storage_setting_up">Đang tạo liên kết ~/storage…</string>
-    <string name="opencode_storage_shared_path">~/storage/shared → %1$s</string>
-    <string name="opencode_storage_sd_path">~/storage/sdcard%1$d → %2$s</string>
-    <string name="opencode_storage_no_sd">Chưa phát hiện thẻ SD. Cắm thẻ rồi bấm Làm mới.</string>
-    <string name="opencode_storage_links_missing">Chưa tạo được liên kết ~/storage. Hãy kiểm tra quyền truy cập.</string>
-    <string name="opencode_storage_pick">Chọn thư mục</string>
-    <string name="opencode_storage_hint">Bấm “Chọn thư mục” để mở dự án, hoặc nhập đường dẫn trong OpenCode (ví dụ ~/storage/shared).</string>
-    <string name="opencode_storage_granted_toast">Đã cấp quyền truy cập bộ nhớ.</string>
-    <string name="opencode_storage_denied">Chưa cấp quyền truy cập bộ nhớ.</string>
     <string name="opencode_storage_permission_failed">Không mở được màn hình cấp quyền. Hãy bật quyền bộ nhớ cho OpenCode trong Cài đặt.</string>
 
     <!-- Files -->
@@ -297,27 +280,12 @@
     <string name="opencode_files_back">Quay lại</string>
 
     <!-- Folder picker -->
-    <string name="opencode_picker_title">Chọn thư mục dự án</string>
-    <string name="opencode_picker_up">Lên thư mục cha</string>
-    <string name="opencode_picker_path_hint">Đường dẫn thư mục</string>
     <string name="opencode_picker_go">Đi</string>
-    <string name="opencode_picker_cancel">Huỷ</string>
-    <string name="opencode_picker_choose">Chọn thư mục này</string>
     <string name="opencode_picker_internal">Bộ nhớ trong</string>
     <string name="opencode_picker_sd">Thẻ SD %1$s</string>
     <string name="opencode_picker_home">Thư mục ứng dụng</string>
-    <string name="opencode_picker_root">/</string>
-    <string name="opencode_picker_empty">Thư mục trống</string>
-    <string name="opencode_picker_unreadable">Android không cho phép đọc thư mục này.</string>
-    <string name="opencode_picker_not_directory">Đường dẫn không phải thư mục.</string>
-    <string name="opencode_picker_permission_title">Cần quyền truy cập bộ nhớ</string>
-    <string name="opencode_picker_permission_message">Cấp quyền bộ nhớ để chọn thư mục trong bộ nhớ máy hoặc thẻ SD.</string>
-    <string name="opencode_picker_copied">Đã sao chép đường dẫn: %1$s</string>
     <string name="opencode_picker_opening">Đang mở dự án %1$s…</string>
     <string name="opencode_picker_open_failed">Không mở được dự án. Đường dẫn đã được sao chép: %1$s</string>
-    <string name="opencode_picker_shortcuts">Lối tắt</string>
-    <string name="opencode_picker_path">Đường dẫn</string>
-    <string name="opencode_picker_current">Thư mục hiện tại</string>
     <string name="opencode_picker_goto">Đi tới %1$s</string>
 
     <!-- GitHub extension -->
