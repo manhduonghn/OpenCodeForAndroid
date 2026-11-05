@@ -279,6 +279,24 @@
     <string name="opencode_files_options_for">Tuỳ chọn cho %1$s</string>
     <string name="opencode_files_back">Quay lại</string>
 
+    <!-- Git in Files -->
+    <string name="opencode_files_git_title">Git • %1$s</string>
+    <string name="opencode_files_git_clean">Không có thay đổi</string>
+    <string name="opencode_files_git_changes">%1$d tệp thay đổi</string>
+    <string name="opencode_files_git_ahead">%1$d commit chưa push</string>
+    <string name="opencode_files_git_behind">%1$d commit mới trên remote</string>
+    <string name="opencode_files_git_commit">Commit</string>
+    <string name="opencode_files_git_sheet_title">Git</string>
+    <string name="opencode_files_git_sheet_more">… và %1$d tệp khác</string>
+    <string name="opencode_files_git_message_hint">Mô tả thay đổi</string>
+    <string name="opencode_files_git_message_required">Nhập mô tả commit.</string>
+    <string name="opencode_files_git_message_default">Cập nhật từ OpenCode Android</string>
+    <string name="opencode_files_git_commit_push">Commit &amp; Push</string>
+    <string name="opencode_files_git_running">Đang commit và push…</string>
+    <string name="opencode_files_git_done">Đã commit và push lên GitHub</string>
+    <string name="opencode_files_git_failed">Không push được: %1$s</string>
+    <string name="opencode_files_git_not_logged_in">Chưa đăng nhập GitHub. Mở Cài đặt → GitHub để đăng nhập.</string>
+
     <!-- Folder picker -->
     <string name="opencode_picker_go">Đi</string>
     <string name="opencode_picker_internal">Bộ nhớ trong</string>

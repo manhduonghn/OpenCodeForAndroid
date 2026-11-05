@@ -72,6 +72,28 @@ object OpenCodeGitHub {
         val url: String,
     )
 
+    /** One entry of `git status --porcelain`, with the two-letter status code of git. */
+    data class GitChange(val path: String, val indexStatus: Char, val workTreeStatus: Char) {
+        val code: String
+            get() = when {
+                indexStatus == '?' && workTreeStatus == '?' -> "??"
+                else -> buildString {
+                    if (indexStatus != ' ') append(indexStatus)
+                    if (workTreeStatus != ' ') append(workTreeStatus)
+                }.ifEmpty { "M" }
+            }
+    }
+
+    data class GitStatus(
+        val root: File,
+        val branch: String,
+        val ahead: Int,
+        val behind: Int,
+        val changes: List<GitChange>,
+    ) {
+        val isClean: Boolean get() = changes.isEmpty()
+    }
+
     class Result(val exitCode: Int, val output: String) {
         val ok: Boolean get() = exitCode == 0
     }
@@ -355,27 +377,36 @@ object OpenCodeGitHub {
     }
 
     /**
+     * Environment used by every git command that talks to GitHub.
+     *
+     * The git package of Termux was built with SHELL_PATH pointing at the Termux app. Git runs a
+     * `!` credential helper through that shell, so the helper of `gh auth setup-git` cannot start
+     * inside this sandbox and private clones would fail. Send the token to libcurl instead, the
+     * request is authenticated before git asks a helper. An empty helper also keeps the unusable
+     * one out of the way when the token was revoked.
+     */
+    private fun gitNetworkEnv(): HashMap<String, String> {
+        val env = HashMap<String, String>()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        storedToken()?.let { token ->
+            env["GIT_CONFIG_COUNT"] = "2"
+            env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+            env["GIT_CONFIG_VALUE_0"] =
+                "Authorization: ${OpenCodeHttp.basicAuth("x-access-token", token)}"
+            env["GIT_CONFIG_KEY_1"] = "credential.helper"
+            env["GIT_CONFIG_VALUE_1"] = ""
+        }
+        return env
+    }
+
+    /**
      * Clone [repoUrl] into the app HOME. Every output line is handed to [onLine] while git is
      * still running, so the settings card can show live progress.
      */
     fun clone(repoUrl: String, onLine: ((String) -> Unit)? = null): Result {
         val url = normalizeCloneUrl(repoUrl)
         if (url.isEmpty()) return Result(-1, "empty URL")
-        val extraEnv = HashMap<String, String>()
-        extraEnv["GIT_TERMINAL_PROMPT"] = "0"
-        // The git package of Termux was built with SHELL_PATH pointing at the Termux app. Git runs
-        // a `!` credential helper through that shell, so the helper of `gh auth setup-git` cannot
-        // start inside this sandbox and private clones would fail. Send the token to libcurl
-        // instead, the request is authenticated before git asks a helper. An empty helper also
-        // keeps the unusable one out of the way when the token was revoked.
-        storedToken()?.let { token ->
-            extraEnv["GIT_CONFIG_COUNT"] = "2"
-            extraEnv["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
-            extraEnv["GIT_CONFIG_VALUE_0"] =
-                "Authorization: ${OpenCodeHttp.basicAuth("x-access-token", token)}"
-            extraEnv["GIT_CONFIG_KEY_1"] = "credential.helper"
-            extraEnv["GIT_CONFIG_VALUE_1"] = ""
-        }
+        val extraEnv = gitNetworkEnv()
         val cert = File(OpenCodeBootstrap.PREFIX, "etc/tls/cert.pem")
         if (!cert.isFile) {
             return Result(
@@ -398,6 +429,128 @@ object OpenCodeGitHub {
             extraEnv = extraEnv,
             onLine = onLine,
         )
+    }
+
+    /** Nearest parent of [directory] that contains a `.git` entry, or null outside a repository. */
+    fun findRepoRoot(directory: File): File? {
+        var current: File? = try {
+            directory.canonicalFile
+        } catch (e: Exception) {
+            directory.absoluteFile
+        }
+        var depth = 0
+        while (current != null && depth++ < 80) {
+            val git = File(current, ".git")
+            if (git.isDirectory || git.isFile) return current
+            current = current.parentFile
+        }
+        return null
+    }
+
+    /** Working-tree status of [root], or null when git is missing or the repository is unreadable. */
+    fun status(root: File): GitStatus? {
+        if (!gitAvailable()) return null
+        val result = run(
+            arrayOf(
+                gitBinary(),
+                "-C", root.absolutePath,
+                "-c", "core.quotepath=false",
+                "-c", "safe.directory=*",
+                "status", "--porcelain=v1", "-b",
+            ),
+            directory = File(OpenCodeBootstrap.HOME),
+            input = null,
+            timeoutMs = 60000L,
+        )
+        if (!result.ok) return null
+
+        var branch = "HEAD"
+        var ahead = 0
+        var behind = 0
+        val changes = ArrayList<GitChange>()
+        for (line in result.output.lineSequence()) {
+            if (line.startsWith("## ")) {
+                val header = line.removePrefix("## ")
+                branch = when {
+                    header.startsWith("No commits yet on ") ->
+                        header.removePrefix("No commits yet on ").trim()
+                    header.startsWith("HEAD (no branch)") -> "HEAD"
+                    else -> header.substringBefore("...").substringBefore(" ").trim()
+                }.ifEmpty { "HEAD" }
+                Regex("ahead (\\d+)").find(header)?.let {
+                    ahead = it.groupValues[1].toIntOrNull() ?: 0
+                }
+                Regex("behind (\\d+)").find(header)?.let {
+                    behind = it.groupValues[1].toIntOrNull() ?: 0
+                }
+                continue
+            }
+            // "XY path"; a rename is "XY old -> new" and only the new name is interesting.
+            if (line.length < 4) continue
+            val path = line.substring(3).let { value ->
+                val arrow = value.indexOf(" -> ")
+                if (arrow >= 0) value.substring(arrow + 4) else value
+            }
+            if (path.isEmpty()) continue
+            changes.add(GitChange(path, line[0], line[1]))
+        }
+        return GitStatus(root, branch, ahead, behind, changes)
+    }
+
+    /**
+     * Stage every change of [root], commit it with [message] and push the current branch.
+     *
+     * The push uses the same token header as [clone]; the credential helper of `gh` cannot run in
+     * this sandbox. When the branch has no upstream yet it is pushed with `-u origin HEAD`.
+     */
+    fun commitAndPush(root: File, message: String): Result {
+        val text = message.trim()
+        if (text.isEmpty()) return Result(-1, "Commit message is empty")
+        if (!gitAvailable()) return Result(-1, "git is not installed")
+        val cert = File(OpenCodeBootstrap.PREFIX, "etc/tls/cert.pem")
+        if (!cert.isFile) {
+            return Result(
+                -1,
+                "Không tìm thấy CA bundle của runtime ($cert). " +
+                    "Hãy mở app để nó cài lại gói ca-certificates rồi thử lại.",
+            )
+        }
+        val base = arrayOf(
+            gitBinary(),
+            "-c", "http.sslCAInfo=${cert.absolutePath}",
+            "-c", "safe.directory=*",
+            "-C", root.absolutePath,
+        )
+        val add = run(base + arrayOf("add", "--all"), File(OpenCodeBootstrap.HOME), null, 120000L)
+        if (!add.ok) return add
+        val commit = run(
+            base + arrayOf("commit", "-m", text),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            120000L,
+        )
+        if (!commit.ok) return commit
+        val upstream = run(
+            base + arrayOf("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"),
+            File(OpenCodeBootstrap.HOME),
+            null,
+            30000L,
+        )
+        val hasUpstream = upstream.ok && upstream.output.trim().isNotEmpty()
+        val pushArgs = if (hasUpstream) {
+            arrayOf("push")
+        } else {
+            arrayOf("push", "--set-upstream", "origin", "HEAD")
+        }
+        val pushed = run(
+            base + pushArgs,
+            File(OpenCodeBootstrap.HOME),
+            null,
+            300000L,
+            extraEnv = gitNetworkEnv(),
+        )
+        if (!pushed.ok) return pushed
+        return Result(0, (commit.output.trim() + "\n" + pushed.output.trim()).trim())
     }
 
     /** Run gh with the environment of the app prefix. gh must be able to persist a token. */

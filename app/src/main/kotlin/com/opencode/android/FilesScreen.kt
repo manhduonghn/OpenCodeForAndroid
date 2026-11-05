@@ -73,11 +73,20 @@ class FilesScreen(
     private val emptyText: TextView = activity.findViewById(R.id.files_empty_text)
     private val emptyAction: MaterialButton = activity.findViewById(R.id.files_empty_action)
     private val progress: ProgressBar = activity.findViewById(R.id.files_progress)
+    private val gitBar: View = activity.findViewById(R.id.files_git)
+    private val gitTitle: TextView = activity.findViewById(R.id.files_git_title)
+    private val gitSummary: TextView = activity.findViewById(R.id.files_git_summary)
+    private val gitAction: MaterialButton = activity.findViewById(R.id.files_git_action)
     private val adapter =
         Adapter(::onEntryPressed, ::onEntryLongPressed, ::showActions, ::metaText)
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "opencode-files").apply { isDaemon = true }
+    }
+
+    /** Git work gets its own thread so a slow `git status` never delays the file list. */
+    private val gitExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "opencode-files-git").apply { isDaemon = true }
     }
 
     @Volatile
@@ -97,6 +106,9 @@ class FilesScreen(
     private var clipboardInFlight = false
 
     private var storagePrompted = false
+    private var gitStatus: OpenCodeGitHub.GitStatus? = null
+    private var gitTicket = 0
+    private var gitSheet: BottomSheetDialog? = null
 
     init {
         recycler.layoutManager = LinearLayoutManager(activity)
@@ -106,6 +118,8 @@ class FilesScreen(
         emptyAction.setOnClickListener { createFolder() }
         clipboardPaste.setOnClickListener { pasteClipboard() }
         clipboardCancel.setOnClickListener { clearClipboard() }
+        gitBar.setOnClickListener { showGitSheet() }
+        gitAction.setOnClickListener { showGitSheet() }
         renderMenu()
         renderShortcuts()
     }
@@ -156,6 +170,7 @@ class FilesScreen(
     fun release() {
         released = true
         executor.shutdownNow()
+        gitExecutor.shutdownNow()
     }
 
     private fun initialDirectory(): File {
@@ -436,6 +451,7 @@ class FilesScreen(
                 }
             }
         }
+        refreshGit()
     }
 
     private fun summaryText(count: Int, free: Long): String = if (free >= 0) {
@@ -446,6 +462,148 @@ class FilesScreen(
         )
     } else {
         activity.getString(R.string.opencode_files_summary_count, count)
+    }
+
+    /* ------------------------------------------------------------------ git */
+
+    /** Look for a repository around [current] and show its branch and pending changes. */
+    private fun refreshGit() {
+        val target = current
+        val ticket = ++gitTicket
+        if (!OpenCodeGitHub.gitAvailable()) {
+            gitStatus = null
+            gitBar.visibility = View.GONE
+            return
+        }
+        gitExecutor.execute {
+            val root = OpenCodeGitHub.findRepoRoot(target)
+            val status = root?.let { OpenCodeGitHub.status(it) }
+            activity.runOnUiThread {
+                if (released || ticket != gitTicket) return@runOnUiThread
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                renderGit(status)
+            }
+        }
+    }
+
+    private fun renderGit(status: OpenCodeGitHub.GitStatus?) {
+        gitStatus = status
+        if (status == null) {
+            gitBar.visibility = View.GONE
+            return
+        }
+        gitBar.visibility = View.VISIBLE
+        gitTitle.text = activity.getString(R.string.opencode_files_git_title, status.branch)
+        gitSummary.text = gitSummaryText(status)
+        gitAction.visibility = if (status.isClean) View.GONE else View.VISIBLE
+    }
+
+    private fun gitSummaryText(status: OpenCodeGitHub.GitStatus): String {
+        val parts = ArrayList<String>()
+        if (status.isClean) {
+            parts.add(activity.getString(R.string.opencode_files_git_clean))
+        } else {
+            parts.add(activity.getString(R.string.opencode_files_git_changes, status.changes.size))
+        }
+        if (status.ahead > 0) {
+            parts.add(activity.getString(R.string.opencode_files_git_ahead, status.ahead))
+        }
+        if (status.behind > 0) {
+            parts.add(activity.getString(R.string.opencode_files_git_behind, status.behind))
+        }
+        return parts.joinToString(" • ")
+    }
+
+    private fun showGitSheet() {
+        val status = gitStatus ?: return
+        if (gitSheet?.isShowing == true) return
+
+        val sheet = BottomSheetDialog(activity)
+        val content = LayoutInflater.from(activity).inflate(R.layout.sheet_git, null, false)
+        val repo = content.findViewById<TextView>(R.id.sheet_git_repo)
+        val statusView = content.findViewById<TextView>(R.id.sheet_git_status)
+        val changes = content.findViewById<TextView>(R.id.sheet_git_changes)
+        val messageLayout = content.findViewById<TextInputLayout>(R.id.sheet_git_message_layout)
+        val message = content.findViewById<TextInputEditText>(R.id.sheet_git_message)
+        val progress = content.findViewById<ProgressBar>(R.id.sheet_git_progress)
+        val commit = content.findViewById<MaterialButton>(R.id.sheet_git_commit)
+        val cancel = content.findViewById<MaterialButton>(R.id.sheet_git_cancel)
+
+        repo.text = status.root.absolutePath
+        statusView.text = gitSummaryText(status)
+
+        val dirty = !status.isClean
+        val shown = status.changes.take(MAX_GIT_FILES)
+        changes.text = buildString {
+            append(shown.joinToString("\n") { "${it.code}  ${it.path}" })
+            if (status.changes.size > shown.size) {
+                append('\n')
+                append(
+                    activity.getString(
+                        R.string.opencode_files_git_sheet_more,
+                        status.changes.size - shown.size,
+                    ),
+                )
+            }
+        }
+        changes.visibility = if (dirty) View.VISIBLE else View.GONE
+        messageLayout.visibility = if (dirty) View.VISIBLE else View.GONE
+        commit.visibility = if (dirty) View.VISIBLE else View.GONE
+        cancel.setText(if (dirty) R.string.opencode_cancel else R.string.opencode_files_close)
+        if (dirty) message.setText(R.string.opencode_files_git_message_default)
+
+        cancel.setOnClickListener { sheet.dismiss() }
+        commit.setOnClickListener {
+            val text = message.text?.toString()?.trim().orEmpty()
+            if (text.isEmpty()) {
+                messageLayout.error = activity.getString(R.string.opencode_files_git_message_required)
+                return@setOnClickListener
+            }
+            if (OpenCodeGitHub.storedToken() == null) {
+                statusView.text = activity.getString(R.string.opencode_files_git_not_logged_in)
+                return@setOnClickListener
+            }
+            messageLayout.error = null
+            commit.isEnabled = false
+            cancel.isEnabled = false
+            message.isEnabled = false
+            progress.visibility = View.VISIBLE
+            statusView.text = activity.getString(R.string.opencode_files_git_running)
+            val root = status.root
+            gitExecutor.execute {
+                val result = OpenCodeGitHub.commitAndPush(root, text)
+                activity.runOnUiThread {
+                    if (released || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    progress.visibility = View.GONE
+                    if (result.ok) {
+                        sheet.dismiss()
+                        snack(activity.getString(R.string.opencode_files_git_done))
+                        refreshGit()
+                    } else {
+                        commit.isEnabled = true
+                        cancel.isEnabled = true
+                        message.isEnabled = true
+                        statusView.text = activity.getString(
+                            R.string.opencode_files_git_failed,
+                            failureDetail(result.output),
+                        )
+                    }
+                }
+            }
+        }
+
+        sheet.setOnDismissListener { if (gitSheet === sheet) gitSheet = null }
+        gitSheet = sheet
+        sheet.setContentView(content)
+        sheet.show()
+    }
+
+    private fun failureDetail(output: String): String {
+        val line = output.lineSequence()
+            .map { it.trim() }
+            .lastOrNull { it.isNotEmpty() }
+            ?: return "?"
+        return if (line.length > 220) line.take(220) + "…" else line
     }
 
     /* ------------------------------------------------------------------ menu */
@@ -1247,6 +1405,11 @@ class FilesScreen(
 
     private fun dp(value: Int): Int =
         (value * activity.resources.displayMetrics.density + 0.5f).toInt()
+
+    private companion object {
+        /** Files listed in the Git sheet; larger repositories summarise the rest. */
+        const val MAX_GIT_FILES = 8
+    }
 
     private class Adapter(
         private val onOpen: (FileEntry) -> Unit,
