@@ -161,7 +161,7 @@ class NativeEditorRenderer(
         gutter.textSize = settings.fontSize.toFloat()
         editor.setLineSpacing(0f, settings.lineHeight)
         gutter.setLineSpacing(0f, settings.lineHeight)
-        editor.horizontalScrollBarEnabled = !settings.wordWrap
+        editor.isHorizontalScrollBarEnabled = !settings.wordWrap
         editor.setSingleLine(false)
         if (settings.wordWrap) {
             editor.setHorizontallyScrolling(false)
