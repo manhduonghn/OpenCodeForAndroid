@@ -90,10 +90,9 @@
     <string name="opencode_web_subtitle">Web UI · 127.0.0.1:49374</string>
     <string name="opencode_settings">Cài đặt</string>
     <string name="opencode_settings_close">Đóng</string>
-    <string name="opencode_settings_subtitle">Phiên chat, chạy nền, bộ nhớ, cập nhật và GitHub</string>
+    <string name="opencode_settings_subtitle">Phiên chat, chạy nền, bộ nhớ và cập nhật</string>
     <string name="opencode_settings_section_opencode">OpenCode</string>
     <string name="opencode_settings_section_server">Máy chủ</string>
-    <string name="opencode_settings_section_github">GitHub</string>
     <string name="opencode_settings_section_info">Thông tin</string>
     <string name="opencode_settings_app_version">Phiên bản ứng dụng</string>
     <string name="opencode_settings_opencode_version">Phiên bản OpenCode</string>
@@ -321,8 +320,6 @@
     <string name="opencode_settings_github_desc">Đăng nhập GitHub để xem repository, clone và push dự án với đầy đủ quyền.</string>
     <string name="opencode_settings_github_connect">Đăng nhập GitHub</string>
     <string name="opencode_settings_github_disconnect">Đăng xuất</string>
-    <string name="opencode_settings_github_connected">Đã kết nối: %1$s</string>
-    <string name="opencode_settings_github_not_connected">Chưa kết nối</string>
     <string name="opencode_settings_github_code">Mã xác minh</string>
     <string name="opencode_settings_github_link">Mở liên kết</string>
     <string name="opencode_settings_github_copy">Sao chép mã</string>
@@ -349,7 +346,6 @@
     <string name="opencode_settings_github_repos_loading">Đang tải danh sách repository…</string>
     <string name="opencode_settings_github_repos_empty">Tài khoản chưa có repository nào.</string>
     <string name="opencode_settings_github_repos">Repository</string>
-    <string name="opencode_settings_github_manage">Quản lý GitHub</string>
     <string name="opencode_settings_github_repos_count">%1$d repository</string>
     <string name="opencode_settings_github_repos_failed">Không tải được repository: %1$s</string>
     <string name="opencode_settings_github_cloning">Đang clone…</string>

@@ -56,8 +56,10 @@ class FilesScreen(
     private val onRequestStorage: () -> Unit,
 ) {
 
-    fun interface Listener {
+    interface Listener {
         fun onOpenProject(directory: File)
+
+        fun onOpenGitHub()
     }
 
     private val panel: View = activity.findViewById(R.id.files_panel)
@@ -175,6 +177,11 @@ class FilesScreen(
             renderShortcuts()
             load()
         }
+    }
+
+    /** Open [directory] in the browser, for example right after a repository was cloned. */
+    fun openDirectory(directory: File) {
+        if (directory.isDirectory) navigate(directory)
     }
 
     fun release() {
@@ -761,6 +768,7 @@ class FilesScreen(
                 load()
             }
             R.id.action_files_refresh -> load()
+            R.id.action_files_github -> listener.onOpenGitHub()
             R.id.action_files_go_to -> showGoToDialog()
             R.id.action_files_open_project -> {
                 listener.onOpenProject(current)

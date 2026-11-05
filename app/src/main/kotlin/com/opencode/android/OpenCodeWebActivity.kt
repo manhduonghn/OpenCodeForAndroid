@@ -133,9 +133,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var bootStartSwitch: MaterialSwitch
     private lateinit var watchdogSwitch: MaterialSwitch
     private lateinit var keepAliveHelpButton: Button
-    private lateinit var githubProgress: ProgressBar
-    private lateinit var githubChip: TextView
-    private lateinit var githubStatus: TextView
+    private lateinit var githubSheetProgress: ProgressBar
     private lateinit var githubSheetStatus: TextView
     private lateinit var githubInstallStatus: TextView
     private lateinit var githubInstall: Button
@@ -516,9 +514,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         bootStartSwitch = findViewById(R.id.boot_start_switch)
         watchdogSwitch = findViewById(R.id.watchdog_switch)
         keepAliveHelpButton = findViewById(R.id.keepalive_help_button)
-        githubProgress = findViewById(R.id.github_progress)
-        githubChip = findViewById(R.id.github_chip)
-        githubStatus = findViewById(R.id.github_status)
+        githubSheetProgress = githubSheetView.findViewById(R.id.github_sheet_progress)
         githubSheetStatus = githubSheetView.findViewById(R.id.github_sheet_status)
         githubInstallStatus = githubSheetView.findViewById(R.id.github_install_status)
         githubInstall = githubSheetView.findViewById(R.id.github_install)
@@ -556,13 +552,20 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         findViewById<View>(R.id.settings_copy_address).setOnClickListener {
             copyServerAddress()
         }
-        findViewById<View>(R.id.github_manage).setOnClickListener { openGithubSheet() }
         githubSheetView.findViewById<View>(R.id.github_sheet_close).setOnClickListener {
             githubSheet?.dismiss()
         }
         filesScreen = FilesScreen(
             this,
-            { directory -> openProject(directory) },
+            object : FilesScreen.Listener {
+                override fun onOpenProject(directory: File) {
+                    openProject(directory)
+                }
+
+                override fun onOpenGitHub() {
+                    openGithubSheet()
+                }
+            },
             { requestStorageAccess() },
         )
         findViewById<View>(R.id.settings_restart).setOnClickListener { confirmRestartServer() }
@@ -621,7 +624,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun openSettings() {
         OverlayMotion.reveal(settingsPanel)
         renderSettings()
-        refreshGitHub()
     }
 
     private fun closeSettings() {
@@ -629,7 +631,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         OverlayMotion.conceal(settingsPanel)
     }
 
-    /** Show the GitHub controls without leaving Settings, above the retained WebView. */
+    /** Show the GitHub account, clone and repository controls above the Files screen. */
     private fun openGithubSheet() {
         if (githubSheet?.isShowing == true) return
         (githubSheetView.parent as? ViewGroup)?.removeView(githubSheetView)
@@ -1173,7 +1175,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun refreshGitHub() {
         if (githubRefreshing) return
         githubRefreshing = true
-        githubProgress.visibility = View.VISIBLE
+        githubSheetProgress.visibility = View.VISIBLE
         backgroundExecutor.execute {
             val installed = OpenCodeGitHub.bothAvailable()
             val needsReauth = installed && OpenCodeGitHub.needsScopeUpgrade()
@@ -1182,7 +1184,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             handler.post {
                 if (destroyed) return@post
                 githubRefreshing = false
-                githubProgress.visibility = View.GONE
+                githubSheetProgress.visibility = View.GONE
                 applyGithubState(installed, loggedIn, user, needsReauth)
             }
         }
@@ -1198,7 +1200,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         githubInstallStatus.visibility = if (githubInstalling) View.VISIBLE else View.GONE
 
         if (!installed) {
-            githubChip.text = getString(R.string.opencode_settings_github_not_connected)
             setGithubStatus(getString(R.string.opencode_settings_github_missing))
             githubLogin.visibility = View.GONE
             githubLogout.visibility = View.GONE
@@ -1216,7 +1217,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             },
         )
         if (!loggedIn) {
-            githubChip.text = getString(R.string.opencode_settings_github_not_connected)
             githubUser.visibility = View.GONE
             githubLogin.visibility = View.VISIBLE
             githubLogout.visibility = View.GONE
@@ -1228,7 +1228,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
 
         val login = user ?: "GitHub"
-        githubChip.text = getString(R.string.opencode_settings_github_connected, login)
         githubUser.text = getString(R.string.opencode_settings_github_account, login)
         githubUser.visibility = View.VISIBLE
         githubLogin.visibility = View.GONE
@@ -1238,9 +1237,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (!githubReposLoaded) refreshGithubRepos(force = false)
     }
 
-    /** Keep the Settings summary and the open GitHub sheet in sync. */
     private fun setGithubStatus(text: CharSequence) {
-        githubStatus.text = text
         githubSheetStatus.text = text
     }
 
@@ -1251,7 +1248,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             return
         }
         githubInstalling = true
-        githubProgress.visibility = View.VISIBLE
+        githubSheetProgress.visibility = View.VISIBLE
         githubInstall.visibility = View.GONE
         githubInstallStatus.visibility = View.VISIBLE
         githubInstallStatus.text = getString(R.string.opencode_settings_github_installing)
@@ -1266,7 +1263,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             handler.post {
                 if (destroyed) return@post
                 githubInstalling = false
-                githubProgress.visibility = View.GONE
+                githubSheetProgress.visibility = View.GONE
                 if (result.ok) {
                     githubInstallStatus.text = getString(R.string.opencode_settings_github_installed)
                     githubInstallStatus.visibility = View.VISIBLE
@@ -1290,7 +1287,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             return
         }
         githubLoginInFlight = true
-        githubProgress.visibility = View.VISIBLE
+        githubSheetProgress.visibility = View.VISIBLE
         setGithubStatus(getString(R.string.opencode_settings_github_logging_in))
         githubCode.visibility = View.GONE
         githubCopy.visibility = View.GONE
@@ -1316,7 +1313,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                 handler.post {
                     if (destroyed) return@post
                     githubLoginInFlight = false
-                    githubProgress.visibility = View.GONE
+                    githubSheetProgress.visibility = View.GONE
                     githubCode.visibility = View.GONE
                     githubCopy.visibility = View.GONE
                     githubLink.visibility = View.GONE
@@ -1332,7 +1329,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                 handler.post {
                     if (destroyed) return@post
                     githubLoginInFlight = false
-                    githubProgress.visibility = View.GONE
+                    githubSheetProgress.visibility = View.GONE
                     setGithubStatus(
                         getString(
                             R.string.opencode_settings_github_login_failed,
@@ -1347,13 +1344,13 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private fun startGithubLogout() {
         if (githubLoggingOut) return
         githubLoggingOut = true
-        githubProgress.visibility = View.VISIBLE
+        githubSheetProgress.visibility = View.VISIBLE
         backgroundExecutor.execute {
             OpenCodeGitHub.logout()
             handler.post {
                 if (destroyed) return@post
                 githubLoggingOut = false
-                githubProgress.visibility = View.GONE
+                githubSheetProgress.visibility = View.GONE
                 githubUserCode = ""
                 githubVerificationUrl = ""
                 githubReposLoaded = false
@@ -1459,7 +1456,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
         githubCloning = true
         githubCloneLog.setLength(0)
-        githubProgress.visibility = View.VISIBLE
+        githubSheetProgress.visibility = View.VISIBLE
         githubClone.isEnabled = false
         githubCloneStatus.visibility = View.VISIBLE
         githubCloneStatus.text = getString(R.string.opencode_settings_github_cloning)
@@ -1472,7 +1469,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             handler.post {
                 if (destroyed) return@post
                 githubCloning = false
-                githubProgress.visibility = View.GONE
+                githubSheetProgress.visibility = View.GONE
                 githubClone.isEnabled = true
                 if (result.ok) {
                     appendCloneLog(getString(R.string.opencode_settings_github_clone_ok))
@@ -1505,6 +1502,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         val name = rawUrl.trimEnd('/').substringAfterLast('/').removeSuffix(".git")
         if (name.isEmpty()) return
         val directory = File(OpenCodeBootstrap.HOME, name)
+        githubSheet?.dismiss()
+        if (::filesScreen.isInitialized) filesScreen.openDirectory(directory)
         val secret = OpenCodeBootstrap.getServerPassword(this)
         backgroundExecutor.execute {
             val status = OpenCodeApi.createSession(PORT, secret, directory.absolutePath)
