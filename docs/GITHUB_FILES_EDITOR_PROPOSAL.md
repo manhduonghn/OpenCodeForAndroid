@@ -15,6 +15,10 @@ Git/GitHub nằm trong cùng một mô hình điều hướng với Quản lý t
 > `sheet_github.xml`/`sheet_git.xml` được nhắc ở đó đã bị xoá. Kiểm tra tĩnh đã chạy; build,
 > lint và kiểm tra trên thiết bị (screenshot, TalkBack, font scale) chưa chạy được trong môi
 > trường này.
+>
+> **Bước tiếp theo:** đề xuất nâng editor native hiện tại thành code editor có tô màu cú pháp
+> (CodeMirror 6 trong WebView, fallback native) nằm ở
+> [`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md).
 
 ---
 
@@ -717,8 +721,9 @@ Java/Gradle/thiết bị.
 
 ## 9. Rủi ro và câu hỏi cần chốt
 
-1. **Editor native hay WebView?** Đề xuất A (`EditText`) cho MVP. Nếu cần highlight ngay, chọn B
-   nhưng phải đóng gói asset và test IME kỹ.
+1. **Editor native hay WebView?** MVP đã chọn A (`EditText`). Bước tiếp theo chọn hybrid:
+   CodeMirror 6 trong WebView làm renderer chính, `EditText` làm fallback; xem
+   [`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md).
 2. **Có giữ entry GitHub trong Settings không?** Đề xuất không, để một entry duy nhất trong
    Files. Nếu giữ, nó phải mở cùng `GithubScreen`.
 3. **Token và scope.** Bộ scope hiện tại rất rộng (`delete_repo`, `admin:org`, `workflow`…).

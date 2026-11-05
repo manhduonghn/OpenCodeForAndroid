@@ -5,7 +5,9 @@ làm mất bản sắc Material You / tiếng Việt hiện có. Phase 0–4 đ�
 `app/src/main`; Phase 5 đã chạy các kiểm tra tĩnh và chờ kiểm tra trên thiết bị thật.
 
 Phần GitHub/editor nối tiếp tài liệu này nằm ở
-[`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_EDITOR_PROPOSAL.md).
+[`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_EDITOR_PROPOSAL.md). Đề xuất nâng editor
+native thành code editor có tô màu cú pháp nằm ở
+[`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md).
 
 ## 1. Phạm vi
 
