@@ -86,6 +86,7 @@ class GitChangesScreen(
 
     init {
         toolbar.setNavigationOnClickListener { goBack() }
+        toolbar.tintActionIcons()
         list.layoutManager = LinearLayoutManager(activity)
         list.adapter = adapter
         commitAllSwitch.setOnCheckedChangeListener { _, checked ->

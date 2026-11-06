@@ -656,7 +656,6 @@ class FilesScreen(
                 load()
             }
             R.id.action_files_refresh -> load()
-            R.id.action_files_github -> listener.onOpenGitHub()
             R.id.action_files_go_to -> showGoToDialog()
             R.id.action_files_open_project -> {
                 listener.onOpenProject(current)

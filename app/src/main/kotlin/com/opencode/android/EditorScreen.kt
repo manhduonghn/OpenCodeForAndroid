@@ -116,6 +116,7 @@ class EditorScreen(
 
     init {
         toolbar.setNavigationOnClickListener { goBack() }
+        toolbar.tintActionIcons()
         toolbar.setOnMenuItemClickListener(::onMenuItem)
         placeholderExternal.setOnClickListener { currentFile()?.let { openExternal(it) } }
         languageChip.setOnClickListener { showLanguagePicker() }

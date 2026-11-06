@@ -219,6 +219,7 @@ class GithubScreen(
 
     init {
         toolbar.setNavigationOnClickListener { goBack() }
+        toolbar.tintActionIcons()
         repoList.layoutManager = LinearLayoutManager(activity)
         repoList.adapter = adapter
 

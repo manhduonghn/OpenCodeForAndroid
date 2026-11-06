@@ -610,7 +610,7 @@ Quy tắc:
 | `OpenCodeGitHub.kt` | Thêm field repo (`updatedAt`, `pushedAt`, `primaryLanguage`, `isFork`, `isArchived`); `clone` nhận đích; mapping repo → local path; hàm `repoDetails()` nếu cần default branch; cờ huỷ login. |
 | `OpenCodeWebActivity.kt` | Thay `openGithubSheet()` bằng `openGithub()`, thay state `github*` bằng controller; thêm `openEditor()`; back stack ưu tiên editor → git → github → files → settings. |
 | `FilesScreen.kt` | `onOpenFile` chọn editor/viewer/external; thêm action `Nguồn`; banner Git mở `GitChangesScreen`; xoá `pendingExternalEdit` khỏi luồng chính (giữ cho fallback app ngoài). |
-| `menu_files.xml` | Giữ icon GitHub nhưng đổi title "GitHub"; thêm item `Nguồn` nếu không dùng source bar. |
+| `menu_files.xml` | Không còn icon GitHub: source bar Thiết bị/GitHub là entry duy nhất, tránh hai lối vào trùng nhau. |
 | `strings.xml` | Sửa `opencode_files_git_not_logged_in`; thêm string state/login/repo/editor; bỏ string không còn dùng sau migrate. |
 | `OpenCodeSettings.kt` | Thêm lưu mapping clone → local path; có thể thêm `editorAutoSave` (phase sau). |
 | Build | Không thêm dependency; giữ minSdk 26/targetSdk 28. |
@@ -748,7 +748,10 @@ có Java/Gradle/thiết bị.
 ## 10. Tiêu chí nghiệm thu tổng
 
 - GitHub là destination toàn màn hình, cùng toolbar/back/row với Files; không còn
-  `sheet_github.xml`.
+  `sheet_github.xml`. Chỉ có một entry GitHub (source bar trong Files), không còn icon
+  GitHub trùng trên toolbar Files.
+- Icon điều hướng và icon menu của mọi toolbar đều được tint theo `colorOnSurface`, nên
+  mũi tên back nhìn rõ ở cả chế độ sáng và tối.
 - Danh sách repo dùng `RecyclerView` + `ListAdapter`; không còn `TextView` ghép chuỗi hay
   `LinearLayout` chứa 100 row.
 - Login có mã, nút sao chép/mở liên kết, đếm ngược, huỷ, thử lại; không nhảy layout giữa các

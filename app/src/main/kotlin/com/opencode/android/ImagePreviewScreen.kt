@@ -52,6 +52,7 @@ class ImagePreviewScreen(
 
     init {
         toolbar.setNavigationOnClickListener { goBack() }
+        toolbar.tintActionIcons()
         toolbar.setOnMenuItemClickListener(::onMenuItem)
     }
 
