@@ -147,9 +147,17 @@ class FilesScreen(
     val isVisible: Boolean
         get() = panel.visibility == View.VISIBLE
 
-    fun show() {
+    fun show(requestStoragePermission: Boolean = false) {
         OverlayMotion.reveal(panel)
         storagePrompted = false
+        if (requestStoragePermission) {
+            // Ask for shared storage as soon as the browser opens instead of waiting for the
+            // first folder outside the app HOME. Mark it as prompted so the explanation dialog
+            // does not stack on top of the system permission dialog; onStoragePermissionResult
+            // clears the flag again when the activity resumes.
+            storagePrompted = true
+            onRequestStorage()
+        }
         val remembered = OpenCodeSettings.lastFilesDir(activity)?.let(::File)
         val target = when {
             remembered != null && remembered.isDirectory && remembered.canRead() -> remembered
@@ -661,6 +669,8 @@ class FilesScreen(
                 listener.onOpenProject(current)
                 hide()
             }
+            // Leave the current folder (and any selection) and return to the chat right away.
+            R.id.action_files_back_to_chat -> hide()
             R.id.action_selection_copy -> copySelection(move = false)
             R.id.action_selection_move -> copySelection(move = true)
             R.id.action_selection_delete -> confirmDelete(selectedEntries().map { it.file })

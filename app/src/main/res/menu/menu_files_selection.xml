@@ -26,4 +26,10 @@
         android:icon="@drawable/ic_select_all"
         android:title="@string/opencode_files_select_all"
         app:showAsAction="never" />
+    <!-- Always visible: leave any folder and go straight back to the chat WebView. -->
+    <item
+        android:id="@+id/action_files_back_to_chat"
+        android:icon="@drawable/ic_session"
+        android:title="@string/opencode_files_back_to_chat"
+        app:showAsAction="always" />
 </menu>

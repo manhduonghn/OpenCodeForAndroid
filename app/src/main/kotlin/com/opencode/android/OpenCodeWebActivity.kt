@@ -690,7 +690,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun showFiles() {
-        filesScreen.show()
+        // Ask for shared storage the moment the Files icon is tapped, not only after the user
+        // navigates into a storage volume.
+        filesScreen.show(requestStoragePermission = !OpenCodeStorage.hasStoragePermission(this))
     }
 
     /* ------------------------------------------------------------------ app shell */

@@ -278,6 +278,7 @@
     <string name="opencode_files_options">Tuỳ chọn</string>
     <string name="opencode_files_options_for">Tuỳ chọn cho %1$s</string>
     <string name="opencode_files_back">Quay lại</string>
+    <string name="opencode_files_back_to_chat">Về chat</string>
 
     <!-- Git in Files -->
     <string name="opencode_files_git_title">Git • %1$s</string>

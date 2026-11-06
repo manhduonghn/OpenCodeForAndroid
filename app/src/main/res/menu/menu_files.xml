@@ -37,4 +37,10 @@
         android:icon="@drawable/ic_git_repo"
         android:title="@string/opencode_files_open_project"
         app:showAsAction="never" />
+    <!-- Always visible: leave any folder and go straight back to the chat WebView. -->
+    <item
+        android:id="@+id/action_files_back_to_chat"
+        android:icon="@drawable/ic_session"
+        android:title="@string/opencode_files_back_to_chat"
+        app:showAsAction="always" />
 </menu>
