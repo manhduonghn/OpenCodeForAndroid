@@ -28,6 +28,8 @@ object FileActions {
         "sh", "bash", "zsh", "fish", "bat", "ps1", "sql", "gradle", "groovy", "dart",
         "vue", "svelte", "env", "gitignore", "gitattributes", "editorconfig",
         "lock", "diff", "patch", "csv", "tsv", "tex", "proto", "graphql", "gql", "makefile",
+        // Qt/qmake project files are plain text assignments, not a binary format.
+        "pro",
     )
 
     private val IMAGE_EXTENSIONS = setOf(
@@ -43,8 +45,10 @@ object FileActions {
     /** True when the in-app editor can be offered before falling back to an external viewer. */
     fun isTextFile(file: File): Boolean {
         if (file.name.equals("Makefile", ignoreCase = true)) return true
-        if (mimeType(file).startsWith("text/")) return true
-        return file.extension.lowercase(Locale.ROOT) in TEXT_EXTENSIONS
+        // Check the allowlist first: it also covers extensions the platform MIME table omits,
+        // such as Qt's .pro project files.
+        if (file.extension.lowercase(Locale.ROOT) in TEXT_EXTENSIONS) return true
+        return mimeType(file).startsWith("text/")
     }
 
     fun isImageFile(file: File): Boolean {

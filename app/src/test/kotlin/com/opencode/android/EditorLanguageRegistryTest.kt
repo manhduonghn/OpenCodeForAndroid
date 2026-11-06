@@ -49,6 +49,7 @@ class EditorLanguageRegistryTest {
             "main.rs" to "rust",
             "query.sql" to "sql",
             "index.php" to "php",
+            "project.pro" to "plaintext",
         )
         for ((name, id) in expected) {
             assertEquals(name, id, EditorLanguageRegistry.resolve(name).id)

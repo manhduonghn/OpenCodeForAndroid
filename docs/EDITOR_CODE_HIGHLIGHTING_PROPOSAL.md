@@ -1576,6 +1576,7 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
   - `.kt` → Kotlin, `.kts` → Kotlin, `build.gradle` → Groovy, `build.gradle.kts` → Kotlin.
   - `Dockerfile`, `Makefile`, `.gitignore`, `.editorconfig`, `.env`.
   - `.d.ts` thắng `.ts`.
+  - `.pro` (Qt/qmake) → plaintext nhưng vẫn mở được trong editor.
   - Shebang `#!/usr/bin/env python3` → Python.
   - Không có extension → plaintext.
 - `EditorThemeBuilderTest`:
@@ -1593,7 +1594,7 @@ Workflow `Debug build` hiện chạy `:app:testDebugUnitTest` rồi `:app:assemb
 
 | Nhóm | Ca kiểm thử |
 | --- | --- |
-| Ngôn ngữ | `.kt`, `.java`, `.xml`, `.json`, `.yaml`, `.md`, `.js`, `.ts`, `.html`, `.css`, `.py`, `.sh`, `.gradle`, `.properties`, `.toml`, `Dockerfile`, `Makefile`, tệp không extension |
+| Ngôn ngữ | `.kt`, `.java`, `.xml`, `.json`, `.yaml`, `.md`, `.js`, `.ts`, `.html`, `.css`, `.py`, `.sh`, `.gradle`, `.properties`, `.toml`, `.pro` (Qt/qmake), `Dockerfile`, `Makefile`, tệp không extension |
 | Encoding | UTF-8, UTF-8 BOM, UTF-16LE/BE BOM, Windows-1252 (read-only) |
 | Newline | LF, CRLF, CR, hỗn hợp |
 | Kích thước | 0 B, 1 KB, 100 KB, 1.9 MB, 2.1 MB, tệp nhị phân |
