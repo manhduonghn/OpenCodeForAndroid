@@ -130,16 +130,15 @@ object EditorLanguageRegistry {
                 Regex("^\\.?zprofile$"),
                 Regex("^gradlew$"),
                 Regex("^.*\\.bash_history$"),
-                Regex("^Makefile$"),
                 Regex("^makefile$"),
-                Regex("^CMakeLists\\.txt$"),
+                Regex("^cmakelists\\.txt$"),
             ),
             setOf("sh", "shell", "bash", "zsh"),
         ),
         EditorLanguage(
             "python", "Python", "chunks/lang-python.js",
             setOf("py", "pyw", "pyi"),
-            listOf(Regex("^SConstruct$"), Regex("^SConscript$")),
+            listOf(Regex("^sconstruct$"), Regex("^sconscript$")),
             setOf("py", "python"),
         ),
         EditorLanguage(
@@ -169,13 +168,13 @@ object EditorLanguageRegistry {
         EditorLanguage(
             "toml", "TOML", "chunks/legacy-toml.js",
             setOf("toml"),
-            listOf(Regex("^Cargo\\.lock$"), Regex("^poetry\\.lock$"), Regex("^Pipfile$")),
+            listOf(Regex("^cargo\\.lock$"), Regex("^poetry\\.lock$"), Regex("^pipfile$")),
             setOf("toml"),
         ),
         EditorLanguage(
             "dockerfile", "Dockerfile", "chunks/legacy-dockerfile.js",
             setOf("dockerfile"),
-            listOf(Regex("^Dockerfile(\\..+)?$"), Regex("^Containerfile(\\..+)?$")),
+            listOf(Regex("^dockerfile(\\..+)?$"), Regex("^containerfile(\\..+)?$")),
             setOf("dockerfile", "docker"),
         ),
         EditorLanguage(
