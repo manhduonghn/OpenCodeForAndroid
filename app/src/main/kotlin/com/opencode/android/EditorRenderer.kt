@@ -1,16 +1,15 @@
 package com.opencode.android
 
 import android.view.View
-import org.json.JSONObject
 
-/** What caused a snapshot request; the JavaScript side echoes it back. */
-enum class SnapshotReason(val wire: String) {
-    SAVE("save"),
-    CLOSE("close"),
-    BACKGROUND("background"),
-    RECOVERY("recovery"),
-    TAB_SWITCH("tab-switch"),
-    PREVIEW("preview"),
+/** What caused a snapshot request. */
+enum class SnapshotReason {
+    SAVE,
+    CLOSE,
+    BACKGROUND,
+    RECOVERY,
+    TAB_SWITCH,
+    PREVIEW,
 }
 
 /** Caret, selection and scroll position restored when a document is opened again. */
@@ -23,7 +22,6 @@ data class EditorViewState(
 
 data class EditorSnapshot(
     val reason: SnapshotReason,
-    val requestId: Long,
     val text: String,
     val version: Long,
     val baseHash: String,
@@ -72,7 +70,6 @@ interface EditorRenderer {
     fun confirmSaved(version: Long, hash: String)
     fun saveFailed(version: Long, reason: String)
     fun setReadOnly(reason: Int?)
-    fun setTheme(theme: EditorTheme)
     fun setSettings(settings: EditorSettings)
     fun setLanguage(language: EditorLanguage)
     fun find(options: FindOptions)
@@ -87,60 +84,18 @@ interface EditorRenderer {
     fun dispose()
 
     interface Listener {
-        fun onReady() = Unit
         fun onDirtyChanged(dirty: Boolean, length: Int) = Unit
         fun onCursorChanged(line: Int, column: Int, selectedChars: Int) = Unit
         fun onHistoryChanged(canUndo: Boolean, canRedo: Boolean) = Unit
         fun onSearchResult(count: Int, index: Int) = Unit
         fun onFocusChanged(focused: Boolean) = Unit
-
-        /** A renderer could not start or crashed; the controller switches to the native view. */
-        fun onRendererError(code: String, message: String) = Unit
-
-        fun onLink(url: String) = Unit
-
-        /** The JavaScript text was larger than the bridge allows. */
-        fun onOversizeSnapshot(requestId: Long, length: Int) = Unit
     }
 }
 
-/** Serializable view of the editor settings; shared by both renderers. */
+/** Display settings supported by the native editor. */
 data class EditorSettings(
     val fontSize: Int,
     val lineHeight: Float,
-    val fontFamily: String,
-    val tabSize: Int,
-    val softTab: Boolean,
     val wordWrap: Boolean,
     val lineNumbers: Boolean,
-    val relativeLineNumbers: Boolean,
-    val highlightActiveLine: Boolean,
-    val bracketMatching: Boolean,
-    val autoCloseBrackets: Boolean,
-    val autoIndent: Boolean,
-    val foldGutter: Boolean,
-    val indentGuides: Boolean,
-    val rainbowBrackets: Boolean,
-    val autocomplete: String,
-    val showWhitespace: Boolean,
-) {
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("fontSize", fontSize)
-        put("lineHeight", lineHeight.toDouble())
-        put("fontFamily", fontFamily)
-        put("tabSize", tabSize)
-        put("softTab", softTab)
-        put("wordWrap", wordWrap)
-        put("lineNumbers", lineNumbers)
-        put("relativeLineNumbers", relativeLineNumbers)
-        put("highlightActiveLine", highlightActiveLine)
-        put("bracketMatching", bracketMatching)
-        put("autoCloseBrackets", autoCloseBrackets)
-        put("autoIndent", autoIndent)
-        put("foldGutter", foldGutter)
-        put("indentGuides", indentGuides)
-        put("rainbowBrackets", rainbowBrackets)
-        put("autocomplete", autocomplete)
-        put("showWhitespace", showWhitespace)
-    }
-}
+)

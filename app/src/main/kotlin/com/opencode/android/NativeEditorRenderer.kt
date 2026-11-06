@@ -11,8 +11,7 @@ import android.widget.TextView
 import java.util.ArrayDeque
 
 /**
- * The original `EditText` + gutter editor, kept as the fallback for old WebViews, accessibility
- * mode, very large files and the explicit "simple editor" setting.
+ * The native `EditText` + gutter editor used by the app.
  *
  * It owns only display and editing. Saving, hashes, encoding and dialogs stay in
  * [EditorScreen]/[TextFileIO].
@@ -130,7 +129,6 @@ class NativeEditorRenderer(
         callback(
             EditorSnapshot(
                 reason = reason,
-                requestId = System.nanoTime(),
                 text = text,
                 version = version,
                 baseHash = document?.hash.orEmpty(),
@@ -157,8 +155,6 @@ class NativeEditorRenderer(
         readOnly = reason != null
         editor.isEnabled = !readOnly
     }
-
-    override fun setTheme(theme: EditorTheme) = Unit
 
     override fun setSettings(settings: EditorSettings) {
         editor.textSize = settings.fontSize.toFloat()

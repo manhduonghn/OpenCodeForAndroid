@@ -5,9 +5,8 @@ làm mất bản sắc Material You / tiếng Việt hiện có. Phase 0–4 đ�
 `app/src/main`; Phase 5 đã chạy các kiểm tra tĩnh và chờ kiểm tra trên thiết bị thật.
 
 Phần GitHub/editor nối tiếp tài liệu này nằm ở
-[`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_EDITOR_PROPOSAL.md). Đề xuất nâng editor
-native thành code editor có tô màu cú pháp nằm ở
-[`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md).
+[`GITHUB_FILES_EDITOR_PROPOSAL.md`](GITHUB_FILES_EDITOR_PROPOSAL.md). Editor native là trình sửa
+duy nhất; phương án WebView/CodeMirror đã bị loại bỏ.
 
 ## 1. Phạm vi
 
@@ -387,7 +386,7 @@ Phase 5; các kiểm tra này cần thiết bị/emulator nên chưa chạy tron
   `simple_list_item_1`/emoji, mọi `R.id`/`R.string`/`R.layout`/`R.drawable` được tham chiếu đều
   tồn tại, `git diff --check` sạch.
 - Mục "Trình sửa" trong Cài đặt dùng cùng `MaterialSwitch`/`TextAppearance` với các nhóm khác;
-  bật/tắt simple mode, word wrap, soft tab được lưu qua `OpenCodeSettings`.
+  công tắc word wrap được lưu qua `OpenCodeSettings`.
 - Build + unit test trên GitHub Actions là bước biên dịch chính (máy local không có JDK/Android SDK).
 - Không thêm dependency mới: Files/picker dùng `RecyclerView`, `BottomSheetDialog`, `ListAdapter`
   sẵn có; cold start không bị ảnh hưởng bởi thư viện nặng.

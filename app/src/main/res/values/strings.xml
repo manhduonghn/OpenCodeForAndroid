@@ -95,7 +95,6 @@
     <string name="opencode_settings_section_server">Máy chủ</string>
     <string name="opencode_settings_section_info">Thông tin</string>
     <string name="opencode_settings_section_editor">Trình sửa</string>
-    <string name="opencode_settings_editor_soft_tab">Tab mềm (dùng dấu cách)</string>
     <string name="opencode_settings_app_version">Phiên bản ứng dụng</string>
     <string name="opencode_settings_opencode_version">Phiên bản OpenCode</string>
     <string name="opencode_settings_about">Giới thiệu ứng dụng</string>
@@ -535,14 +534,9 @@
     <string name="opencode_editor_language">Ngôn ngữ</string>
     <string name="opencode_editor_language_auto">Tự động (%1$s)</string>
     <string name="opencode_editor_word_wrap">Ngắt dòng mềm</string>
-    <string name="opencode_editor_simple_mode">Trình sửa đơn giản</string>
-    <string name="opencode_editor_simple_mode_desc">Dùng trình sửa cơ bản cho khả năng truy cập hoặc thiết bị yếu.</string>
     <string name="opencode_editor_recent">Tệp gần đây</string>
     <string name="opencode_editor_recent_empty">Chưa có tệp nào được mở gần đây.</string>
     <string name="opencode_editor_recent_clear">Xoá danh sách</string>
-    <string name="opencode_editor_fallback">Trình sửa nâng cao không khả dụng, đã chuyển sang chế độ đơn giản.</string>
-    <string name="opencode_editor_renderer_native">Đơn giản</string>
-    <string name="opencode_editor_renderer_web">Nâng cao</string>
     <string name="opencode_editor_recovery_title">Khôi phục thay đổi chưa lưu?</string>
     <string name="opencode_editor_recovery_message">“%1$s” có bản nháp chưa lưu từ %2$s.</string>
     <string name="opencode_editor_recovery_changed">\n\nTệp trên đĩa đã thay đổi sau bản nháp; lần lưu tiếp theo sẽ phát hiện xung đột.</string>
@@ -550,7 +544,6 @@
     <string name="opencode_editor_recovery_discard">Bỏ bản nháp</string>
     <string name="opencode_editor_recovery_later">Để sau</string>
     <string name="opencode_editor_recovery_restored">Đã khôi phục bản nháp chưa lưu.</string>
-    <string name="opencode_editor_not_ready">Trình sửa chưa sẵn sàng, vui lòng thử lại sau giây lát.</string>
     <string name="opencode_editor_preview">Xem trước Markdown</string>
     <string name="opencode_editor_preview_description">Xem trước Markdown của %1$s</string>
     <string name="opencode_editor_preview_open_link">Mở liên kết?</string>
@@ -558,10 +551,6 @@
     <string name="opencode_editor_lint_title">Cú pháp hợp lệ</string>
     <string name="opencode_editor_lint_failed_title">Có lỗi cú pháp</string>
     <string name="opencode_editor_lint_ok">Không phát hiện lỗi phân tích cú pháp.</string>
-    <string name="opencode_editor_a11y_title">Dùng trình sửa đơn giản?</string>
-    <string name="opencode_editor_a11y_message">TalkBack đang bật. Trình sửa nâng cao vẫn dùng được, nhưng trình sửa đơn giản có thể dễ điều hướng hơn. Bạn có thể đổi lại bất cứ lúc nào trong Cài đặt.</string>
-    <string name="opencode_editor_a11y_use_simple">Dùng trình sửa đơn giản</string>
-    <string name="opencode_editor_a11y_keep">Giữ trình sửa nâng cao</string>
 
     <string name="opencode_image_title">Ảnh</string>
     <string name="opencode_image_failed">Không đọc được ảnh này.</string>

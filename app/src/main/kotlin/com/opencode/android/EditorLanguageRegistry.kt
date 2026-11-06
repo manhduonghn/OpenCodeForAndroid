@@ -3,51 +3,48 @@ package com.opencode.android
 import java.io.File
 
 /**
- * One syntax mode that the editor page knows how to load.
+ * One syntax mode recognised by the native editor.
  *
- * [id] is the value sent over the bridge; the JavaScript side maps it to a lazy CodeMirror
- * chunk. [extensions] are stored without the leading dot, so `d.ts` wins over `ts` because the
- * resolver picks the longest matching extension.
+ * [extensions] are stored without the leading dot, so `d.ts` wins over `ts` because the resolver
+ * picks the longest matching extension.
  */
 data class EditorLanguage(
     val id: String,
     val displayName: String,
-    val chunk: String?,
     val extensions: Set<String> = emptySet(),
     val filenames: List<Regex> = emptyList(),
     val aliases: Set<String> = emptySet(),
 )
 
 /**
- * Filename to language resolution. Both the Kotlin controller and the JavaScript page use the
- * result of this registry; the page never guesses a second time.
+ * Filename to language resolution used by the native editor.
  */
 object EditorLanguageRegistry {
 
-    private val plain = EditorLanguage("plaintext", "Plain text", null)
+    private val plain = EditorLanguage("plaintext", "Plain text")
 
     private val languages: List<EditorLanguage> = listOf(
         plain,
         EditorLanguage(
-            "kotlin", "Kotlin", "chunks/legacy-clike.js",
+            "kotlin", "Kotlin",
             setOf("kt", "kts"),
             listOf(Regex("^build\\.gradle\\.kts$"), Regex("^settings\\.gradle\\.kts$")),
             setOf("kotlin", "kts"),
         ),
         EditorLanguage(
-            "java", "Java", "chunks/lang-java.js",
+            "java", "Java",
             setOf("java"),
             emptyList(),
             setOf("java"),
         ),
         EditorLanguage(
-            "xml", "XML", "chunks/lang-xml.js",
+            "xml", "XML",
             setOf("xml", "xsd", "xsl", "xslt", "svg", "plist", "drawable"),
             emptyList(),
             setOf("xml"),
         ),
         EditorLanguage(
-            "json", "JSON", "chunks/lang-json.js",
+            "json", "JSON",
             setOf("json", "jsonc", "json5", "webmanifest"),
             listOf(
                 Regex("^\\.?prettierrc$"),
@@ -60,67 +57,67 @@ object EditorLanguageRegistry {
             setOf("json", "jsonc"),
         ),
         EditorLanguage(
-            "yaml", "YAML", "chunks/lang-yaml.js",
+            "yaml", "YAML",
             setOf("yaml", "yml"),
             listOf(Regex("^yarn\\.lock$"), Regex("^\\.?yamllint$")),
             setOf("yaml", "yml"),
         ),
         EditorLanguage(
-            "markdown", "Markdown", "chunks/lang-markdown.js",
+            "markdown", "Markdown",
             setOf("md", "markdown", "mdown", "mkd", "mkdn"),
             emptyList(),
             setOf("md", "markdown"),
         ),
         EditorLanguage(
-            "javascript", "JavaScript", "chunks/lang-javascript.js",
+            "javascript", "JavaScript",
             setOf("js", "mjs", "cjs", "jsx"),
             listOf(Regex("^\\.?babelrc\\.js$")),
             setOf("js", "javascript", "node"),
         ),
         EditorLanguage(
-            "typescript", "TypeScript", "chunks/lang-javascript.js",
+            "typescript", "TypeScript",
             setOf("ts", "mts", "cts", "d.ts"),
             listOf(Regex("^.*\\.d\\.ts$")),
             setOf("ts", "typescript"),
         ),
         EditorLanguage(
-            "jsx", "JSX", "chunks/lang-javascript.js",
+            "jsx", "JSX",
             setOf("jsx"),
             emptyList(),
             setOf("jsx"),
         ),
         EditorLanguage(
-            "tsx", "TSX", "chunks/lang-javascript.js",
+            "tsx", "TSX",
             setOf("tsx"),
             emptyList(),
             setOf("tsx"),
         ),
         EditorLanguage(
-            "html", "HTML", "chunks/lang-html.js",
+            "html", "HTML",
             setOf("html", "htm", "xhtml", "vue", "svelte"),
             emptyList(),
             setOf("html"),
         ),
         EditorLanguage(
-            "css", "CSS", "chunks/lang-css.js",
+            "css", "CSS",
             setOf("css"),
             emptyList(),
             setOf("css"),
         ),
         EditorLanguage(
-            "scss", "SCSS", "chunks/lang-sass.js",
+            "scss", "SCSS",
             setOf("scss", "sass"),
             emptyList(),
             setOf("scss", "sass"),
         ),
         EditorLanguage(
-            "less", "Less", "chunks/lang-less.js",
+            "less", "Less",
             setOf("less"),
             emptyList(),
             setOf("less"),
         ),
         EditorLanguage(
-            "shell", "Shell", "chunks/legacy-shell.js",
+            "shell", "Shell",
             setOf("sh", "bash", "zsh", "fish", "ksh", "csh"),
             listOf(
                 Regex("^\\.?bashrc$"),
@@ -136,13 +133,13 @@ object EditorLanguageRegistry {
             setOf("sh", "shell", "bash", "zsh"),
         ),
         EditorLanguage(
-            "python", "Python", "chunks/lang-python.js",
+            "python", "Python",
             setOf("py", "pyw", "pyi"),
             listOf(Regex("^sconstruct$"), Regex("^sconscript$")),
             setOf("py", "python"),
         ),
         EditorLanguage(
-            "groovy", "Groovy", "chunks/legacy-groovy.js",
+            "groovy", "Groovy",
             setOf("groovy", "gradle"),
             listOf(
                 Regex("^build\\.gradle$"),
@@ -152,7 +149,7 @@ object EditorLanguageRegistry {
             setOf("groovy", "gradle"),
         ),
         EditorLanguage(
-            "properties", "Properties / INI", "chunks/legacy-properties.js",
+            "properties", "Properties / INI",
             setOf("properties", "ini", "cfg", "conf", "env"),
             listOf(
                 Regex("^\\.gitconfig$"),
@@ -166,79 +163,79 @@ object EditorLanguageRegistry {
             setOf("properties", "ini", "conf"),
         ),
         EditorLanguage(
-            "toml", "TOML", "chunks/legacy-toml.js",
+            "toml", "TOML",
             setOf("toml"),
             listOf(Regex("^cargo\\.lock$"), Regex("^poetry\\.lock$"), Regex("^pipfile$")),
             setOf("toml"),
         ),
         EditorLanguage(
-            "dockerfile", "Dockerfile", "chunks/legacy-dockerfile.js",
+            "dockerfile", "Dockerfile",
             setOf("dockerfile"),
             listOf(Regex("^dockerfile(\\..+)?$"), Regex("^containerfile(\\..+)?$")),
             setOf("dockerfile", "docker"),
         ),
         EditorLanguage(
-            "diff", "Diff", "chunks/legacy-diff.js",
+            "diff", "Diff",
             setOf("diff", "patch"),
             emptyList(),
             setOf("diff", "patch"),
         ),
         EditorLanguage(
-            "c", "C", "chunks/legacy-clike.js",
+            "c", "C",
             setOf("c", "h"),
             emptyList(),
             setOf("c"),
         ),
         EditorLanguage(
-            "cpp", "C++", "chunks/lang-cpp.js",
+            "cpp", "C++",
             setOf("cpp", "cc", "cxx", "hpp", "hh", "hxx", "ino"),
             emptyList(),
             setOf("cpp", "c++"),
         ),
         EditorLanguage(
-            "go", "Go", "chunks/lang-go.js",
+            "go", "Go",
             setOf("go"),
             listOf(Regex("^go\\.mod$"), Regex("^go\\.sum$")),
             setOf("go", "golang"),
         ),
         EditorLanguage(
-            "rust", "Rust", "chunks/lang-rust.js",
+            "rust", "Rust",
             setOf("rs"),
             emptyList(),
             setOf("rust"),
         ),
         EditorLanguage(
-            "sql", "SQL", "chunks/lang-sql.js",
+            "sql", "SQL",
             setOf("sql", "sqlite", "db"),
             emptyList(),
             setOf("sql", "sqlite"),
         ),
         EditorLanguage(
-            "php", "PHP", "chunks/lang-php.js",
+            "php", "PHP",
             setOf("php", "phtml", "blade.php"),
             listOf(Regex("^.*\\.blade\\.php$")),
             setOf("php"),
         ),
         EditorLanguage(
-            "csharp", "C#", "chunks/legacy-clike.js",
+            "csharp", "C#",
             setOf("cs", "csx"),
             emptyList(),
             setOf("cs", "csharp"),
         ),
         EditorLanguage(
-            "scala", "Scala", "chunks/legacy-clike.js",
+            "scala", "Scala",
             setOf("scala", "sc"),
             emptyList(),
             setOf("scala"),
         ),
         EditorLanguage(
-            "dart", "Dart", "chunks/legacy-clike.js",
+            "dart", "Dart",
             setOf("dart"),
             emptyList(),
             setOf("dart"),
         ),
         EditorLanguage(
-            "objectivec", "Objective-C", "chunks/legacy-clike.js",
+            "objectivec", "Objective-C",
             setOf("m", "mm"),
             emptyList(),
             setOf("objectivec", "objc"),

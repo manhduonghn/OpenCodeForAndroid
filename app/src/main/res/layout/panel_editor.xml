@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- In-app text editor: CodeMirror (WebView, primary) with a native EditText fallback. -->
+<!-- In-app text editor: native EditText with a line-number gutter. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/editor_panel"
@@ -102,12 +102,6 @@
             android:id="@+id/editor_host"
             android:layout_width="match_parent"
             android:layout_height="match_parent">
-
-            <FrameLayout
-                android:id="@+id/editor_web_host"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:visibility="gone" />
 
             <LinearLayout
                 android:id="@+id/editor_native_body"

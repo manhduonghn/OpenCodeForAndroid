@@ -33,8 +33,8 @@ object OpenCodeWebTheme {
     )
 
     /**
-     * The subset of the palette the in-app editor needs. Both the web stylesheet and the
-     * CodeMirror page read their colors from here, so the two cannot drift apart.
+     * The subset of the palette the in-app editor needs. Markdown preview reads its colors from
+     * here, so the two cannot drift apart.
      */
     class Tokens(
         val dark: Boolean,

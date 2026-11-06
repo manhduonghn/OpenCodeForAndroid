@@ -194,31 +194,6 @@ val checkNativeAssets = tasks.register("checkNativeAssets") {
 }
 tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(checkNativeAssets) }
 
-// The CodeMirror editor bundle is generated offline by tools/editor and committed. Gradle never
-// runs npm; this check only makes a stale or missing bundle visible before packaging.
-val checkEditorAssets = tasks.register("checkEditorAssets") {
-    val editorAssets = layout.projectDirectory.dir("src/main/assets/editor")
-    doLast {
-        val dir = editorAssets.asFile
-        val required = listOf("index.html", "editor.js", "probe.js", "editor.css")
-        val missing = required.filter { !dir.resolve(it).isFile }
-        if (missing.isNotEmpty()) {
-            throw GradleException(
-                "app/src/main/assets/editor is missing ${missing.joinToString()}. " +
-                    "Run `npm run build` in tools/editor and commit the generated assets."
-            )
-        }
-        val hashFile = dir.resolve("BUNDLE_SHA256")
-        if (!hashFile.isFile) {
-            logger.warn("WARNING: editor bundle has no BUNDLE_SHA256 manifest.")
-        }
-    }
-}
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(checkEditorAssets) }
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-    dependsOn(checkEditorAssets)
-}
-
 // The Java sources are gone, but AGP still compares both toolchains: the Kotlin JVM target has to
 // match compileOptions above or the build fails with "Inconsistent JVM Target Compatibility".
 kotlin {

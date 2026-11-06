@@ -1,33 +1,19 @@
 package com.opencode.android
 
 import android.content.Context
-import org.json.JSONObject
 
 /**
- * Serializes the palette resolved by [OpenCodeWebTheme] into the JSON contract understood by
- * `app/src/main/assets/editor/editor.js`.
+ * Palette resolved by [OpenCodeWebTheme] and used by the Markdown preview.
  *
- * The editor page has no hard-coded theme: changing the wallpaper, dark mode or a custom palette
- * only requires sending a new payload.
+ * Keeping the palette in one place means Preview follows dark mode, wallpaper and custom themes
+ * without duplicating color values.
  */
 data class EditorTheme(
     val dark: Boolean,
     val colors: Map<String, String>,
     val syntax: Map<String, String>,
     val markdown: Map<String, String>,
-) {
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("protocol", PROTOCOL)
-        put("dark", dark)
-        put("colors", JSONObject(colors as Map<*, *>))
-        put("syntax", JSONObject(syntax as Map<*, *>))
-        put("markdown", JSONObject(markdown as Map<*, *>))
-    }
-
-    companion object {
-        const val PROTOCOL = EditorProtocol.VERSION
-    }
-}
+)
 
 object EditorThemeBuilder {
 
@@ -41,7 +27,7 @@ object EditorThemeBuilder {
         )
     }
 
-    /** A palette for tests or for a renderer created before the activity theme is ready. */
+    /** A palette for tests or for a preview created before the activity theme is ready. */
     fun fallback(dark: Boolean = false): EditorTheme {
         val background = if (dark) "#111318" else "#fffbfe"
         val foreground = if (dark) "#e6e1e5" else "#1c1b1f"

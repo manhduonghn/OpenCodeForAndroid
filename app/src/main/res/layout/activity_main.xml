@@ -637,37 +637,11 @@
                 android:padding="@dimen/card_padding">
 
                 <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/settings_editor_simple"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:text="@string/opencode_editor_simple_mode"
-                    android:textColor="?attr/colorOnSurface"
-                    android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/opencode_editor_simple_mode_desc"
-                    android:textColor="?attr/colorOnSurfaceVariant"
-                    android:textAppearance="@style/TextAppearance.OpenCode.BodySmall" />
-
-                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/settings_editor_word_wrap"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
                     android:minHeight="48dp"
                     android:text="@string/opencode_editor_word_wrap"
-                    android:textColor="?attr/colorOnSurface"
-                    android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium" />
-
-                <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/settings_editor_soft_tab"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:text="@string/opencode_settings_editor_soft_tab"
                     android:textColor="?attr/colorOnSurface"
                     android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium" />
             </LinearLayout>

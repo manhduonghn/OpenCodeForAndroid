@@ -12,7 +12,6 @@ class EditorThemeBuilderTest {
     fun lightFallbackContainsEveryRequiredGroup() {
         val theme = EditorThemeBuilder.fallback(dark = false)
         assertFalse(theme.dark)
-        assertEquals(EditorProtocol.VERSION, EditorTheme.PROTOCOL)
 
         for (key in REQUIRED_COLORS) assertTrue("missing color $key", theme.colors.containsKey(key))
         for (key in REQUIRED_SYNTAX) assertTrue("missing syntax $key", theme.syntax.containsKey(key))

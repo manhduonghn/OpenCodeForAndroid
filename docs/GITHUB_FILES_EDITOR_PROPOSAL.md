@@ -16,12 +16,10 @@ Git/GitHub nằm trong cùng một mô hình điều hướng với Quản lý t
 > lint và kiểm tra trên thiết bị (screenshot, TalkBack, font scale) chưa chạy được trong môi
 > trường này.
 >
-> **Bước tiếp theo:** đề xuất nâng editor native hiện tại thành code editor có tô màu cú pháp
-> (CodeMirror 6 trong WebView, fallback native) nằm ở
-> [`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md). Phần nền của
-> đề xuất đó đã được triển khai, gồm recovery snapshot, hạ cấp trang trí cho tệp lớn, xem trước
-> Markdown offline, kiểm tra cú pháp nhẹ JSON/XML và gợi ý chế độ đơn giản cho TalkBack; build,
-> unit test và QA thiết bị vẫn chưa chạy.
+> **Bước tiếp theo:** editor native (`EditText` + gutter) là trình sửa duy nhất. Phương án
+> CodeMirror 6 trong WebView đã được thử, không hoạt động ổn định trên Android nên đã bị loại bỏ
+> hoàn toàn khỏi mã, asset và tài liệu. Các tính năng dùng chung vẫn giữ: recovery snapshot, xem
+> trước Markdown offline, kiểm tra cú pháp nhẹ JSON/XML, tìm kiếm và đi tới dòng.
 
 ---
 
@@ -128,8 +126,8 @@ và biến Snackbar thành action mở thẳng màn hình GitHub.
    token/CA/status và tránh trạng thái nửa vời giữa local và remote.
 5. **Hành động rõ cấp bậc.** Một primary action cho mỗi state; hành động phá huỷ (đăng xuất, xoá,
    discard) có xác nhận; phản hồi ngắn bằng Snackbar có action.
-6. **Không thêm dependency nặng.** Ưu tiên view/RecyclerView/EditText thuần. Syntax highlight và
-   diff chỉ thêm sau nếu thật sự cần.
+6. **Không thêm dependency nặng.** Ưu tiên view/RecyclerView/EditText thuần. Diff chỉ thêm sau
+   nếu thật sự cần; editor nâng cao bằng WebView đã bị loại bỏ.
 
 ---
 
@@ -549,12 +547,12 @@ Trước khi lưu, đọc lại metadata + hash. Nếu khác:
 
 | Phương án | Ưu | Nhược | Khuyến nghị |
 | --- | --- | --- | --- |
-| A. `EditText` monospace thuần | Không dependency, IME tốt, nhẹ, dễ test; đủ để sửa code/text | Không syntax highlight, không line number mặc định | **MVP, chọn A** |
-| B. WebView + CodeMirror bundle | Highlight, line number, search, folding | Thêm asset ~300–500KB, bridge phức tạp, IME/selection dễ lỗi trên Android | Phase sau, chỉ khi có nhu cầu thật |
+| A. `EditText` monospace thuần | Không dependency, IME tốt, nhẹ, dễ test; đủ để sửa code/text | Không syntax highlight, không line number mặc định | **Đã chọn** |
+| B. WebView + CodeMirror bundle | Highlight, line number, search, folding | Asset ~300–500KB, bridge phức tạp, IME/selection dễ lỗi trên Android | **Đã thử và loại bỏ** |
 | C. Giữ app ngoài | Không làm gì | Phải rời app, auto-commit mù, không kiểm soát conflict | Giữ làm fallback, không phải luồng chính |
 
-Không thêm Gradle dependency cho editor. Nếu cần highlight, ưu tiên B với asset đóng gói sẵn
-(không tải từ CDN) để app vẫn offline.
+Editor native đã bổ sung line number, tìm kiếm, đi tới dòng, undo/redo và Markdown preview, nên
+không cần asset JavaScript hay bridge WebView. Mọi thứ vẫn chạy offline.
 
 #### Undo/redo và tìm kiếm
 
@@ -725,9 +723,8 @@ có Java/Gradle/thiết bị.
 
 ## 9. Rủi ro và câu hỏi cần chốt
 
-1. **Editor native hay WebView?** MVP đã chọn A (`EditText`). Bước tiếp theo chọn hybrid:
-   CodeMirror 6 trong WebView làm renderer chính, `EditText` làm fallback; xem
-   [`EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md`](EDITOR_CODE_HIGHLIGHTING_PROPOSAL.md).
+1. **Editor native hay WebView?** Đã chốt: chỉ dùng `EditText` native. Phương án CodeMirror 6
+   trong WebView đã được thử nhưng không hoạt động ổn định nên bị loại bỏ hoàn toàn.
 2. **Có giữ entry GitHub trong Settings không?** Đề xuất không, để một entry duy nhất trong
    Files. Nếu giữ, nó phải mở cùng `GithubScreen`.
 3. **Token và scope.** Bộ scope hiện tại rất rộng (`delete_repo`, `admin:org`, `workflow`…).

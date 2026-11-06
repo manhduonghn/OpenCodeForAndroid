@@ -24,15 +24,10 @@ object OpenCodeSettings {
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
     private const val KEY_REPO_PATHS = "repo_local_paths"
     private const val KEY_LAST_CLONE_DIR = "clone_last_dir"
-    private const val KEY_EDITOR_RENDERER = "editor_renderer"
-    private const val KEY_EDITOR_SIMPLE = "editor_simple_mode"
     private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
     private const val KEY_EDITOR_WORD_WRAP = "editor_word_wrap"
-    private const val KEY_EDITOR_TAB_SIZE = "editor_tab_size"
-    private const val KEY_EDITOR_SOFT_TAB = "editor_soft_tab"
     private const val KEY_EDITOR_RECENT = "editor_recent_files"
     private const val KEY_EDITOR_LANGUAGES = "editor_language_overrides"
-    private const val KEY_EDITOR_A11Y_PROMPT = "editor_a11y_prompt_shown"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -179,28 +174,6 @@ object OpenCodeSettings {
 
     /* ------------------------------------------------------------------ editor */
 
-    /**
-     * Which renderer the editor prefers: `auto` (CodeMirror when the WebView can run it),
-     * `native` (the simple EditText) or `web` (force CodeMirror for debugging on a device).
-     */
-    fun editorRenderer(context: Context): String =
-        prefs(context).getString(KEY_EDITOR_RENDERER, "auto")?.takeIf {
-            it == "auto" || it == "native" || it == "web"
-        } ?: "auto"
-
-    fun setEditorRenderer(context: Context, value: String) {
-        val normalized = if (value == "native" || value == "web") value else "auto"
-        prefs(context).edit().putString(KEY_EDITOR_RENDERER, normalized).apply()
-    }
-
-    /** Accessibility/simple mode always uses the native EditText, even if `web` is selected. */
-    fun editorSimpleMode(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_EDITOR_SIMPLE, false)
-
-    fun setEditorSimpleMode(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_EDITOR_SIMPLE, enabled).apply()
-    }
-
     fun editorFontSize(context: Context): Int =
         prefs(context).getInt(KEY_EDITOR_FONT_SIZE, 14).coerceIn(8, 32)
 
@@ -213,20 +186,6 @@ object OpenCodeSettings {
 
     fun setEditorWordWrap(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_EDITOR_WORD_WRAP, enabled).apply()
-    }
-
-    fun editorTabSize(context: Context): Int =
-        prefs(context).getInt(KEY_EDITOR_TAB_SIZE, 4).coerceIn(1, 8)
-
-    fun setEditorTabSize(context: Context, size: Int) {
-        prefs(context).edit().putInt(KEY_EDITOR_TAB_SIZE, size.coerceIn(1, 8)).apply()
-    }
-
-    fun editorSoftTab(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_EDITOR_SOFT_TAB, true)
-
-    fun setEditorSoftTab(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_EDITOR_SOFT_TAB, enabled).apply()
     }
 
     /** Paths of the files opened most recently, newest first, at most 20 entries. */
@@ -282,16 +241,5 @@ object OpenCodeSettings {
         } catch (e: Exception) {
             // A broken preference must not break the editor.
         }
-    }
-
-    /**
-     * False until the editor offered the simple (native) renderer once to a TalkBack user.
-     * The prompt is only a suggestion; the explicit setting stays under the user's control.
-     */
-    fun editorA11yPromptShown(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_EDITOR_A11Y_PROMPT, false)
-
-    fun setEditorA11yPromptShown(context: Context, shown: Boolean) {
-        prefs(context).edit().putBoolean(KEY_EDITOR_A11Y_PROMPT, shown).apply()
     }
 }

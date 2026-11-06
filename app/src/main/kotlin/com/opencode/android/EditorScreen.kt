@@ -1,21 +1,17 @@
 package com.opencode.android
 
 import android.app.Activity
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
-import android.util.Log
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
-import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.TextView
-import androidx.webkit.WebViewCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -29,10 +25,9 @@ import java.util.concurrent.Executors
 /**
  * In-app editor controller.
  *
- * Editing and display live in an [EditorRenderer] (CodeMirror in a local WebView, or the native
- * [EditText] fallback). This controller owns file I/O through [TextFileIO], dirty/conflict/save
- * dialogs, auto-commit, search UI and the activity lifecycle hooks. The renderer never reads or
- * writes a file.
+ * Editing and display live in the native [EditorRenderer]. This controller owns file I/O through
+ * [TextFileIO], dirty/conflict/save dialogs, auto-commit, search UI and the activity lifecycle
+ * hooks. The renderer never reads or writes a file.
  */
 class EditorScreen(
     private val activity: Activity,
@@ -53,7 +48,6 @@ class EditorScreen(
     private val panel: View = activity.findViewById(R.id.editor_panel)
     private val toolbar: MaterialToolbar = activity.findViewById(R.id.editor_toolbar)
     private val host: ViewGroup = activity.findViewById(R.id.editor_host)
-    private val webHost: ViewGroup = activity.findViewById(R.id.editor_web_host)
     private val nativeBody: View = activity.findViewById(R.id.editor_native_body)
     private val editor: EditText = activity.findViewById(R.id.editor_text)
     private val gutter: TextView = activity.findViewById(R.id.editor_gutter)
@@ -78,9 +72,7 @@ class EditorScreen(
     private val handler = Handler(Looper.getMainLooper())
 
     private val nativeRenderer = NativeEditorRenderer(activity, nativeBody, editor, gutter)
-    private var webRenderer: CodeMirrorEditorRenderer? = null
-    private var renderer: EditorRenderer = nativeRenderer
-    private var webFallbackUsed = false
+    private val renderer: EditorRenderer = nativeRenderer
 
     private var document: TextDocument? = null
     private var repoRoot: File? = null
@@ -103,9 +95,6 @@ class EditorScreen(
     /** True while a recovery file the user chose to keep for later still belongs to this file. */
     private var deferredRecovery = false
 
-    /** Guards against showing the TalkBack suggestion twice while a load is in flight. */
-    private var a11yPromptShowing = false
-
     @Volatile
     private var released = false
 
@@ -121,12 +110,7 @@ class EditorScreen(
         toolbar.setOnMenuItemClickListener(::onMenuItem)
         placeholderExternal.setOnClickListener { currentFile()?.let { openExternal(it) } }
         languageChip.setOnClickListener { showLanguagePicker() }
-        searchPrev.setOnClickListener {
-            renderer.findNext(false)
-            if (renderer === nativeRenderer) {
-                // Native renderer updates count via callback; nothing else needed.
-            }
-        }
+        searchPrev.setOnClickListener { renderer.findNext(false) }
         searchNext.setOnClickListener { renderer.findNext(true) }
         searchClose.setOnClickListener { closeSearch() }
         search.addTextChangedListener(object : TextWatcher {
@@ -138,7 +122,7 @@ class EditorScreen(
             renderer.findNext(true)
             true
         }
-        nativeRenderer.listener = rendererListener(nativeRenderer)
+        nativeRenderer.listener = rendererListener()
         applySettingsToRenderers()
     }
 
@@ -175,7 +159,6 @@ class EditorScreen(
         languageChip.visibility = View.GONE
         status.text = activity.getString(R.string.opencode_files_scanning)
         updateMenu()
-        maybeOfferSimpleMode()
 
         val request = ++generation
         executor.execute {
@@ -249,13 +232,6 @@ class EditorScreen(
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
         nativeRenderer.dispose()
-        webRenderer?.dispose()
-        webRenderer = null
-    }
-
-    fun onConfigurationChanged() {
-        // The renderer keeps its own state; push the current theme in case colors changed.
-        pushTheme()
     }
 
     /**
@@ -308,9 +284,6 @@ class EditorScreen(
         try {
             renderer.snapshot(SnapshotReason.RECOVERY) { snapshot ->
                 if (released) return@snapshot
-                // A not-ready WebView returns requestId 0 with the saved baseline. It cannot
-                // provide the live buffer yet, so keep an existing recovery file untouched.
-                if (snapshot.requestId == 0L) return@snapshot
                 // The new snapshot (or the clear below) supersedes any "later" decision.
                 deferredRecovery = false
                 try {
@@ -468,15 +441,12 @@ class EditorScreen(
         languageChip.text = language.displayName
         languageChip.visibility = if (language.id == "plaintext") View.GONE else View.VISIBLE
 
-        val target = chooseRenderer(loaded)
-        activateRenderer(target)
         val state = recovery?.viewState() ?: lastViewState
         lastViewState = null
-        renderer.setSettings(settingsFor(effective))
-        renderer.setTheme(EditorThemeBuilder.build(activity))
+        renderer.setSettings(currentSettings())
         renderer.load(
             effective,
-            languageForRenderer(effective),
+            language,
             state,
             readOnly = reason != null,
             draftText = recovery?.text,
@@ -507,83 +477,17 @@ class EditorScreen(
         after?.invoke()
     }
 
-    private fun chooseRenderer(loaded: TextDocument): EditorRenderer {
-        if (OpenCodeSettings.editorSimpleMode(activity)) return nativeRenderer
-        val preference = OpenCodeSettings.editorRenderer(activity)
-        if (preference == "native") return nativeRenderer
-        if (preference == "web") {
-            return ensureWebRenderer() ?: nativeRenderer
-        }
-        // auto: prefer CodeMirror for normal files; keep native for very large or read-only text
-        // that the bridge cannot safely round-trip yet.
-        if (loaded.size > MAX_WEB_EDITOR_BYTES) return nativeRenderer
-        if (loaded.readOnlyReason == R.string.opencode_editor_readonly_encoding) return nativeRenderer
-        return if (hasSystemWebView()) ensureWebRenderer() ?: nativeRenderer else nativeRenderer
-    }
-
-    private fun hasSystemWebView(): Boolean = try {
-        WebViewCompat.getCurrentWebViewPackage(activity) != null
-    } catch (e: Exception) {
-        false
-    }
-
-    private fun ensureWebRenderer(): CodeMirrorEditorRenderer? {
-        if (webFallbackUsed) return null
-        if (webRenderer == null) {
-            webRenderer = CodeMirrorEditorRenderer(activity, webHost)
-            webRenderer?.listener = rendererListener(webRenderer!!)
-        }
-        return webRenderer
-    }
-
-    private fun activateRenderer(target: EditorRenderer) {
-        renderer = target
-        val useWeb = target is CodeMirrorEditorRenderer
-        webHost.visibility = if (useWeb) View.VISIBLE else View.GONE
-        nativeBody.visibility = if (useWeb) View.GONE else View.VISIBLE
-        target.setSettings(settingsFor(document))
-        target.setTheme(EditorThemeBuilder.build(activity))
-    }
-
-    private fun fallbackToNative(code: String, message: String) {
-        if (renderer === nativeRenderer) return
-        Log.w(TAG, "Advanced editor unavailable ($code): $message")
-        webFallbackUsed = true
-        val current = document ?: return
-        activity.runOnUiThread {
-            if (released) return@runOnUiThread
-            snack(activity.getString(R.string.opencode_editor_fallback))
-            val failed = webRenderer
-            renderer = nativeRenderer
-            webRenderer = null
-            webHost.visibility = View.GONE
-            nativeBody.visibility = View.VISIBLE
-            nativeRenderer.setSettings(settingsFor(current))
-            // Reuse the restored recovery draft instead of silently falling back to the saved
-            // bytes on disk. If there is none, the last committed document is the safe source.
-            nativeRenderer.load(
-                current,
-                languageForRenderer(current),
-                lastViewState,
-                readOnly = current.readOnlyReason != null,
-                draftText = activeDraft,
-            )
-            failed?.dispose()
-            updateMenu()
-        }
-    }
-
-    private fun rendererListener(source: EditorRenderer): EditorRenderer.Listener =
+    private fun rendererListener(): EditorRenderer.Listener =
         object : EditorRenderer.Listener {
             override fun onDirtyChanged(dirty: Boolean, length: Int) {
-                if (released || source !== renderer) return
+                if (released) return
                 this@EditorScreen.dirty = dirty
                 refreshStatus(document)
                 updateMenu()
             }
 
             override fun onCursorChanged(line: Int, column: Int, selectedChars: Int) {
-                if (released || source !== renderer) return
+                if (released) return
                 cursorLine = line
                 cursorColumn = column
                 this@EditorScreen.selectedChars = selectedChars
@@ -591,14 +495,14 @@ class EditorScreen(
             }
 
             override fun onHistoryChanged(canUndo: Boolean, canRedo: Boolean) {
-                if (released || source !== renderer) return
+                if (released) return
                 this@EditorScreen.canUndo = canUndo
                 this@EditorScreen.canRedo = canRedo
                 updateMenu()
             }
 
             override fun onSearchResult(count: Int, index: Int) {
-                if (released || source !== renderer) return
+                if (released) return
                 searchCount.text = when {
                     search.text.isNullOrEmpty() -> ""
                     count <= 0 -> activity.getString(
@@ -612,20 +516,6 @@ class EditorScreen(
                     )
                 }
             }
-
-            override fun onRendererError(code: String, message: String) {
-                if (released) return
-                fallbackToNative(code, message)
-            }
-
-            override fun onLink(url: String) {
-                if (released) return
-                try {
-                    activity.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url)))
-                } catch (e: Exception) {
-                    // A broken link must not crash the editor.
-                }
-            }
         }
 
     /* ------------------------------------------------------------------ save */
@@ -637,14 +527,6 @@ class EditorScreen(
         saving = true
         updateMenu()
         renderer.snapshot(SnapshotReason.SAVE) { snapshot ->
-            if (snapshot.requestId == 0L) {
-                // A not-ready CodeMirror would return the saved baseline, which would silently
-                // replace a restored recovery draft. Let the readiness timeout fall back first.
-                saving = false
-                updateMenu()
-                snack(activity.getString(R.string.opencode_editor_not_ready))
-                return@snapshot
-            }
             val request = ++generation
             executor.execute {
                 val result = TextFileIO.save(document, snapshot.text, force)
@@ -838,9 +720,6 @@ class EditorScreen(
             item.isChecked = OpenCodeSettings.editorWordWrap(activity)
             item.isEnabled = loaded != null
         }
-        menu.findItem(R.id.action_editor_simple)?.let { item ->
-            item.isChecked = OpenCodeSettings.editorSimpleMode(activity)
-        }
     }
 
     private fun onMenuItem(item: MenuItem): Boolean {
@@ -852,7 +731,6 @@ class EditorScreen(
             R.id.action_editor_goto -> showGotoLine()
             R.id.action_editor_language -> showLanguagePicker()
             R.id.action_editor_word_wrap -> toggleWordWrap(item)
-            R.id.action_editor_simple -> toggleSimpleMode(item)
             R.id.action_editor_recent -> showRecentFiles()
             R.id.action_editor_preview -> showMarkdownPreview()
             R.id.action_editor_lint -> runSyntaxCheck()
@@ -888,13 +766,6 @@ class EditorScreen(
                 extra.add(activity.getString(R.string.opencode_editor_readonly) to activity.getString(it))
             }
         }
-        extra.add(
-            activity.getString(R.string.opencode_editor_simple_mode) to
-                (if (renderer is CodeMirrorEditorRenderer)
-                    activity.getString(R.string.opencode_editor_renderer_web)
-                else
-                    activity.getString(R.string.opencode_editor_renderer_native)),
-        )
         FileActions.showProperties(activity, file, extra)
     }
 
@@ -945,7 +816,7 @@ class EditorScreen(
                 language = resolved
                 languageChip.text = resolved.displayName
                 languageChip.visibility = if (resolved.id == "plaintext") View.GONE else View.VISIBLE
-                renderer.setLanguage(languageForRenderer(document))
+                renderer.setLanguage(resolved)
                 refreshStatus(document)
                 updateMenu()
                 dialog.dismiss()
@@ -959,17 +830,6 @@ class EditorScreen(
         OpenCodeSettings.setEditorWordWrap(activity, enabled)
         item.isChecked = enabled
         applySettingsToRenderers()
-    }
-
-    private fun toggleSimpleMode(item: MenuItem) {
-        val enabled = !item.isChecked
-        OpenCodeSettings.setEditorSimpleMode(activity, enabled)
-        item.isChecked = enabled
-        val file = currentFile() ?: return
-        captureViewState { state ->
-            lastViewState = state
-            show(file, force = true)
-        }
     }
 
     private fun showRecentFiles() {
@@ -1044,54 +904,19 @@ class EditorScreen(
 
     /**
      * The preview and the syntax check must see the live buffer, not the last saved document.
-     * A renderer that is not ready returns `requestId == 0`; in that case the recovery draft or
-     * the disk text is the best available copy.
+     * If the renderer cannot provide a snapshot, the recovery draft or the disk text is the best
+     * available copy.
      */
     private fun withCurrentBuffer(after: (String) -> Unit) {
         val loaded = document ?: return
         try {
             renderer.snapshot(SnapshotReason.PREVIEW) { snapshot ->
                 if (released) return@snapshot
-                val text = if (snapshot.requestId == 0L) {
-                    activeDraft ?: loaded.text
-                } else {
-                    snapshot.text
-                }
-                after(text)
+                after(snapshot.text)
             }
         } catch (e: Exception) {
             after(activeDraft ?: loaded.text)
         }
-    }
-
-    /**
-     * Offer the native editor once to a TalkBack user.
-     *
-     * The suggestion is deliberately not automatic: CodeMirror still works with TalkBack, and
-     * forcing the simple renderer would silently remove syntax highlighting and folding. The
-     * explicit switch in Settings keeps the decision in the user's hands afterwards.
-     */
-    private fun maybeOfferSimpleMode() {
-        if (a11yPromptShowing) return
-        if (OpenCodeSettings.editorSimpleMode(activity)) return
-        if (OpenCodeSettings.editorA11yPromptShown(activity)) return
-        val manager = activity.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE)
-            as? AccessibilityManager ?: return
-        if (!manager.isTouchExplorationEnabled) return
-        a11yPromptShowing = true
-        MaterialAlertDialogBuilder(activity)
-            .setTitle(R.string.opencode_editor_a11y_title)
-            .setMessage(R.string.opencode_editor_a11y_message)
-            .setPositiveButton(R.string.opencode_editor_a11y_use_simple) { _, _ ->
-                OpenCodeSettings.setEditorSimpleMode(activity, true)
-                updateMenu()
-            }
-            .setNegativeButton(R.string.opencode_editor_a11y_keep, null)
-            .setOnDismissListener {
-                a11yPromptShowing = false
-                OpenCodeSettings.setEditorA11yPromptShown(activity, true)
-            }
-            .show()
     }
 
     /* ------------------------------------------------------------------ status */
@@ -1170,82 +995,12 @@ class EditorScreen(
     private fun currentSettings(): EditorSettings = EditorSettings(
         fontSize = OpenCodeSettings.editorFontSize(activity),
         lineHeight = 1.45f,
-        fontFamily = "monospace",
-        tabSize = OpenCodeSettings.editorTabSize(activity),
-        softTab = OpenCodeSettings.editorSoftTab(activity),
         wordWrap = OpenCodeSettings.editorWordWrap(activity),
         lineNumbers = true,
-        relativeLineNumbers = false,
-        highlightActiveLine = true,
-        bracketMatching = true,
-        autoCloseBrackets = true,
-        autoIndent = true,
-        foldGutter = true,
-        indentGuides = true,
-        rainbowBrackets = false,
-        autocomplete = "local",
-        showWhitespace = false,
     )
 
-    /**
-     * Settings adjusted for the current document.
-     *
-     * Highlighting, folding, bracket matching and autocomplete are recomputed by the JS page on
-     * every keystroke; above the thresholds in the proposal they make a large file unusable while
-     * adding little value. Editing itself stays enabled at full speed by degrading to plain text.
-     */
-    private fun settingsFor(document: TextDocument?): EditorSettings {
-        val base = currentSettings()
-        if (document == null) return base
-        val large = isLargeDocument(document)
-        val huge = document.size >= MAX_ACTIVE_LINE_BYTES
-        if (!large && !huge) return base
-        return base.copy(
-            highlightActiveLine = base.highlightActiveLine && !huge,
-            bracketMatching = base.bracketMatching && !large,
-            autoCloseBrackets = base.autoCloseBrackets && !large,
-            autoIndent = base.autoIndent && !large,
-            foldGutter = base.foldGutter && !large,
-            indentGuides = base.indentGuides && !large,
-            autocomplete = if (large) "off" else base.autocomplete,
-        )
-    }
-
-    /**
-     * Language handed to the renderer. Large files fall back to `plaintext` even though the chip
-     * still shows the resolved language, so the user knows what the file is without paying the
-     * cost of parsing it.
-     */
-    private fun languageForRenderer(document: TextDocument?): EditorLanguage =
-        if (document != null && isLargeDocument(document)) {
-            EditorLanguageRegistry.byId("plaintext")
-        } else {
-            language
-        }
-
-    private fun isLargeDocument(document: TextDocument): Boolean {
-        if (document.size > MAX_HIGHLIGHT_BYTES) return true
-        var lines = 1
-        for (char in document.text) {
-            if (char == '\n') {
-                lines++
-                if (lines > MAX_HIGHLIGHT_LINES) return true
-            }
-        }
-        return false
-    }
-
     private fun applySettingsToRenderers() {
-        val settings = settingsFor(document)
-        nativeRenderer.setSettings(settings)
-        webRenderer?.setSettings(settings)
-        pushTheme()
-    }
-
-    private fun pushTheme() {
-        val theme = EditorThemeBuilder.build(activity)
-        nativeRenderer.setTheme(theme)
-        webRenderer?.setTheme(theme)
+        nativeRenderer.setSettings(currentSettings())
     }
 
     private fun currentFile(): File? = document?.file
@@ -1269,20 +1024,5 @@ class EditorScreen(
 
     private fun snack(message: String) {
         Snackbar.make(panel, message, Snackbar.LENGTH_LONG).show()
-    }
-
-    private companion object {
-        const val TAG = "EditorScreen"
-
-        // The JS bridge serializes the full buffer as a JSON string; keep it conservative until
-        // a chunked/streaming bridge exists.
-        const val MAX_WEB_EDITOR_BYTES = 1_500_000L
-
-        // Above these sizes the editor keeps editing but drops highlight/fold/indent/autocomplete.
-        const val MAX_HIGHLIGHT_BYTES = 512L * 1024L
-        const val MAX_HIGHLIGHT_LINES = 20_000
-
-        // Active-line highlighting is the last decoration to go for very large buffers.
-        const val MAX_ACTIVE_LINE_BYTES = 1_000_000L
     }
 }
