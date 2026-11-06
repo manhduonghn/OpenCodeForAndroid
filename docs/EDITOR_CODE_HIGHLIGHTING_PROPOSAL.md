@@ -37,6 +37,13 @@ tìm/thay thế, nhiều con trỏ, tự động hoàn thành và các tiện í
 > parse, không phải linter); gợi ý một lần dùng trình sửa đơn giản cho người dùng TalkBack; mục
 > "Trình sửa" trong Cài đặt cho simple mode/word wrap/soft tab.
 >
+> **Sửa lỗi "trình sửa nâng cao không khả dụng" (2026-11-06):** `WebViewAssetLoader` cắt tiền tố
+> `/editor/` trước khi gọi handler, nên `AssetsPathHandler` mở `assets/index.html` thay vì
+> `assets/editor/index.html`; mọi asset 404, bridge không bao giờ `ready` và editor rơi về native.
+> Handler giờ tự thêm lại `editor/`, request http(s) ngoài `/editor/` nhận 404 rỗng, và
+> `blockNetworkLoads` không còn được dùng cho trang editor (CSP + interception đã bảo đảm offline).
+> Lý do fallback được ghi vào logcat với tag `EditorScreen`.
+>
 > **Chưa hoàn tất / cần xác minh:** biên dịch APK, QA trên thiết bị/WebView thật, chạy unit test
 > trong CI, đo ngân sách APK/hiệu năng. Bundle CodeMirror đã được vá thủ công cho `baseText` trong
 > môi trường không có Node; cần chạy lại `npm run build` trong `tools/editor` khi có Node để xác
@@ -719,18 +726,32 @@ hoặc gộp chunk.
 
 ### 6.5. Tải trang
 
-Dùng `WebViewAssetLoader` (đã có `androidx.webkit:webkit:1.18.0`):
+Dùng `WebViewAssetLoader` (đã có `androidx.webkit:webkit:1.18.0`). Lưu ý: loader **cắt tiền tố
+đã đăng ký** trước khi gọi handler, nên handler đăng ký ở `/editor/` phải tự thêm lại thư mục
+`editor/`; nếu dùng thẳng `AssetsPathHandler`, `/editor/index.html` sẽ mở `assets/index.html`
+(không tồn tại) và mọi asset đều 404:
 
 ```kotlin
+private val assets = AssetsPathHandler(context)
 private val assetLoader = WebViewAssetLoader.Builder()
-    .addPathHandler("/editor/", AssetsPathHandler(context))
+    .addPathHandler("/editor/", PathHandler { path -> assets.handle("editor/$path") })
     .build()
 
 webView.webViewClient = object : WebViewClientCompat() {
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest,
-    ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+    ): WebResourceResponse? {
+        val url = request.url
+        val scheme = url.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return null
+        val editorAsset = scheme == "https" &&
+            url.host == "appassets.androidplatform.net" &&
+            url.path.orEmpty().startsWith("/editor/")
+        // Mọi request http(s) khác nhận 404 rỗng: không có gì ra mạng.
+        return if (editorAsset) assetLoader.shouldInterceptRequest(url)
+        else WebResourceResponse(null, null, null)
+    }
 
     override fun shouldOverrideUrlLoading(
         view: WebView,
@@ -760,16 +781,15 @@ settings.javaScriptCanOpenWindowsAutomatically = false
 settings.setSupportMultipleWindows(false)
 settings.mediaPlaybackRequiresUserGesture = true
 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-settings.blockNetworkLoads = true          // không có request mạng
 settings.cacheMode = WebSettings.LOAD_NO_CACHE // asset local, tránh cache cũ sau update
 WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 ```
 
-Lưu ý: `blockNetworkLoads = true` có thể chặn cả `https://appassets.androidplatform.net`?
-Trong Android, `blockNetworkLoads` chặn request mạng thật qua network stack; asset loader được
-xử lý trong `shouldInterceptRequest` nên vẫn hoạt động. Cần kiểm tra trên thiết bị; nếu không,
-dùng `shouldInterceptRequest` trả `404` cho mọi URL ngoài `/editor/` thay vì
-`blockNetworkLoads`.
+Không dùng `blockNetworkLoads = true`. Trang editor được phục vụ qua origin `https`, và trên một
+số phiên bản WebView `blockNetworkLoads` có thể chặn cả request main-frame trước khi
+`WebViewAssetLoader` kịp trả lời. Chế độ offline được bảo đảm bằng CSP (`default-src 'none'`,
+`connect-src 'none'`) và bằng việc `shouldInterceptRequest` trả `404` rỗng cho mọi URL http(s)
+không phải asset trong `/editor/`.
 
 CSP trong `index.html`:
 

@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.Log
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
@@ -546,6 +547,7 @@ class EditorScreen(
 
     private fun fallbackToNative(code: String, message: String) {
         if (renderer === nativeRenderer) return
+        Log.w(TAG, "Advanced editor unavailable ($code): $message")
         webFallbackUsed = true
         val current = document ?: return
         activity.runOnUiThread {
@@ -1270,6 +1272,8 @@ class EditorScreen(
     }
 
     private companion object {
+        const val TAG = "EditorScreen"
+
         // The JS bridge serializes the full buffer as a JSON string; keep it conservative until
         // a chunked/streaming bridge exists.
         const val MAX_WEB_EDITOR_BYTES = 1_500_000L

@@ -38,8 +38,20 @@ class CodeMirrorEditorRenderer(
     private val handler = Handler(Looper.getMainLooper())
     private val requestIds = AtomicLong(0)
 
+    private val assets = WebViewAssetLoader.AssetsPathHandler(activity)
+
+    /**
+     * [WebViewAssetLoader] strips the registered prefix before invoking a
+     * [WebViewAssetLoader.PathHandler], so a handler registered on `/editor/` receives
+     * `index.html` for `/editor/index.html`. The handler has to put the `editor/` folder back;
+     * otherwise the page resolves to the non-existent `assets/index.html` and every editor
+     * request is a 404.
+     */
     private val assetLoader = WebViewAssetLoader.Builder()
-        .addPathHandler("/editor/", WebViewAssetLoader.AssetsPathHandler(activity))
+        .addPathHandler(
+            EDITOR_PATH,
+            WebViewAssetLoader.PathHandler { path -> assets.handle("editor/$path") },
+        )
         .build()
 
     private var webView: WebView? = null
@@ -214,7 +226,10 @@ class CodeMirrorEditorRenderer(
             setSupportMultipleWindows(false)
             mediaPlaybackRequiresUserGesture = true
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            blockNetworkLoads = true
+            // Keep the editor offline through the page CSP and the scoped interception below.
+            // blockNetworkLoads is intentionally not used: the editor page is served from an
+            // https origin, and on some WebView versions blocking network loads also blocks the
+            // intercepted main-frame request before WebViewAssetLoader can answer it.
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
         view.addJavascriptInterface(bridge, BRIDGE_NAME)
@@ -222,7 +237,22 @@ class CodeMirrorEditorRenderer(
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest,
-            ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+            ): WebResourceResponse? {
+                val url = request.url
+                val scheme = url.scheme?.lowercase()
+                // Let WebView handle about:/data:/blob: itself; every http(s) request either
+                // resolves to a bundled editor asset or is answered with an empty 404 so it can
+                // never reach the network.
+                if (scheme != "http" && scheme != "https") return null
+                val editorAsset = scheme == "https" &&
+                    url.host == ASSET_HOST &&
+                    url.path.orEmpty().startsWith(EDITOR_PATH)
+                return if (editorAsset) {
+                    assetLoader.shouldInterceptRequest(url)
+                } else {
+                    WebResourceResponse(null, null, null)
+                }
+            }
 
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -472,7 +502,9 @@ class CodeMirrorEditorRenderer(
     })
 
     private companion object {
-        const val ASSET_URL = "https://appassets.androidplatform.net/editor"
+        const val ASSET_HOST = "appassets.androidplatform.net"
+        const val EDITOR_PATH = "/editor/"
+        const val ASSET_URL = "https://" + ASSET_HOST + "/editor"
         const val BRIDGE_NAME = "OpenCodeEditorBridge"
 
         /** Long enough for a cold start on an old device, short enough to avoid a blank screen. */
