@@ -1,7 +1,6 @@
 package com.opencode.android
 
 import java.io.StringReader
-import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 import org.json.JSONTokener
 import org.xml.sax.InputSource
@@ -53,9 +52,11 @@ object EditorSyntaxCheck {
             runCatching {
                 factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
             }
+            // Android's XMLConstants omits these Java 8 fields; the attribute names are the
+            // standard property URIs and unsupported parsers simply reject them.
             runCatching {
-                factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
-                factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
+                factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "")
+                factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalSchema", "")
             }
             factory.newDocumentBuilder().parse(InputSource(StringReader(text)))
             Result(true, "")

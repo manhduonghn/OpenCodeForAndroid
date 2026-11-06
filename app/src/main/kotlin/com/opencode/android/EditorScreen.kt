@@ -565,7 +565,7 @@ class EditorScreen(
                 readOnly = current.readOnlyReason != null,
                 draftText = activeDraft,
             )
-            if (failed != null && failed !== nativeRenderer) failed.dispose()
+            failed?.dispose()
             updateMenu()
         }
     }
