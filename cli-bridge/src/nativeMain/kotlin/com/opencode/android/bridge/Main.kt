@@ -79,7 +79,11 @@ private const val BUNDLE_DEV =
         "ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk " +
         "grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop " +
         "procps lsof ncurses-utils bash-completion sqlite"
-private const val BUNDLE_PYTHON = "python python-pip python-cryptography python-numpy python-pillow"
+// python-cryptography is deliberately absent: the Termux build needs `_cffi_backend` at runtime
+// and the repository has no python-cffi package, so it imports with ModuleNotFoundError. A bundle
+// must not install a package that cannot be used; `pkg install python-cryptography` is still
+// available for someone who wants to build cffi with pip.
+private const val BUNDLE_PYTHON = "python python-pip python-numpy python-pillow"
 private const val BUNDLE_NODE = "nodejs npm yarn pnpm"
 private const val BUNDLE_JAVA = "openjdk-17 aapt2 ca-certificates-java"
 private const val BUNDLE_NET = "curl wget openssh rsync nmap dnsutils whois net-tools socat"

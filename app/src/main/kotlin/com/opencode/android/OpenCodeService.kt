@@ -448,6 +448,12 @@ class OpenCodeService : Service() {
             File(OpenCodeBootstrap.PREFIX, "bin/bash")
                 .takeIf { it.isFile }
                 ?.let { put("SHELL", it.absolutePath) }
+            // The tools the agent runs are non-interactive `bash -c` shells, which do not read
+            // the login profile or bashrc. BASH_ENV gives them the same package environment as
+            // the terminal: the `pkg`, `am`, `pm`, … wrappers, PATH and the Termux paths.
+            File(OpenCodeBootstrap.ENV_SCRIPT_PATH)
+                .takeIf { it.isFile }
+                ?.let { put("BASH_ENV", it.absolutePath) }
             put("DEBIAN_FRONTEND", "noninteractive")
             put("OPENCODE_DISABLE_AUTOUPDATE", "1")
             // The web terminal spawns `opencode-pty`. The copy that OpenCode extracts for itself
@@ -585,6 +591,11 @@ class OpenCodeService : Service() {
         OpenCodeBootstrap.androidSdkHome()?.let {
             expected.add("ANDROID_HOME=${it.absolutePath}")
         }
+        // A server spawned by an older build has no BASH_ENV, so its non-interactive shells do
+        // not see the `pkg`/`am`/`pm` wrappers. Restart it once after the update.
+        File(OpenCodeBootstrap.ENV_SCRIPT_PATH)
+            .takeIf { it.isFile }
+            ?.let { expected.add("BASH_ENV=${it.absolutePath}") }
         File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
             .takeIf { it.isFile }
             ?.let { expected.add("OPENSSL_CONF=${it.absolutePath}") }
@@ -626,6 +637,9 @@ class OpenCodeService : Service() {
         append(" gradle=").append(OpenCodeBootstrap.GRADLE_USER_HOME)
         append(" android=").append(OpenCodeBootstrap.ANDROID_USER_HOME)
         append(" sdk=").append(OpenCodeBootstrap.androidSdkHome()?.absolutePath.orEmpty())
+        append(" bash_env=").append(
+            File(OpenCodeBootstrap.ENV_SCRIPT_PATH).takeIf { it.isFile }?.absolutePath.orEmpty(),
+        )
         append(" openssl=").append(
             File(OpenCodeBootstrap.OPENSSL_CONF_PATH).takeIf { it.isFile }?.absolutePath.orEmpty(),
         )

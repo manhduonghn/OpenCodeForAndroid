@@ -271,6 +271,7 @@ rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path c�
 | 4.2 #8 proof-binary mở rộng | ✅ | `OpenCodePackages.BINARY_PROOF` (thêm JDK, d8, r8, apksigner, aapt2) |
 | 4.2 #9 launcher repair pattern | ✅ | `OpenCodePackages.JavaLaunchers` (d8/r8/apksigner) |
 | 4.2 #10 bảng syscall bị chặn | ✅ tài liệu | mục 7 dưới đây |
+| Python `multiprocessing`: đường dẫn semaphore cắm cứng của Termux | ✅ | `TermuxSemaphorePath`, `OpenCodePackages.extractEntry` / `repair` |
 | 4.3 #11 preload path translation | ✅ | `native/pathmap`, `OpenCodeBootstrap.installNativeTools`, `oc-gopatch run` |
 | 4.3 #12 Go static patch | ✅ (AArch64) | `native/gosys`, `native/gopatch`, `oc-run` |
 
@@ -278,6 +279,14 @@ Ghi chú cho #7: asset được kiểm tra SHA-256 trước khi ghi, ghi nguyên
 `etc/tls/cert.pem`, và **không** ghi đè một bundle hợp lệ đã có. Như vậy bundle mới hơn
 của gói `ca-certificates` không bị thay bằng bản snapshot cũ của APK; asset chỉ dùng khi
 file thiếu hoặc bị cắt cụt (ví dụ sau khi app bị kill giữa lúc trích xuất).
+
+Ghi chú cho `multiprocessing`: `libandroid-posix-semaphore.so` của Termux cắm cứng
+`/data/data/com.termux/files/usr/tmp/sem.`, nên `sem_open` của Python chết với
+`FileNotFoundError` (locks, queue, `Pool`, `ProcessPoolExecutor`). `TermuxSemaphorePath`
+đổi chuỗi đó thành `/data/data/<package>/tmp/sem.` (cùng 40 byte với application id release,
+nên không xê dịch offset nào) và tạo thư mục `tmp` ở gốc sandbox — không phải `$PREFIX/tmp`,
+vì đường dẫn đó dài hơn 40 byte. Việc vá chạy cả lúc trích xuất gói lẫn trong `pkg repair`,
+nên prefix cài từ bản cũ được sửa mà không cần cài lại.
 
 ## 7. Bảng chính sách syscall Android cho binary glibc (4.2 #10)
 

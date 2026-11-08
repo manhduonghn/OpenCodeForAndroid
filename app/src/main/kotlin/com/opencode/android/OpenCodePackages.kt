@@ -374,6 +374,8 @@ object OpenCodePackages {
         var removed = 0
         var rewritten = 0
         var shellPatched = 0
+        var semaphoresPatched = 0
+        var semaphoreDirectoryCreated = false
         var launchersRepaired = 0
         var sdkScripts = 0
 
@@ -470,9 +472,19 @@ object OpenCodePackages {
             }
         }
 
+        // A prefix installed by an older build has the semaphore library of the Termux app and
+        // no `/data/data/<package>/tmp`, which breaks Python's multiprocessing. New installs are
+        // patched while the library is extracted; this pass fixes the existing ones.
+        val semaphoreLibrary = File(prefix, TermuxSemaphorePath.LIBRARY)
+        if (semaphoreLibrary.isFile) {
+            semaphoreDirectoryCreated = TermuxSemaphorePath.ensureDirectory(prefix)
+            semaphoresPatched = TermuxSemaphorePath.patch(semaphoreLibrary, prefix)
+        }
+
         ensureEnvironmentLinks(prefix)
 
         if (relinked == 0 && removed == 0 && rewritten == 0 && shellPatched == 0 &&
+            semaphoresPatched == 0 && !semaphoreDirectoryCreated &&
             launchersRepaired == 0 && sdkScripts == 0
         ) {
             return null
@@ -490,6 +502,14 @@ object OpenCodePackages {
             if (shellPatched > 0) {
                 if (isNotEmpty()) append("; ")
                 append("patched ").append(shellPatched).append(" git binary(ies)")
+            }
+            if (semaphoreDirectoryCreated) {
+                if (isNotEmpty()) append("; ")
+                append("created the semaphore directory")
+            }
+            if (semaphoresPatched > 0) {
+                if (isNotEmpty()) append("; ")
+                append("patched the POSIX semaphore library")
             }
             if (launchersRepaired > 0) {
                 if (isNotEmpty()) append("; ")
@@ -977,6 +997,14 @@ object OpenCodePackages {
 
         // git's ELFs embed the Termux shell path, no environment variable can redirect it.
         if (TermuxShellPath.appliesTo(rel)) TermuxShellPath.patch(target)
+
+        // The semaphore library of Python's multiprocessing builds its file names below the tmp
+        // directory of the Termux app. Move the path to this sandbox and make sure the directory
+        // exists, otherwise every Pool/Queue/Lock fails with FileNotFoundError.
+        if (TermuxSemaphorePath.appliesTo(rel)) {
+            TermuxSemaphorePath.ensureDirectory(prefix)
+            TermuxSemaphorePath.patch(target, prefix)
+        }
     }
 
     private fun firstLine(head: ByteArray, length: Int): String {

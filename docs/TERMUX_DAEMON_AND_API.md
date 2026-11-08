@@ -395,7 +395,7 @@ và không có cơ chế remove. Thay vào đó là các nhóm chọn lọc:
 | Nhóm | Nội dung chính |
 | --- | --- |
 | `pkg bundle dev` | `clang make cmake ninja pkg-config autoconf automake libtool patchelf git gh ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop procps lsof ncurses-utils bash-completion sqlite` |
-| `pkg bundle python` | `python python-pip python-cryptography python-numpy python-pillow` |
+| `pkg bundle python` | `python python-pip python-numpy python-pillow` |
 | `pkg bundle node` | `nodejs npm yarn pnpm` |
 | `pkg bundle java` | `openjdk-17 aapt2 ca-certificates-java` |
 | `pkg bundle net` | `curl wget openssh rsync nmap dnsutils whois net-tools socat` |
@@ -408,6 +408,19 @@ Alias tên gói hay bị gõ sai:
 | `openjdk`, `java`, `javac`, `jdk` | `openjdk-17` |
 | `node` | `nodejs` |
 | `pip`, `pip3` | `python-pip` |
+
+`python-cryptography` **không** nằm trong `bundle python`: bản 50.x của Termux cần
+`_cffi_backend` lúc import, nhưng repo không có gói `python-cffi`, nên
+`import cryptography` chết với `ModuleNotFoundError`. Bundle chỉ cài những gói chạy được;
+`pkg install python-cryptography` vẫn có nếu người dùng muốn tự build `cffi` bằng pip.
+
+`python -m venv` của gói Termux cũng không có wheel `pip` đi kèm (`ensurepip/_bundled`
+rỗng), nên lệnh mặc định dừng với `FileNotFoundError`. Dùng:
+
+```sh
+python3 -m venv --without-pip venv
+pip --python venv/bin/python install requests
+```
 
 **JDK cần cấu hình thêm** vì Termux dùng `update-alternatives` trong `postinst`, mà prefix
 này không chạy `postinst`:
