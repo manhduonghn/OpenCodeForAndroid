@@ -470,7 +470,7 @@ cd OpenCodeForAndroid
 ./gradlew :app:assembleDebug
 ```
 
-The nightly workflow builds a debug APK on every push, the release workflow
+The debug workflow builds a debug APK on every push, the release workflow
 builds a signed APK for every `v*` tag.
 
 The `cli-bridge` module compiles the `pkg` executable with
