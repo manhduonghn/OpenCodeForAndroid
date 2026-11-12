@@ -184,6 +184,7 @@
     <string name="opencode_files_open_project">Mở làm dự án</string>
     <string name="opencode_files_open_with">Mở tệp bằng…</string>
     <string name="opencode_files_open_failed">Không có ứng dụng nào mở được mục này.</string>
+    <string name="opencode_link_open_failed">Không có ứng dụng nào mở được liên kết này.</string>
     <string name="opencode_files_rename">Đổi tên</string>
     <string name="opencode_files_copy">Sao chép</string>
     <string name="opencode_files_move">Di chuyển</string>

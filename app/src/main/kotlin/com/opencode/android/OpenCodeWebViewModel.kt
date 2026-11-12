@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
@@ -69,6 +70,19 @@ class OpenCodeWebViewModel : ViewModel() {
 
         /** The server rejected the credential of the page, it has to be paired again. */
         fun onWebAuthFailed()
+
+        /**
+         * The page asked for a second window (`target="_blank"` or `window.open`). The shell has
+         * only one window: the activity resolves the popup URL and opens it outside the WebView.
+         */
+        fun onNewWindow(view: WebView, resultMsg: Message)
+
+        /**
+         * The chat refers to an absolute file path (a link or an inline code path). The web UI
+         * would open it in its own viewer; the activity opens it in the native file manager
+         * instead, so a path of the OpenCode installation is reachable like any other file.
+         */
+        fun onOpenLocalFile(path: String)
     }
 
     /**
@@ -178,6 +192,10 @@ class OpenCodeWebViewModel : ViewModel() {
             // the UI is served over loopback.
             allowFileAccess = false
             allowContentAccess = true
+            // The web UI renders every link of a message with target="_blank", which the WebView
+            // drops while multiple windows are unsupported. The popup request is forwarded to the
+            // activity instead (see Ui.onNewWindow), so those links open outside the shell.
+            setSupportMultipleWindows(true)
         }
         // The Material You stylesheet decides every color. The WebView's own algorithmic
         // darkening (API 33+) and the View-level force dark (API 29+) would process those colors
@@ -192,6 +210,7 @@ class OpenCodeWebViewModel : ViewModel() {
         // the state of the web app's first API calls.
         view.addJavascriptInterface(SessionBridge(), "OpenCodeAndroidSession")
         view.addJavascriptInterface(BootBridge(), "OpenCodeAndroidBoot")
+        view.addJavascriptInterface(LinksBridge(), "OpenCodeAndroidLinks")
         // The default handler needs a window of an activity, which an application context cannot
         // provide, so the dialogs of the web app are shown by the activity that is on screen.
         view.webChromeClient = object : WebChromeClient() {
@@ -246,10 +265,23 @@ class OpenCodeWebViewModel : ViewModel() {
                 callback.onShowFileChooser(fileChooserParams)
                 return true
             }
+
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?,
+            ): Boolean {
+                if (view == null || resultMsg == null) return false
+                val callback = ui ?: return false
+                callback.onNewWindow(view, resultMsg)
+                return true
+            }
         }
 
         webViewInstance = view
         installBootGuard(view)
+        installLinkGuard(view)
         return view
     }
 
@@ -288,6 +320,23 @@ class OpenCodeWebViewModel : ViewModel() {
         } catch (e: Exception) {
             Log.w(TAG, "Could not install the boot guard", e)
             null
+        }
+    }
+
+    /**
+     * Hand absolute file paths of the chat to the native file manager.
+     *
+     * The web UI renders a local path as `a[data-local-link]` (without an `href`) or as an inline
+     * code path, and its own handler opens a review panel inside the page. A capture-phase script
+     * intercepts those taps before that handler: an absolute path is reported to [LinksBridge], a
+     * relative one is left to the web UI, which resolves it against the project root.
+     */
+    private fun installLinkGuard(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        try {
+            WebViewCompat.addDocumentStartJavaScript(view, LINK_SCRIPT, setOf("*"))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not install the link guard", e)
         }
     }
 
@@ -341,6 +390,9 @@ class OpenCodeWebViewModel : ViewModel() {
     fun installSessionWatcher() {
         val view = webViewInstance ?: return
         view.evaluateJavascript(WATCHER_SCRIPT, null)
+        // Fallback for a WebView that does not support document-start scripts: the guard is
+        // idempotent, so evaluating it again is a no-op.
+        view.evaluateJavascript(LINK_SCRIPT, null)
     }
 
     /**
@@ -384,6 +436,19 @@ class OpenCodeWebViewModel : ViewModel() {
         @JavascriptInterface
         fun setSession(id: String?) {
             OpenCodeSessionTracker.setActiveSession(id)
+        }
+    }
+
+    /**
+     * Receives the absolute file paths the link guard of the page intercepted. The method runs on
+     * the WebView's JavaScript thread, so the UI callback is posted to the main thread.
+     */
+    private inner class LinksBridge {
+        @JavascriptInterface
+        fun openLocalFile(path: String?) {
+            val value = path?.trim().orEmpty()
+            if (value.isEmpty()) return
+            mainHandler.post { ui?.onOpenLocalFile(value) }
         }
     }
 
@@ -644,6 +709,65 @@ class OpenCodeWebViewModel : ViewModel() {
               document.addEventListener('click', function () { setTimeout(report, 40); }, true);
               setInterval(report, 2500);
               report();
+            })();
+        """.trimIndent()
+
+        /**
+         * Intercepts a tap on a local file path of the chat before the web UI handles it.
+         *
+         * The web UI renders such a path as `a[data-local-link]` (the sanitizer removes its
+         * `href`) or as an inline `code[data-inline-code-kind="path"]`, and its own bubble-phase
+         * handler opens the review panel. A capture-phase listener on `document` sees the tap
+         * first: an absolute path is reported to the app, a relative one is left alone so the web
+         * UI keeps resolving it against the project root. The script guards itself against double
+         * installation.
+         */
+        private val LINK_SCRIPT = """
+            (function () {
+              if (window.__ocAndroidLinkGuard) { window.__ocAndroidLinkGuard(); return; }
+              function localPath(target) {
+                try {
+                  if (!(target instanceof Element)) return '';
+                  var link = target.closest('a[data-local-link]');
+                  if (link) {
+                    var href = (link.dataset.localLink || '').trim();
+                    // Only an absolute path of this device is handed to the app; `//host` is a
+                    // protocol-relative URL, not a file.
+                    return href.charAt(0) === '/' && href.charAt(1) !== '/' ? href : '';
+                  }
+                  var code = target.closest(':not(pre) > code[data-inline-code-kind="path"]');
+                  if (code && !code.closest('a')) {
+                    var text = (code.textContent || '').trim();
+                    return text.charAt(0) === '/' && text.charAt(1) !== '/' ? text : '';
+                  }
+                } catch (e) {}
+                return '';
+              }
+              function open(event, target) {
+                var path = localPath(target);
+                if (!path) return;
+                var bridge = window.OpenCodeAndroidLinks;
+                if (!bridge || !bridge.openLocalFile) return;
+                try {
+                  bridge.openLocalFile(path);
+                } catch (e) {
+                  // The bridge is not available: let the web UI handle the tap.
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+              }
+              function onClick(event) {
+                if (event.defaultPrevented || event.button !== 0) return;
+                open(event, event.target);
+              }
+              function onKeyDown(event) {
+                if (event.key !== 'Enter' || event.defaultPrevented) return;
+                open(event, event.target);
+              }
+              window.__ocAndroidLinkGuard = function () {};
+              document.addEventListener('click', onClick, true);
+              document.addEventListener('keydown', onKeyDown, true);
             })();
         """.trimIndent()
 

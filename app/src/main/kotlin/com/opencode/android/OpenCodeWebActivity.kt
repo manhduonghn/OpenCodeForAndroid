@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
@@ -677,6 +678,82 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private fun closeSettings() {
         OverlayMotion.conceal(settingsPanel)
+    }
+
+    /**
+     * Keep the WebView for the OpenCode server alone.
+     *
+     * Returns true when the navigation was consumed. Only URLs of the paired loopback server stay
+     * in the WebView: a link to another site, or a file path the chat refers to, is opened outside
+     * it. That keeps a tap in a message from replacing the shell (and its pairing) with a foreign
+     * page.
+     */
+    private fun handleNavigation(url: String?): Boolean =
+        when (WebViewLinks.classify(url, baseUrl)) {
+            WebViewLinks.Target.WEB_VIEW -> false
+            WebViewLinks.Target.EXTERNAL -> {
+                openLink(url)
+                true
+            }
+            WebViewLinks.Target.IGNORE -> true
+        }
+
+    /**
+     * An iframe cannot navigate the shell, so it is not handed to the browser: content the page
+     * generates itself (a preview) loads, a frame from another origin is dropped.
+     */
+    private fun handleSubFrameNavigation(url: String?): Boolean = when {
+        WebViewLinks.isInlineContent(url) -> false
+        WebViewLinks.classify(url, baseUrl) == WebViewLinks.Target.WEB_VIEW -> false
+        else -> true
+    }
+
+    /**
+     * Open a link that does not belong to the server: a file path of the project opens in the
+     * app's own file manager and viewers, a web URL in the browser, a `mailto:` link in the mail
+     * client.
+     */
+    private fun openLink(url: String?) {
+        val value = url?.trim().orEmpty()
+        if (value.isEmpty()) return
+        val file = WebViewLinks.localFile(value)
+        if (file != null) {
+            openLocalPath(file)
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value)))
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "No application can open the link", e)
+            showSnack(getString(R.string.opencode_link_open_failed))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not open the link", e)
+            showSnack(getString(R.string.opencode_link_open_failed))
+        }
+    }
+
+    /**
+     * Directories open in the Files screen, text and images in the native viewers, everything else
+     * in the system chooser. A path that no longer exists opens its parent directory, so the user
+     * can see where it went instead of a dead snackbar.
+     */
+    private fun openLocalPath(file: File) {
+        if (file.isDirectory) {
+            showFiles()
+            filesScreen.openDirectory(file)
+            return
+        }
+        if (file.exists()) {
+            openFileInApp(file)
+            return
+        }
+        val parent = file.parentFile
+        if (parent != null && parent.isDirectory) {
+            showFiles()
+            filesScreen.openDirectory(parent)
+        } else {
+            showSnack(getString(R.string.opencode_files_open_failed))
+        }
     }
 
     /** Text and images open in the native viewers; everything else is handed to the system. */
@@ -1425,6 +1502,56 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     /**
+     * Resolve the URL of a popup (`target="_blank"`, `window.open`) with a throwaway WebView and
+     * open it outside the shell. The chat renders every link with `target="_blank"`, and a second
+     * window does not exist here: without this callback those links would be dropped silently.
+     */
+    override fun onNewWindow(view: WebView, resultMsg: Message) {
+        val transport = resultMsg.obj as? WebView.WebViewTransport ?: return
+        val probe = WebView(view.context)
+        // The popup is never rendered. Release it as soon as its URL is known, and in case it
+        // never navigates at all (a blocked popup, an empty window) after a short grace period.
+        var released = false
+        val release = {
+            if (!released) {
+                released = true
+                probe.destroy()
+            }
+        }
+        probe.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                probeView: WebView,
+                request: WebResourceRequest,
+            ): Boolean {
+                val url = request.url?.toString()
+                handler.post { release() }
+                if (WebViewLinks.classify(url, baseUrl) == WebViewLinks.Target.WEB_VIEW) {
+                    // A popup of the server itself belongs in the shell, not in a second window.
+                    webView.loadUrl(url ?: "$baseUrl/")
+                } else {
+                    openLink(url)
+                }
+                return true
+            }
+        }
+        transport.webView = probe
+        resultMsg.sendToTarget()
+        handler.postDelayed({ release() }, 10_000)
+    }
+
+    /**
+     * Open an absolute file path of the chat in the app's own file manager, as the link guard of
+     * the page requested. Relative paths never arrive here: the web UI resolves those against the
+     * project root itself.
+     */
+    override fun onOpenLocalFile(path: String) {
+        if (path.any { it < ' ' || it == '\u007F' }) return
+        val file = WebViewLinks.localFile(path) ?: return
+        if (!file.isAbsolute) return
+        openLocalPath(file)
+    }
+
+    /**
      * Open the system file manager for the attach button of the composer. A WebView does not show
      * a picker by itself: without this callback the `<input type="file">` of the web app is a
      * no-op on Android.
@@ -1514,6 +1641,24 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     private fun configureWebView() {
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?,
+            ): Boolean {
+                val url = request?.url?.toString()
+                // An iframe never navigates the shell: inline content of the page keeps working,
+                // a remote frame is not loaded at all (the WebView stays on the loopback origin).
+                return if (request?.isForMainFrame == false) {
+                    handleSubFrameNavigation(url)
+                } else {
+                    handleNavigation(url)
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
+                handleNavigation(url)
+
             override fun onReceivedHttpAuthRequest(
                 view: WebView?,
                 handler: HttpAuthHandler?,

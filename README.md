@@ -321,6 +321,17 @@ app reconnects and refetches what it missed, and `onRenderProcessGone` builds a 
 reopens the last session instead of leaving an empty surface. A three-second generation check
 re-pairs the page when the heartbeat or the notification restarted the server behind its back.
 
+Taps inside the page stay confined to the server as well. `WebViewLinks` classifies every
+navigation: a URL of the paired loopback origin (same host and port) loads in the WebView, while
+other web URLs and `mailto:`/`tel:` links are handed to the system (browser, mail client). The chat
+renders every link with `target="_blank"`, so the WebView supports multiple windows and
+`onCreateWindow` resolves the popup URL with a throwaway view and hands it to the same code path
+instead of dropping it. A file path a message refers to opens in the app's own file manager:
+directories in the Files screen, text in the editor, images in the preview, everything else in the
+system chooser. The chat renders such a path without an `href`, so a capture-phase script reports
+an absolute path (`/data/...`) to the app; a relative path is left to the web UI, which resolves it
+against the project root. `javascript:`, `content:` and `intent:` URLs are dropped.
+
 ### Material You
 
 The native screens use `Theme.Material3.DayNight.NoActionBar`. On Android 12+ the app applies
