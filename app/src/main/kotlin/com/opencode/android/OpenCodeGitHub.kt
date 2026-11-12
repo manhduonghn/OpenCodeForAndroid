@@ -8,6 +8,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -337,14 +338,23 @@ object OpenCodeGitHub {
         var interval = maxOf(5, device.interval)
         while (SystemClock.uptimeMillis() < deadline) {
             if (loginCancelled(session)) throw LoginCancelledException()
-            val body = postForm(
-                ACCESS_TOKEN_URL,
-                mapOf(
-                    "client_id" to CLIENT_ID,
-                    "device_code" to device.deviceCode,
-                    "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
-                ),
-            )
+            val body = try {
+                postForm(
+                    ACCESS_TOKEN_URL,
+                    mapOf(
+                        "client_id" to CLIENT_ID,
+                        "device_code" to device.deviceCode,
+                        "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
+                    ),
+                )
+            } catch (e: IOException) {
+                if (loginCancelled(session)) throw LoginCancelledException()
+                // A dropped connection must not end the login: GitHub keeps the device code valid
+                // until its deadline, so wait for the next poll and ask again.
+                Log.w(TAG, "Could not poll the device login; retrying", e)
+                sleepUntil(SystemClock.uptimeMillis() + interval * 1000L, session)
+                continue
+            }
             if (loginCancelled(session)) throw LoginCancelledException()
             val json = JSONObject(body)
             val token = json.optString("access_token", "")
@@ -385,19 +395,23 @@ object OpenCodeGitHub {
                     )
                 }
             }
-            val wake = SystemClock.uptimeMillis() + interval * 1000L
-            while (SystemClock.uptimeMillis() < wake) {
-                if (loginCancelled(session)) throw LoginCancelledException()
-                try {
-                    Thread.sleep(250L)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw LoginCancelledException()
-                }
-            }
+            sleepUntil(SystemClock.uptimeMillis() + interval * 1000L, session)
         }
         if (loginCancelled(session)) throw LoginCancelledException()
         throw IllegalStateException("Hết thời gian chờ xác thực. Bấm Đăng nhập lại để lấy mã mới.")
+    }
+
+    /** Sleep in short slices so a cancelled login does not have to wait for the poll interval. */
+    private fun sleepUntil(deadline: Long, session: Int) {
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (loginCancelled(session)) throw LoginCancelledException()
+            try {
+                Thread.sleep(250L)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw LoginCancelledException()
+            }
+        }
     }
 
     fun listRepos(): Result {

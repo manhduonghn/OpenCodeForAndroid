@@ -1373,6 +1373,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         viewModel.resumeWebView()
         // Returning from "Open in another app" may leave a modified file behind.
         if (::editorScreen.isInitialized) editorScreen.onActivityResumed()
+        // The GitHub device login finishes in the browser, so check the token as soon as the
+        // activity comes back instead of leaving the code screen waiting for the next poll.
+        if (::githubScreen.isInitialized) githubScreen.onActivityResumed()
         // A server that was replaced while the app was in the background invalidated the cookie
         // and the pairing token of the page. Pair again instead of showing a page that only gets
         // 401s from the API.

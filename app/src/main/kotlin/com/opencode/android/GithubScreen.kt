@@ -182,6 +182,7 @@ class GithubScreen(
     private var loginInFlight = false
     private var cloneInFlight = false
 
+    @Volatile
     private var device: OpenCodeGitHub.DeviceCode? = null
     private var loginDeadline = 0L
     private var loginError: String? = null
@@ -211,6 +212,26 @@ class GithubScreen(
                 formatDuration(left),
             )
             handler.postDelayed(this, 1000L)
+        }
+    }
+
+    /**
+     * Backstop for the request that creates the device code. The HTTP timeouts of [OpenCodeGitHub]
+     * normally fail the request first, but a network that never answers (a dead DNS server, a
+     * captive portal) must not leave the screen on "creating code" forever: the user gets an
+     * explanation and the login button again.
+     */
+    private val codeWatchdog = object : Runnable {
+        override fun run() {
+            if (released || state != State.WAITING || !loginInFlight || device != null) return
+            OpenCodeGitHub.cancelLogin()
+            loginTicket++
+            loginInFlight = false
+            handler.removeCallbacks(loginTicker)
+            loginError = activity.getString(R.string.opencode_github_code_timeout)
+            state = State.SIGNED_OUT
+            renderState()
+            snack(loginError.orEmpty())
         }
     }
 
@@ -330,6 +351,36 @@ class GithubScreen(
     /** Called from `Activity.onConfigurationChanged`, which does not recreate the activity. */
     fun onConfigurationChanged() {
         applyLayoutMode()
+    }
+
+    /**
+     * Called from `Activity.onResume`. Returning from the browser is the usual way to finish a
+     * device login, so check the token once immediately instead of waiting for the next poll (or
+     * for the code to expire) when the poll was lost while the app was in the background.
+     */
+    fun onActivityResumed() {
+        if (released || !isVisible) return
+        if (state != State.WAITING || !loginInFlight || device == null) return
+        handler.removeCallbacks(loginTicker)
+        handler.post(loginTicker)
+        val ticket = loginTicket
+        waitStatus.setText(R.string.opencode_github_checking_login)
+        executor.execute {
+            val user = if (OpenCodeGitHub.isLoggedIn()) OpenCodeGitHub.currentUser() else null
+            handler.post {
+                if (released || activity.isFinishing || activity.isDestroyed) return@post
+                if (ticket != loginTicket || !loginInFlight) return@post
+                if (user != null) {
+                    // The browser flow completed while the poll was between requests. Stop the
+                    // poll and leave the code screen instead of showing an expired code later.
+                    OpenCodeGitHub.cancelLogin()
+                    loginTicket++
+                    finishLogin(user)
+                } else {
+                    waitStatus.setText(R.string.opencode_github_waiting)
+                }
+            }
+        }
     }
 
     /* ------------------------------------------------------------------ state */
@@ -497,71 +548,112 @@ class GithubScreen(
         waitNewCode.visibility = View.GONE
         waitCancel.visibility = View.VISIBLE
         waitStatus.setText(R.string.opencode_settings_github_logging_in)
+        handler.removeCallbacks(codeWatchdog)
+        handler.postDelayed(codeWatchdog, CODE_REQUEST_TIMEOUT_MS)
 
         executor.execute {
             try {
                 val requested = OpenCodeGitHub.requestDeviceCode()
                 if (released || ticket != loginTicket) return@execute
-                device = requested
                 loginDeadline = SystemClock.uptimeMillis() + requested.expiresIn * 1000L
+                device = requested
                 handler.post {
                     if (released || activity.isFinishing || activity.isDestroyed) return@post
                     if (ticket != loginTicket || !loginInFlight) return@post
+                    handler.removeCallbacks(codeWatchdog)
                     waitCode.text = requested.userCode
                     waitCopy.visibility = View.VISIBLE
+                    waitCopy.setText(R.string.opencode_github_copy_again)
                     waitLink.visibility = View.VISIBLE
-                    waitStatus.setText(R.string.opencode_github_waiting)
+                    waitLink.setText(R.string.opencode_github_reopen_link)
                     waitRemaining.text = activity.getString(
                         R.string.opencode_github_remaining,
                         formatDuration(requested.expiresIn * 1000L),
                     )
                     handler.removeCallbacks(loginTicker)
                     handler.postDelayed(loginTicker, 1000L)
+
+                    // Copy the code and open the browser immediately, so the user only has to
+                    // paste and confirm. This runs on the main thread while the screen is still
+                    // visible, which is also when Android allows starting another activity.
+                    val copied = copyCode(announce = false)
+                    // Android refuses to start an activity from a background app, and the screen
+                    // would then claim that the browser opened. Only launch it while focused.
+                    val opened = activity.hasWindowFocus() &&
+                        openVerification(requested, announce = false)
+                    when {
+                        copied && opened -> waitStatus.setText(R.string.opencode_github_waiting_auto)
+                        copied -> {
+                            waitStatus.setText(R.string.opencode_github_waiting_copied)
+                            snack(activity.getString(R.string.opencode_github_browser_failed))
+                        }
+                        opened -> {
+                            waitStatus.setText(R.string.opencode_github_waiting_shown)
+                            snack(activity.getString(R.string.opencode_github_copy_failed))
+                        }
+                        else -> {
+                            waitStatus.setText(R.string.opencode_github_waiting_shown)
+                            snack(activity.getString(R.string.opencode_github_open_failed))
+                        }
+                    }
                 }
                 OpenCodeGitHub.completeLogin(requested, session)
+                val user = OpenCodeGitHub.currentUser() ?: "GitHub"
                 handler.post {
                     if (released || activity.isFinishing || activity.isDestroyed) return@post
-                    if (ticket != loginTicket) return@post
-                    loginInFlight = false
-                    device = null
-                    handler.removeCallbacks(loginTicker)
-                    state = State.SIGNED_IN
-                    reposLoaded = false
-                    repos = emptyList()
-                    bindAccount(OpenCodeGitHub.currentUser() ?: "GitHub", needsReauth = false)
-                    renderState()
-                    snack(activity.getString(R.string.opencode_github_login_ok, accountUser.text))
-                    listener.onGitHubAuthChanged()
-                    refreshRepos(force = true)
+                    if (ticket != loginTicket || !loginInFlight) return@post
+                    finishLogin(user)
                 }
             } catch (e: OpenCodeGitHub.LoginCancelledException) {
                 handler.post {
                     if (released || activity.isFinishing || activity.isDestroyed) return@post
                     if (ticket != loginTicket || !loginInFlight) return@post
-                    loginInFlight = false
-                    device = null
-                    handler.removeCallbacks(loginTicker)
-                    loginError = activity.getString(R.string.opencode_github_login_cancelled)
-                    state = State.SIGNED_OUT
-                    renderState()
+                    failLogin(activity.getString(R.string.opencode_github_login_cancelled), speak = false)
                 }
             } catch (e: Exception) {
                 handler.post {
                     if (released || activity.isFinishing || activity.isDestroyed) return@post
                     if (ticket != loginTicket) return@post
-                    loginInFlight = false
-                    device = null
-                    handler.removeCallbacks(loginTicker)
-                    loginError = activity.getString(
-                        R.string.opencode_github_login_failed,
-                        e.message ?: e.toString(),
+                    failLogin(
+                        activity.getString(
+                            R.string.opencode_github_login_failed,
+                            e.message ?: e.toString(),
+                        ),
+                        speak = true,
                     )
-                    state = State.SIGNED_OUT
-                    renderState()
-                    snack(loginError.orEmpty())
                 }
             }
         }
+    }
+
+    /**
+     * Leave the waiting screen for the signed-in one. The caller still owns the ticket check: this
+     * is called both by the polling loop and by the resume check, and only the first one wins.
+     */
+    private fun finishLogin(user: String) {
+        loginInFlight = false
+        device = null
+        handler.removeCallbacks(loginTicker)
+        handler.removeCallbacks(codeWatchdog)
+        state = State.SIGNED_IN
+        reposLoaded = false
+        repos = emptyList()
+        bindAccount(user, needsReauth = false)
+        renderState()
+        snack(activity.getString(R.string.opencode_github_login_ok, user))
+        listener.onGitHubAuthChanged()
+        refreshRepos(force = true)
+    }
+
+    private fun failLogin(message: String, speak: Boolean) {
+        loginInFlight = false
+        device = null
+        handler.removeCallbacks(loginTicker)
+        handler.removeCallbacks(codeWatchdog)
+        loginError = message
+        state = State.SIGNED_OUT
+        renderState()
+        if (speak) snack(message)
     }
 
     /**
@@ -577,6 +669,7 @@ class GithubScreen(
             device = null
             handler.removeCallbacks(loginTicker)
         }
+        handler.removeCallbacks(codeWatchdog)
         startLogin()
     }
 
@@ -587,28 +680,44 @@ class GithubScreen(
         loginInFlight = false
         device = null
         handler.removeCallbacks(loginTicker)
+        handler.removeCallbacks(codeWatchdog)
         loginError = activity.getString(R.string.opencode_github_login_cancelled)
         state = State.SIGNED_OUT
         renderState()
     }
 
-    private fun copyCode() {
-        val code = waitCode.text?.toString().orEmpty()
-        if (code.isBlank()) return
-        copyToClipboard("github-device-code", code)
-        snack(activity.getString(R.string.opencode_github_copied))
+    /** Copy the current device code. Returns false when the clipboard is unavailable. */
+    private fun copyCode(announce: Boolean = true): Boolean {
+        val code = device?.userCode ?: waitCode.text?.toString().orEmpty()
+        if (code.isBlank()) return false
+        val copied = copyToClipboard("github-device-code", code)
+        if (announce) {
+            snack(activity.getString(
+                if (copied) R.string.opencode_github_copied else R.string.opencode_github_copy_failed,
+            ))
+        }
+        return copied
     }
 
-    private fun openVerification() {
-        val code = device
-        if (code == null) {
-            snack(activity.getString(R.string.opencode_github_open_failed))
-            return
+    /**
+     * Open the GitHub device page in the default browser. Returns false when no activity can
+     * handle the link; [announce] adds a snackbar for the manual button and stays silent for the
+     * automatic call, whose failure is reported together with the code status.
+     */
+    private fun openVerification(
+        device: OpenCodeGitHub.DeviceCode? = this.device,
+        announce: Boolean = true,
+    ): Boolean {
+        val code = device ?: run {
+            if (announce) snack(activity.getString(R.string.opencode_github_open_failed))
+            return false
         }
-        try {
+        return try {
             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(code.verificationUri)))
+            true
         } catch (e: Exception) {
-            snack(activity.getString(R.string.opencode_github_open_failed))
+            if (announce) snack(activity.getString(R.string.opencode_github_open_failed))
+            false
         }
     }
 
@@ -1181,13 +1290,16 @@ class GithubScreen(
         }
     }
 
-    private fun copyToClipboard(label: String, text: String) {
-        try {
+    private fun copyToClipboard(label: String, text: String): Boolean {
+        return try {
             val manager =
                 activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            manager?.setPrimaryClip(ClipData.newPlainText(label, text))
+                ?: return false
+            manager.setPrimaryClip(ClipData.newPlainText(label, text))
+            true
         } catch (e: Exception) {
             // The clipboard may be unavailable; the caller only uses it as a convenience.
+            false
         }
     }
 
@@ -1288,5 +1400,11 @@ class GithubScreen(
         const val WIDE_SCREEN_DP = 720
         const val MAX_INSTALL_LOG = 12_000
         const val MAX_CLONE_LOG = 8_000
+
+        /**
+         * How long the "creating a code" screen may stay up. Both HTTP timeouts of the request
+         * are 20 s, so this only catches a connection that ignores them (DNS, captive portal).
+         */
+        const val CODE_REQUEST_TIMEOUT_MS = 60_000L
     }
 }
