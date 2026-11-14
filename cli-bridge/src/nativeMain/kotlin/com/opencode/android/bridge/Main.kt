@@ -195,6 +195,13 @@ private fun field(text: String?, key: String): String {
  * Send the ordered broadcast to [OpenCodePkgReceiver]. `am start-service` cannot be used: the
  * shell command sends `com.android.shell` as its calling package and Android rejects the request
  * when the real caller is this app ("Can't start from invalid source").
+ *
+ * Streams of the child have to be redirected, stdin included. `/system/bin/am` runs `cmd
+ * activity`, which leaves the `untrusted_app` SELinux domain; the pty of the terminal belongs to
+ * `untrusted_app_all_devpts` and that domain may not read or write it. With the terminal pty on
+ * stdin the activity manager answers with
+ * `Failure calling service activity: Failed transaction (2147483646)`, so stdin is `/dev/null`
+ * and both output streams go to the status file.
  */
 private fun startService(
     action: String,
@@ -229,7 +236,7 @@ private fun startService(
                 append(" --es ").append(shellQuote("directory")).append(' ')
                     .append(shellQuote(directory))
             }
-            append(" > ").append(shellQuote(outputFile)).append(" 2>&1")
+            append(" > ").append(shellQuote(outputFile)).append(" 2>&1 < /dev/null")
         }
 
         val exit = system(command)
