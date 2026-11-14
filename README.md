@@ -386,7 +386,10 @@ web UI or on the server being reachable. It is a pseudo-terminal in the app proc
   and drawn by `TerminalView`; soft-keyboard input goes through a raw
   `InputConnection`, hardware keys through `onKeyDown`. Pinch changes the font size,
   drag scrolls back, long-press pastes, and the extra-keys row supplies Esc, Tab,
-  sticky Ctrl/Alt, arrows, paging, `^C`, F1–F12 and common shell symbols.
+  sticky Ctrl/Alt, arrows, paging, `^C`, F1–F12 and common shell symbols. A
+  modifier cycles off → next key → locked; the locked state uses the tertiary
+  colour and a lock badge, and both states are cleared when the panel closes or
+  the shell restarts so a hidden latch cannot swallow the next keypress.
 - The shell lives in the `TerminalSessions` singleton, not in the screen. Closing the
   panel, rotating the device or sending the app to the background keeps it and every
   job it started alive. The panel reattaches to the same scrollback and cursor; only
