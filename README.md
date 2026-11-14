@@ -381,10 +381,15 @@ web UI or on the server being reachable. It is a pseudo-terminal in the app proc
   `$PREFIX/bin/bash --rcfile $PREFIX/etc/opencode-terminal.bashrc -i`. The managed
   rc file sources `$PREFIX/etc/profile` (or `opencode-env.sh` plus `~/.bashrc`), so
   the shell has the same `PATH`, `TMPDIR`, JDK and certificate variables as the
-  server. If the runtime is not installed yet, the app downloads it first (with the
-  progress shown in the terminal notice) and starts bash when it is ready. Android's
-  `/system/bin/sh -i` is only used when that download fails, and the notice then
-  offers a retry.
+  server. After sourcing it re-asserts `$PREFIX/bin` in `PATH` and defines `pkg`
+  against `$PREFIX/libexec/oc-bridge` by absolute path, so a user profile that
+  replaces `PATH` or a missing `bin/pkg` symlink (an interrupted app update) cannot
+  turn the command into "command not found". If the runtime is not installed yet,
+  the app downloads it first (with the progress shown in the terminal notice) and
+  starts bash when it is ready. Android's `/system/bin/sh -i` is only used when that
+  download fails; it reads a generated `$ENV` file that makes `pkg` and `opencode`
+  explain that the runtime is missing, the notice offers a retry, and the panel
+  replaces that fallback shell with bash as soon as the runtime becomes ready.
 - Output is parsed by the xterm emulator in `app/src/main/kotlin/com/opencode/android/terminal/`
   and drawn by `TerminalView`; soft-keyboard input goes through a raw
   `InputConnection`, hardware keys through `onKeyDown`. Pinch changes the font size,

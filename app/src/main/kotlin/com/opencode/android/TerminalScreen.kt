@@ -247,11 +247,7 @@ class TerminalScreen(
         view.requestFocus()
         renderNotice()
         renderSubtitle()
-        if (TerminalSessions.session == null && !starting && !installing &&
-            startError == null && view.width > 0
-        ) {
-            startFromView()
-        }
+        startIfNeeded()
     }
 
     fun hide() {
@@ -277,6 +273,7 @@ class TerminalScreen(
         if (isVisible) {
             attach(TerminalSessions.session)
             renderNotice()
+            startIfNeeded()
         }
     }
 
@@ -306,6 +303,23 @@ class TerminalScreen(
     private fun startFromView() {
         val grid = lastGrid ?: return
         start(grid[0], grid[1], grid[2], grid[3])
+    }
+
+    /**
+     * Start a shell when there is none, and replace the fallback shell of a failed runtime
+     * download once the runtime is available. An exited shell is left alone so its notice can
+     * offer the restart; a running bash is never touched.
+     *
+     * Without the upgrade the panel would keep the Android `sh` of the failed download forever,
+     * and `pkg` would stay "command not found" even though the runtime is installed by then.
+     */
+    private fun startIfNeeded() {
+        if (starting || installing || startError != null || view.width <= 0) return
+        val current = TerminalSessions.session
+        val fallback = current != null && current.shellName == "sh" &&
+            OpenCodeBootstrap.isPrefixReady()
+        if (current != null && !fallback) return
+        startFromView()
     }
 
     private fun start(rows: Int, cols: Int, widthPx: Int, heightPx: Int) {

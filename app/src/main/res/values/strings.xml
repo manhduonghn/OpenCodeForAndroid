@@ -590,7 +590,7 @@
     <string name="opencode_terminal_copy_failed">Không sao chép được.</string>
     <string name="opencode_terminal_empty">Terminal chưa có gì để sao chép.</string>
     <string name="opencode_terminal_clipboard_empty">Bộ nhớ tạm trống.</string>
-    <string name="opencode_terminal_fallback_hint">Chưa có Linux runtime, đang dùng shell của Android. Nhấn “Thử lại” để tải lại.</string>
+    <string name="opencode_terminal_fallback_hint">Chưa có Linux runtime nên pkg chưa dùng được; đang dùng shell của Android. Nhấn “Thử lại” để tải lại.</string>
     <string name="opencode_terminal_key_esc">Esc</string>
     <string name="opencode_terminal_key_ctrl">Ctrl</string>
     <string name="opencode_terminal_key_alt">Alt</string>
