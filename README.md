@@ -381,7 +381,10 @@ web UI or on the server being reachable. It is a pseudo-terminal in the app proc
   `$PREFIX/bin/bash --rcfile $PREFIX/etc/opencode-terminal.bashrc -i`. The managed
   rc file sources `$PREFIX/etc/profile` (or `opencode-env.sh` plus `~/.bashrc`), so
   the shell has the same `PATH`, `TMPDIR`, JDK and certificate variables as the
-  server. If the runtime is not installed yet, it falls back to `/system/bin/sh -i`.
+  server. If the runtime is not installed yet, the app downloads it first (with the
+  progress shown in the terminal notice) and starts bash when it is ready. Android's
+  `/system/bin/sh -i` is only used when that download fails, and the notice then
+  offers a retry.
 - Output is parsed by the xterm emulator in `app/src/main/kotlin/com/opencode/android/terminal/`
   and drawn by `TerminalView`; soft-keyboard input goes through a raw
   `InputConnection`, hardware keys through `onKeyDown`. Pinch changes the font size,

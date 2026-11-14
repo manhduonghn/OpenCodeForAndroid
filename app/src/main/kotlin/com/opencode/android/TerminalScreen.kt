@@ -92,6 +92,34 @@ class TerminalScreen(
     @Volatile
     private var released = false
 
+    /** True while the Linux runtime is being downloaded because the prefix is missing. */
+    private var installing = false
+
+    /** True when the shell has to be restarted after the runtime finished installing. */
+    private var pendingRestart = false
+
+    /** Last error of a failed runtime installation, shown in the notice. */
+    private var runtimeError: String? = null
+
+    /** Progress of the runtime installation, null while it is indeterminate. */
+    private var installProgress: Int? = null
+
+    /** Detail line published by the installer, eg. the download progress. */
+    private var installDetail: String? = null
+
+    /** Feeds the progress of the runtime download into the terminal notice. */
+    private val installListener = object : OpenCodeBootstrap.InstallListener {
+        override fun onOpenCodeInstallStateChanged(state: OpenCodeInstallState?) {
+            if (released || !installing || state == null) return
+            installProgress = state.overallProgress()
+            installDetail = listOf(state.message, state.detail)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+                .ifBlank { null }
+            renderNotice()
+        }
+    }
+
     private var repeatAction: (() -> Unit)? = null
     private val repeat = object : Runnable {
         override fun run() {
@@ -131,7 +159,15 @@ class TerminalScreen(
         }
 
         noticeAction.setOnClickListener {
-            if (startError != null || session?.running == false) restart() else startFromView()
+            when {
+                installing -> Unit
+                // A failed runtime download is retried on the next start, which installs the
+                // runtime again instead of leaving the user with Android's shell.
+                runtimeError != null -> startFromView()
+                startError != null -> startFromView()
+                session?.running == false -> restart()
+                else -> startFromView()
+            }
         }
 
         bindKey(R.id.terminal_key_esc) { view.pressKey(TermKey.ESCAPE) }
@@ -211,7 +247,9 @@ class TerminalScreen(
         view.requestFocus()
         renderNotice()
         renderSubtitle()
-        if (TerminalSessions.session == null && !starting && startError == null && view.width > 0) {
+        if (TerminalSessions.session == null && !starting && !installing &&
+            startError == null && view.width > 0
+        ) {
             startFromView()
         }
     }
@@ -244,6 +282,8 @@ class TerminalScreen(
 
     fun release() {
         released = true
+        installing = false
+        OpenCodeBootstrap.removeInstallListener(installListener)
         stopRepeat()
         executor.shutdownNow()
         session?.removeListener(sessionListener)
@@ -260,7 +300,7 @@ class TerminalScreen(
             if (current !== session) attach(current)
             return
         }
-        if (!starting && startError == null) start(rows, cols, widthPx, heightPx)
+        if (!starting && !installing && startError == null) start(rows, cols, widthPx, heightPx)
     }
 
     private fun startFromView() {
@@ -275,11 +315,31 @@ class TerminalScreen(
             renderNotice()
             return
         }
+        // The Linux runtime is missing. Download it instead of handing the user Android's bare
+        // shell, then start bash once the installation finished.
+        if (!OpenCodeBootstrap.isPrefixReady()) {
+            installRuntime(restart = false)
+            return
+        }
+        runtimeError = null
+        // A fallback shell may still be open when the runtime was installed by the app in the
+        // meantime; replace it with bash now that the prefix is ready.
+        val fallback = TerminalSessions.session?.shellName == "sh"
+        launch(restart = fallback, rows = rows, cols = cols, widthPx = widthPx, heightPx = heightPx)
+    }
+
+    private fun launch(restart: Boolean, rows: Int, cols: Int, widthPx: Int, heightPx: Int) {
         starting = true
         startError = null
         renderNotice()
         executor.execute {
-            val result = runCatching { TerminalSessions.start(rows, cols, widthPx, heightPx) }
+            val result = runCatching {
+                if (restart) {
+                    TerminalSessions.restart()
+                } else {
+                    TerminalSessions.start(rows, cols, widthPx, heightPx)
+                }
+            }
             activity.runOnUiThread {
                 if (released) return@runOnUiThread
                 starting = false
@@ -287,6 +347,82 @@ class TerminalScreen(
                     .onFailure { startError = it.message ?: it.javaClass.simpleName }
                 renderNotice()
                 renderSubtitle()
+            }
+        }
+    }
+
+    /**
+     * Start the download of the Linux runtime and start (or restart) the shell when it is done.
+     *
+     * Opening the terminal is the user's way of asking for a working shell, so it is better to
+     * fetch the runtime than to silently open Android's `sh`. When the installation fails the
+     * fallback shell still opens, and the notice offers a retry.
+     */
+    private fun installRuntime(restart: Boolean) {
+        pendingRestart = pendingRestart || restart || TerminalSessions.session != null
+        if (installing) return
+
+        installing = true
+        startError = null
+        runtimeError = null
+        installProgress = null
+        installDetail = null
+        OpenCodeBootstrap.addInstallListener(installListener)
+        renderNotice()
+        // setupIfNeeded calls the callback on the UI thread when the installation finished,
+        // successfully or not. It also queues the request when the app is already installing.
+        OpenCodeBootstrap.setupIfNeeded(activity) { onRuntimeInstalled() }
+    }
+
+    private fun onRuntimeInstalled() {
+        if (released) return
+        installing = false
+        OpenCodeBootstrap.removeInstallListener(installListener)
+        val restart = pendingRestart
+        pendingRestart = false
+        installProgress = null
+        installDetail = null
+
+        if (OpenCodeBootstrap.isPrefixReady()) {
+            if (restart) {
+                launch(
+                    restart = true,
+                    rows = TerminalSessions.lastRows,
+                    cols = TerminalSessions.lastCols,
+                    widthPx = TerminalSessions.lastWidthPx,
+                    heightPx = TerminalSessions.lastHeightPx,
+                )
+            } else {
+                startFromView()
+            }
+            return
+        }
+
+        val state = OpenCodeBootstrap.getInstallState()
+        runtimeError = state.error.ifBlank { state.message }
+            .ifBlank { activity.getString(R.string.opencode_terminal_install_unknown) }
+        renderNotice()
+        // Keep the terminal usable while the runtime is missing, the notice offers a retry.
+        if (restart) {
+            launch(
+                restart = true,
+                rows = TerminalSessions.lastRows,
+                cols = TerminalSessions.lastCols,
+                widthPx = TerminalSessions.lastWidthPx,
+                heightPx = TerminalSessions.lastHeightPx,
+            )
+        } else {
+            val grid = lastGrid
+            if (grid != null) {
+                launch(false, grid[0], grid[1], grid[2], grid[3])
+            } else {
+                launch(
+                    restart = false,
+                    rows = TerminalSessions.lastRows,
+                    cols = TerminalSessions.lastCols,
+                    widthPx = TerminalSessions.lastWidthPx,
+                    heightPx = TerminalSessions.lastHeightPx,
+                )
             }
         }
     }
@@ -308,20 +444,17 @@ class TerminalScreen(
     private fun beginRestart() {
         if (released) return
         resetModifiers()
-        starting = true
-        startError = null
-        renderNotice()
-        executor.execute {
-            val result = runCatching { TerminalSessions.restart() }
-            activity.runOnUiThread {
-                if (released) return@runOnUiThread
-                starting = false
-                result.onSuccess { attach(it) }
-                    .onFailure { startError = it.message ?: it.javaClass.simpleName }
-                renderNotice()
-                renderSubtitle()
-            }
+        if (!OpenCodeBootstrap.isPrefixReady()) {
+            installRuntime(restart = true)
+            return
         }
+        launch(
+            restart = true,
+            rows = TerminalSessions.lastRows,
+            cols = TerminalSessions.lastCols,
+            widthPx = TerminalSessions.lastWidthPx,
+            heightPx = TerminalSessions.lastHeightPx,
+        )
     }
 
     private fun attach(next: TerminalSession?) {
@@ -339,31 +472,54 @@ class TerminalScreen(
         val message: String?
         val action: String?
         val busy: Boolean
+        val progress: Int?
         when {
+            installing -> {
+                val detail = installDetail
+                message = if (detail == null) {
+                    activity.getString(R.string.opencode_terminal_installing)
+                } else {
+                    "${activity.getString(R.string.opencode_terminal_installing)} $detail"
+                }
+                action = null
+                busy = true
+                progress = installProgress
+            }
+            runtimeError != null -> {
+                message = activity.getString(R.string.opencode_terminal_install_failed, runtimeError)
+                action = activity.getString(R.string.opencode_terminal_install_retry)
+                busy = false
+                progress = null
+            }
             starting -> {
                 message = activity.getString(R.string.opencode_terminal_starting)
                 action = null
                 busy = true
+                progress = null
             }
             startError != null -> {
                 message = activity.getString(R.string.opencode_terminal_start_failed, startError)
                 action = activity.getString(R.string.opencode_terminal_restart)
                 busy = false
+                progress = null
             }
             current == null -> {
                 message = activity.getString(R.string.opencode_terminal_starting)
                 action = null
                 busy = true
+                progress = null
             }
             current.exitCode != null -> {
                 message = activity.getString(R.string.opencode_terminal_exited, current.exitCode ?: -1)
                 action = activity.getString(R.string.opencode_terminal_restart)
                 busy = false
+                progress = null
             }
             else -> {
                 message = null
                 action = null
                 busy = false
+                progress = null
             }
         }
         if (message == null) {
@@ -372,6 +528,12 @@ class TerminalScreen(
             notice.visibility = View.VISIBLE
             noticeText.text = message
             noticeProgress.visibility = if (busy) View.VISIBLE else View.GONE
+            if (progress != null) {
+                noticeProgress.isIndeterminate = false
+                noticeProgress.progress = progress
+            } else {
+                noticeProgress.isIndeterminate = true
+            }
             noticeAction.visibility = if (action == null) View.GONE else View.VISIBLE
             if (action != null) noticeAction.text = action
         }

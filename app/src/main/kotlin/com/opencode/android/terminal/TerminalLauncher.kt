@@ -22,8 +22,9 @@ internal class TerminalLaunch(
  * prefix has one. The managed rc file sources the package environment (PATH,
  * TMPDIR, LD_LIBRARY_PATH, certificates, the JDK…) and then the user's
  * `~/.bashrc`; without it an interactive shell would miss everything that the
- * rest of the app sets up. If the prefix is not installed yet, Android's own
- * shell still gets a real terminal.
+ * rest of the app sets up. When the prefix is still missing the app downloads
+ * the Linux runtime before it starts a shell (see [com.opencode.android.TerminalScreen]);
+ * Android's own shell is only the last resort when that download failed.
  */
 internal object TerminalLauncher {
     /** Managed rc file, rewritten when the app changes it. */
@@ -67,8 +68,9 @@ internal object TerminalLauncher {
             )
         }
 
-        // No runtime yet: Android's shell is still useful for poking at the
-        // device. Do not hand it the prefix libraries or the bionic preload.
+        // No runtime yet (the download failed): Android's shell is still useful
+        // for poking at the device. Do not hand it the prefix libraries or the
+        // bionic preload.
         val env = LinkedHashMap<String, String>().apply {
             put("HOME", home.absolutePath)
             put("PATH", "/system/bin:/system/xbin:/vendor/bin")

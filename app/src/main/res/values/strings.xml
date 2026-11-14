@@ -572,6 +572,10 @@
     <string name="opencode_terminal_subtitle">Shell trong máy</string>
     <string name="opencode_terminal_view_description">Màn hình terminal</string>
     <string name="opencode_terminal_starting">Đang khởi động shell…</string>
+    <string name="opencode_terminal_installing">Đang tải Linux runtime…</string>
+    <string name="opencode_terminal_install_failed">Không tải được Linux runtime: %1$s</string>
+    <string name="opencode_terminal_install_unknown">Lỗi không rõ.</string>
+    <string name="opencode_terminal_install_retry">Thử lại</string>
     <string name="opencode_terminal_start_failed">Không mở được terminal: %1$s</string>
     <string name="opencode_terminal_no_native">Bản dựng này không có thư viện PTY gốc.</string>
     <string name="opencode_terminal_exited">Shell đã kết thúc (mã %1$d).</string>
@@ -586,7 +590,7 @@
     <string name="opencode_terminal_copy_failed">Không sao chép được.</string>
     <string name="opencode_terminal_empty">Terminal chưa có gì để sao chép.</string>
     <string name="opencode_terminal_clipboard_empty">Bộ nhớ tạm trống.</string>
-    <string name="opencode_terminal_fallback_hint">Chưa cài Linux runtime, đang dùng shell của Android. Mở OpenCode để hoàn tất cài đặt.</string>
+    <string name="opencode_terminal_fallback_hint">Chưa có Linux runtime, đang dùng shell của Android. Nhấn “Thử lại” để tải lại.</string>
     <string name="opencode_terminal_key_esc">Esc</string>
     <string name="opencode_terminal_key_ctrl">Ctrl</string>
     <string name="opencode_terminal_key_alt">Alt</string>
