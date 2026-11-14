@@ -13,7 +13,9 @@ import android.view.View
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
+import androidx.core.graphics.drawable.DrawableCompat
 import androidx.core.view.ViewCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
@@ -26,6 +28,7 @@ import com.opencode.android.terminal.TerminalSession
 import com.opencode.android.terminal.TerminalSessions
 import com.opencode.android.terminal.TerminalView
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 /** Sticky modifier: off, on for the next key, or locked until tapped again. */
 private enum class Latch {
@@ -216,6 +219,7 @@ class TerminalScreen(
     fun hide() {
         if (!isVisible) return
         stopRepeat()
+        resetModifiers()
         view.hideKeyboard()
         listener.onTerminalClosed()
         OverlayMotion.conceal(panel)
@@ -226,6 +230,7 @@ class TerminalScreen(
     /** The activity is going to the background: the shell stays alive. */
     fun onBackground() {
         stopRepeat()
+        resetModifiers()
         OpenCodeSettings.setTerminalFontSize(activity, view.fontSizeSp)
         if (isVisible) view.hideKeyboard()
     }
@@ -302,6 +307,7 @@ class TerminalScreen(
 
     private fun beginRestart() {
         if (released) return
+        resetModifiers()
         starting = true
         startError = null
         renderNotice()
@@ -383,9 +389,67 @@ class TerminalScreen(
     }
 
     private fun renderModifiers() {
-        tintKey(ctrlKey, ctrl.on)
-        tintKey(altKey, alt.on)
-        tintKey(fnKey, fnOpen)
+        tintKey(ctrlKey, ctrl, activity.getString(R.string.opencode_terminal_key_ctrl))
+        tintKey(altKey, alt, activity.getString(R.string.opencode_terminal_key_alt))
+        tintKey(
+            fnKey,
+            if (fnOpen) Latch.ONCE else Latch.OFF,
+            activity.getString(R.string.opencode_terminal_key_fn),
+        )
+    }
+
+    /**
+     * A modifier is off, armed for one key (primary) or locked on (tertiary with
+     * a small lock badge). The three states are also spelled out for TalkBack.
+     */
+    private fun tintKey(key: TextView, latch: Latch, label: String) {
+        val containerAttr = when (latch) {
+            Latch.OFF -> com.google.android.material.R.attr.colorSecondaryContainer
+            Latch.ONCE -> androidx.appcompat.R.attr.colorPrimary
+            Latch.LOCKED -> com.google.android.material.R.attr.colorTertiary
+        }
+        val contentAttr = when (latch) {
+            Latch.OFF -> com.google.android.material.R.attr.colorOnSecondaryContainer
+            Latch.ONCE -> com.google.android.material.R.attr.colorOnPrimary
+            Latch.LOCKED -> com.google.android.material.R.attr.colorOnTertiary
+        }
+        val container = MaterialColors.getColor(key, containerAttr)
+        val content = MaterialColors.getColor(key, contentAttr)
+        ViewCompat.setBackgroundTintList(key, ColorStateList.valueOf(container))
+        key.setTextColor(content)
+
+        // The badge sits above the label so a wide monospace label still fits
+        // in the narrow, equally weighted keys of the extra row.
+        val badge = if (latch == Latch.LOCKED) {
+            val density = key.resources.displayMetrics.density
+            ContextCompat.getDrawable(activity, R.drawable.ic_lock)?.mutate()?.apply {
+                val size = (10 * density).roundToInt()
+                setBounds(0, 0, size, size)
+                DrawableCompat.setTint(this, content)
+            }
+        } else {
+            null
+        }
+        key.setCompoundDrawables(null, badge, null, null)
+        key.compoundDrawablePadding = if (badge != null) {
+            key.resources.displayMetrics.density.roundToInt()
+        } else {
+            0
+        }
+        key.contentDescription = when (latch) {
+            Latch.OFF -> label
+            Latch.ONCE -> activity.getString(R.string.opencode_terminal_modifier_once, label)
+            Latch.LOCKED -> activity.getString(R.string.opencode_terminal_modifier_locked, label)
+        }
+    }
+
+    /** Clear sticky modifiers so a hidden or restarted shell never eats the next key. */
+    private fun resetModifiers() {
+        ctrl = Latch.OFF
+        alt = Latch.OFF
+        fnOpen = false
+        fnScroll.visibility = View.GONE
+        renderModifiers()
     }
 
     /** Material You colours: the terminal shares the palette of the native shell. */
@@ -403,21 +467,6 @@ class TerminalScreen(
             cursorText = color(com.google.android.material.R.attr.colorOnPrimary),
             ansi = ansi,
         )
-    }
-
-    private fun tintKey(key: TextView, active: Boolean) {
-        val container = MaterialColors.getColor(
-            key,
-            if (active) androidx.appcompat.R.attr.colorPrimary
-            else com.google.android.material.R.attr.colorSecondaryContainer,
-        )
-        val content = MaterialColors.getColor(
-            key,
-            if (active) com.google.android.material.R.attr.colorOnPrimary
-            else com.google.android.material.R.attr.colorOnSecondaryContainer,
-        )
-        ViewCompat.setBackgroundTintList(key, ColorStateList.valueOf(container))
-        key.setTextColor(content)
     }
 
     private fun consumeModifiers() {

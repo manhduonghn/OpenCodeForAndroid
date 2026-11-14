@@ -590,6 +590,8 @@
     <string name="opencode_terminal_key_esc">Esc</string>
     <string name="opencode_terminal_key_ctrl">Ctrl</string>
     <string name="opencode_terminal_key_alt">Alt</string>
+    <string name="opencode_terminal_modifier_once">%1$s, dùng cho phím kế tiếp</string>
+    <string name="opencode_terminal_modifier_locked">%1$s, đang khóa</string>
     <string name="opencode_terminal_key_tab">Tab</string>
     <string name="opencode_terminal_key_home">Home</string>
     <string name="opencode_terminal_key_end">End</string>
