@@ -85,8 +85,8 @@ android {
         // execve() of app data files for apps that target API 29 or higher (the same reason the
         // Termux app itself still targets API 28), so stay on 28.
         targetSdk = 28
-        versionCode = 26
-        versionName = "1.0.25"
+        versionCode = 27
+        versionName = "1.0.26"
 
         if (hasNdk) {
             ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
