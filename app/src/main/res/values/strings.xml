@@ -567,6 +567,44 @@
     <string name="opencode_image_failed">Không đọc được ảnh này.</string>
     <string name="opencode_image_meta">%1$s · %2$s</string>
 
+    <!-- Native terminal -->
+    <string name="opencode_terminal_title">Terminal</string>
+    <string name="opencode_terminal_subtitle">Shell trong máy</string>
+    <string name="opencode_terminal_view_description">Màn hình terminal</string>
+    <string name="opencode_terminal_starting">Đang khởi động shell…</string>
+    <string name="opencode_terminal_start_failed">Không mở được terminal: %1$s</string>
+    <string name="opencode_terminal_no_native">Bản dựng này không có thư viện PTY gốc.</string>
+    <string name="opencode_terminal_exited">Shell đã kết thúc (mã %1$d).</string>
+    <string name="opencode_terminal_restart">Khởi động lại</string>
+    <string name="opencode_terminal_restart_title">Khởi động lại shell?</string>
+    <string name="opencode_terminal_restart_message">Mọi tiến trình đang chạy trong terminal sẽ bị dừng.</string>
+    <string name="opencode_terminal_copy">Sao chép đầu ra</string>
+    <string name="opencode_terminal_paste">Dán</string>
+    <string name="opencode_terminal_keyboard">Bàn phím</string>
+    <string name="opencode_terminal_font_reset">Cỡ chữ mặc định</string>
+    <string name="opencode_terminal_copied">Đã sao chép đầu ra terminal</string>
+    <string name="opencode_terminal_copy_failed">Không sao chép được.</string>
+    <string name="opencode_terminal_empty">Terminal chưa có gì để sao chép.</string>
+    <string name="opencode_terminal_clipboard_empty">Bộ nhớ tạm trống.</string>
+    <string name="opencode_terminal_fallback_hint">Chưa cài Linux runtime, đang dùng shell của Android. Mở OpenCode để hoàn tất cài đặt.</string>
+    <string name="opencode_terminal_key_esc">Esc</string>
+    <string name="opencode_terminal_key_ctrl">Ctrl</string>
+    <string name="opencode_terminal_key_alt">Alt</string>
+    <string name="opencode_terminal_key_tab">Tab</string>
+    <string name="opencode_terminal_key_home">Home</string>
+    <string name="opencode_terminal_key_end">End</string>
+    <string name="opencode_terminal_key_pgup">PgUp</string>
+    <string name="opencode_terminal_key_pgdn">PgDn</string>
+    <string name="opencode_terminal_key_fn">Fn</string>
+    <string name="opencode_terminal_key_backslash">\\</string>
+    <string name="opencode_terminal_key_ins">Ins</string>
+    <string name="opencode_terminal_key_del">Del</string>
+    <string name="opencode_terminal_key_interrupt">Ngắt tiến trình (Ctrl+C)</string>
+    <string name="opencode_terminal_key_up">Lên</string>
+    <string name="opencode_terminal_key_down">Xuống</string>
+    <string name="opencode_terminal_key_left">Trái</string>
+    <string name="opencode_terminal_key_right">Phải</string>
+
     <string name="opencode_directory_picker_title">Chọn thư mục</string>
     <string name="opencode_directory_picker_choose">Chọn thư mục này</string>
     <string name="opencode_directory_picker_up">Thư mục cha</string>

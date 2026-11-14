@@ -41,7 +41,10 @@ jobs:
       - name: Set up Gradle (caching)
         uses: gradle/actions/setup-gradle@v6
 
-      # No NDK step: Kotlin/Native downloads its own Android sysroot/toolchain.
+      - name: Set up Android NDK and CMake
+        run: |
+          "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Generate release keystore
         run: |

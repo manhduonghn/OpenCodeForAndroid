@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The native terminal: a PTY-backed screen, a start/exit notice and the
+  extra-keys row. The session lives outside this view (TerminalSessions), so
+  hiding the panel keeps the shell running.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/terminal_panel"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="vertical"
+    android:visibility="gone">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/terminal_toolbar"
+        style="@style/Widget.OpenCode.Toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/toolbar_height"
+        app:menu="@menu/menu_terminal"
+        app:navigationContentDescription="@string/opencode_files_back_to_chat"
+        app:navigationIcon="@drawable/ic_arrow_back"
+        app:subtitle="@string/opencode_terminal_subtitle"
+        app:title="@string/opencode_terminal_title" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:alpha="0.6"
+        android:background="?attr/colorOutlineVariant" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="?attr/colorSurfaceContainerLowest">
+
+        <com.opencode.android.terminal.TerminalView
+            android:id="@+id/terminal_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/opencode_terminal_view_description" />
+
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/terminal_notice"
+            style="@style/Widget.OpenCode.Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_margin="@dimen/spacing_md"
+            android:visibility="gone"
+            app:cardBackgroundColor="?attr/colorSecondaryContainer">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/spacing_md"
+                android:paddingTop="@dimen/spacing_sm"
+                android:paddingEnd="@dimen/spacing_sm"
+                android:paddingBottom="@dimen/spacing_sm">
+
+                <ProgressBar
+                    android:id="@+id/terminal_notice_progress"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginEnd="@dimen/spacing_md"
+                    android:indeterminateTint="?attr/colorOnSecondaryContainer" />
+
+                <TextView
+                    android:id="@+id/terminal_notice_text"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:textAppearance="@style/TextAppearance.OpenCode.BodyMedium"
+                    android:textColor="?attr/colorOnSecondaryContainer" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/terminal_notice_action"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/spacing_sm"
+                    android:minWidth="0dp"
+                    android:text="@string/opencode_terminal_restart"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/terminal_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurfaceContainerLow"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingTop="@dimen/spacing_xs"
+        android:paddingEnd="@dimen/screen_margin"
+        android:paddingBottom="@dimen/spacing_xs"
+        android:text="@string/opencode_terminal_fallback_hint"
+        android:textAppearance="@style/TextAppearance.OpenCode.LabelSmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:visibility="gone" />
+
+    <!-- Extra keys. Two weighted rows stay legible on a phone; Fn opens a
+         horizontally scrollable row with function keys and shell symbols. -->
+    <LinearLayout
+        android:id="@+id/terminal_keys"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurfaceContainer"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/spacing_xs"
+        android:paddingTop="@dimen/spacing_xs"
+        android:paddingEnd="@dimen/spacing_xs"
+        android:paddingBottom="@dimen/spacing_xs">
+
+        <HorizontalScrollView
+            android:id="@+id/terminal_fn_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f1" android:text="F1" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f2" android:text="F2" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f3" android:text="F3" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f4" android:text="F4" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f5" android:text="F5" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f6" android:text="F6" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f7" android:text="F7" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f8" android:text="F8" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f9" android:text="F9" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f10" android:text="F10" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f11" android:text="F11" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_f12" android:text="F12" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_ins" android:text="@string/opencode_terminal_key_ins" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_del" android:text="@string/opencode_terminal_key_del" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_pipe" android:text="|" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_tilde" android:text="~" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_backtick" android:text="`" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_backslash" android:text="@string/opencode_terminal_key_backslash" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_brace_left" android:text="{" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_brace_right" android:text="}" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_bracket_left" android:text="[" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_bracket_right" android:text="]" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_angle_left" android:text="&lt;" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_angle_right" android:text=">" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_amp" android:text="&amp;" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_dollar" android:text="$" />
+                <TextView style="@style/Widget.OpenCode.TerminalKey.Fixed" android:id="@+id/terminal_key_star" android:text="*" />
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="2dp">
+
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_esc" android:text="@string/opencode_terminal_key_esc" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_ctrl" android:text="@string/opencode_terminal_key_ctrl" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_alt" android:text="@string/opencode_terminal_key_alt" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_tab" android:text="@string/opencode_terminal_key_tab" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_home" android:text="@string/opencode_terminal_key_home" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_up" android:contentDescription="@string/opencode_terminal_key_up" android:text="↑" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_end" android:text="@string/opencode_terminal_key_end" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_pgup" android:text="@string/opencode_terminal_key_pgup" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="2dp">
+
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_fn" android:text="@string/opencode_terminal_key_fn" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_interrupt" android:contentDescription="@string/opencode_terminal_key_interrupt" android:text="^C" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_slash" android:text="/" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_dash" android:text="-" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_left" android:contentDescription="@string/opencode_terminal_key_left" android:text="←" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_down" android:contentDescription="@string/opencode_terminal_key_down" android:text="↓" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_right" android:contentDescription="@string/opencode_terminal_key_right" android:text="→" />
+            <TextView style="@style/Widget.OpenCode.TerminalKey" android:id="@+id/terminal_key_pgdn" android:text="@string/opencode_terminal_key_pgdn" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

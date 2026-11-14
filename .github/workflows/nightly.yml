@@ -51,8 +51,10 @@ jobs:
       - name: Set up Gradle (caching)
         uses: gradle/actions/setup-gradle@v6
 
-      # No NDK step: the app has no native build, and the cli-bridge module lets
-      # Kotlin/Native download its own Android sysroot and toolchain.
+      - name: Set up Android NDK and CMake
+        run: |
+          "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace

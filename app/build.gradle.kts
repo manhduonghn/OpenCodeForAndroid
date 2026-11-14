@@ -3,6 +3,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// The native PTY of the terminal needs the pinned NDK, and AGP fails configuration
+// outright when an external native build is requested without it. Tooling runners
+// that only trace Kotlin/Java (for example the default-setup CodeQL scan) therefore
+// build without native code; real builds install the NDK and keep the terminal.
+val pinnedNdk = "27.2.12479018"
+val hasNdk: Boolean = run {
+    val sdk = System.getenv("ANDROID_HOME")?.takeIf { it.isNotBlank() }?.let { File(it) }
+        ?: System.getenv("ANDROID_SDK_ROOT")?.takeIf { it.isNotBlank() }?.let { File(it) }
+        ?: rootProject.file("local.properties").takeIf { it.exists() }
+            ?.readLines()?.firstOrNull { it.trim().startsWith("sdk.dir=") }
+            ?.substringAfter("=")?.trim()?.let { File(it) }
+        ?: return@run false
+    sdk.resolve("ndk/$pinnedNdk").isDirectory
+}
+
 // pkg is a symlink to the Kotlin/Native executable. The module is built first and
 // its two Android binaries are packaged as assets, so the APK contains no shell launcher at all.
 val cliBridgeAssets = layout.buildDirectory.dir("generated/cliBridgeAssets")
@@ -40,6 +55,21 @@ android {
     namespace = "com.opencode.android"
     compileSdk = 37
 
+    if (hasNdk) {
+        ndkVersion = pinnedNdk
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
+    } else {
+        logger.warn(
+            "app: NDK $pinnedNdk not found, configuring without the native terminal " +
+                "(libopencode_pty.so); the Terminal then reports that PTY support is missing."
+        )
+    }
+
     defaultConfig {
         applicationId = "com.opencode.android"
         minSdk = 26
@@ -57,6 +87,10 @@ android {
         targetSdk = 28
         versionCode = 26
         versionName = "1.0.25"
+
+        if (hasNdk) {
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        }
     }
 
     signingConfigs {

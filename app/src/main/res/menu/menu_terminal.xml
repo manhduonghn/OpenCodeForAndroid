@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_terminal_keyboard"
+        android:icon="@drawable/ic_keyboard"
+        android:title="@string/opencode_terminal_keyboard"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_terminal_paste"
+        android:icon="@drawable/ic_content_paste"
+        android:title="@string/opencode_terminal_paste"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_terminal_copy"
+        android:icon="@drawable/ic_copy"
+        android:title="@string/opencode_terminal_copy"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_terminal_font_reset"
+        android:title="@string/opencode_terminal_font_reset"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_terminal_restart"
+        android:icon="@drawable/ic_refresh"
+        android:title="@string/opencode_terminal_restart"
+        app:showAsAction="never" />
+</menu>

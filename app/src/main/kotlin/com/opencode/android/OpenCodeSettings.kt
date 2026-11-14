@@ -25,6 +25,7 @@ object OpenCodeSettings {
     private const val KEY_REPO_PATHS = "repo_local_paths"
     private const val KEY_LAST_CLONE_DIR = "clone_last_dir"
     private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
+    private const val KEY_TERMINAL_FONT_SIZE = "terminal_font_size"
     private const val KEY_EDITOR_WORD_WRAP = "editor_word_wrap"
     private const val KEY_EDITOR_RECENT = "editor_recent_files"
     private const val KEY_EDITOR_LANGUAGES = "editor_language_overrides"
@@ -179,6 +180,14 @@ object OpenCodeSettings {
 
     fun setEditorFontSize(context: Context, size: Int) {
         prefs(context).edit().putInt(KEY_EDITOR_FONT_SIZE, size.coerceIn(8, 32)).apply()
+    }
+
+    /** Text size of the native terminal, changed with a pinch or the reset menu action. */
+    fun terminalFontSize(context: Context): Float =
+        prefs(context).getFloat(KEY_TERMINAL_FONT_SIZE, 13f).coerceIn(7f, 30f)
+
+    fun setTerminalFontSize(context: Context, size: Float) {
+        prefs(context).edit().putFloat(KEY_TERMINAL_FONT_SIZE, size.coerceIn(7f, 30f)).apply()
     }
 
     fun editorWordWrap(context: Context): Boolean =

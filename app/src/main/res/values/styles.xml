@@ -95,4 +95,31 @@
     <style name="Widget.OpenCode.Button" parent="Widget.Material3.Button" />
     <style name="Widget.OpenCode.Button.Outlined" parent="Widget.Material3.Button.OutlinedButton" />
     <style name="Widget.OpenCode.Button.Text" parent="Widget.Material3.Button.TextButton" />
+
+    <!-- Extra keys of the native terminal. The layout weight keeps eight keys on
+         one row even on a narrow phone; the Fn row uses the fixed variant. -->
+    <style name="Widget.OpenCode.TerminalKey" parent="">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">42dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginStart">2dp</item>
+        <item name="android:layout_marginEnd">2dp</item>
+        <item name="android:background">@drawable/bg_chip</item>
+        <item name="android:backgroundTint">?attr/colorSecondaryContainer</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:gravity">center</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:paddingStart">0dp</item>
+        <item name="android:paddingEnd">0dp</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:textColor">?attr/colorOnSecondaryContainer</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+
+    <style name="Widget.OpenCode.TerminalKey.Fixed">
+        <item name="android:layout_width">50dp</item>
+        <item name="android:layout_weight">0</item>
+    </style>
 </resources>

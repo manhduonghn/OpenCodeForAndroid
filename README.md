@@ -371,6 +371,37 @@ script used, and follows the status file written by `OpenCodePkgService`. The
 maintenance pass of an app update replaces the launchers of an older build in
 place, so the migration needs no reinstall.
 
+### Native terminal
+
+The Terminal button in the toolbar opens a native shell that does not depend on the
+web UI or on the server being reachable. It is a pseudo-terminal in the app process:
+
+- `libopencode_pty.so` (`app/src/main/cpp/pty.cpp`) opens `/dev/ptmx`, forks, makes
+  the child a session leader with the slave as its controlling terminal, and execs
+  `$PREFIX/bin/bash --rcfile $PREFIX/etc/opencode-terminal.bashrc -i`. The managed
+  rc file sources `$PREFIX/etc/profile` (or `opencode-env.sh` plus `~/.bashrc`), so
+  the shell has the same `PATH`, `TMPDIR`, JDK and certificate variables as the
+  server. If the runtime is not installed yet, it falls back to `/system/bin/sh -i`.
+- Output is parsed by the xterm emulator in `app/src/main/kotlin/com/opencode/android/terminal/`
+  and drawn by `TerminalView`; soft-keyboard input goes through a raw
+  `InputConnection`, hardware keys through `onKeyDown`. Pinch changes the font size,
+  drag scrolls back, long-press pastes, and the extra-keys row supplies Esc, Tab,
+  sticky Ctrl/Alt, arrows, paging, `^C`, F1–F12 and common shell symbols.
+- The shell lives in the `TerminalSessions` singleton, not in the screen. Closing the
+  panel, rotating the device or sending the app to the background keeps it and every
+  job it started alive. The panel reattaches to the same scrollback and cursor; only
+  the Restart action (or process death) replaces the shell.
+
+The native part is built only when NDK `27.2.12479018` and CMake `3.22.1` are
+installed in the Android SDK. Without them Gradle skips the native block, the APK
+still builds, and the Terminal reports that PTY support is missing. The CI workflows
+install both packages before building.
+
+The PTY bridge, xterm emulator and terminal view are adapted from
+[AndroidHarness](https://github.com/Sanuu7/AndroidHarness) under the MIT license;
+the license text is in `app/src/main/cpp/ANDROIDHARNESS_LICENSE.txt` and the source
+files keep a short attribution header.
+
 ### Server lifecycle
 
 The server is a child of the app process, and Android does not always kill it
@@ -489,6 +520,15 @@ Kotlin/Native for `androidNativeArm64` and `androidNativeX64`. Kotlin/Native
 downloads its own Android toolchain and sysroot (see `konan.properties`), so no
 separate Android NDK is needed for the bridge; the binaries are packaged under
 `assets/cli/<abi>/oc-bridge` and extracted by the app.
+
+The app itself has one small native module, the PTY of the native terminal. It
+needs Android NDK `27.2.12479018` and CMake `3.22.1`; a checkout without them
+still builds, just without terminal support. Install them once with:
+
+```sh
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+  "ndk;27.2.12479018" "cmake;3.22.1"
+```
 
 Debug builds are signed with the committed `keystore/debug.keystore` (password
 `android`, alias `androiddebugkey`), so local and CI builds share the same

@@ -1010,4 +1010,7 @@
     <include layout="@layout/panel_editor" />
 
     <include layout="@layout/panel_image" />
+
+    <!-- Last sibling, so the terminal and its extra-keys row sit above every other overlay. -->
+    <include layout="@layout/panel_terminal" />
 </FrameLayout>

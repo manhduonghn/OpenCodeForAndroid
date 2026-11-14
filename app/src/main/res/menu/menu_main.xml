@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The app shell has exactly three primary destinations: refresh the Web UI, open Files and open
-  Settings. Server restart/stop, the server address and About live inside Settings only, so the
-  same action never appears twice.
+  The app shell has four primary destinations: refresh the Web UI, open the native
+  Terminal, open Files and open Settings. Server restart/stop, the server address and
+  About live inside Settings only, so the same action never appears twice.
 -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
@@ -10,6 +10,11 @@
         android:id="@+id/action_refresh"
         android:icon="@drawable/ic_refresh"
         android:title="@string/opencode_webui_refresh"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_terminal"
+        android:icon="@drawable/ic_terminal"
+        android:title="@string/opencode_terminal_title"
         app:showAsAction="always" />
     <item
         android:id="@+id/action_files"

@@ -122,6 +122,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     private lateinit var gitChangesScreen: GitChangesScreen
     private lateinit var editorScreen: EditorScreen
     private lateinit var imagePreviewScreen: ImagePreviewScreen
+    private lateinit var terminalScreen: TerminalScreen
     private lateinit var updatesCurrent: TextView
     private lateinit var updatesStatus: TextView
     private lateinit var updatesCheck: Button
@@ -494,6 +495,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.action_refresh -> hardRefreshWebUi()
+                R.id.action_terminal -> showTerminal()
                 R.id.action_files -> showFiles()
                 R.id.action_settings -> openSettings()
                 else -> return@setOnMenuItemClickListener false
@@ -592,6 +594,15 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             },
         )
 
+        terminalScreen = TerminalScreen(
+            this,
+            object : TerminalScreen.Listener {
+                override fun onTerminalClosed() {
+                    // The shell stays alive in TerminalSessions; there is nothing to save here.
+                }
+            },
+        )
+
         filesScreen = FilesScreen(
             this,
             object : FilesScreen.Listener {
@@ -655,6 +666,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     when {
+                        terminalScreen.isVisible -> terminalScreen.goBack()
                         editorScreen.isVisible -> editorScreen.goBack()
                         imagePreviewScreen.isVisible -> imagePreviewScreen.goBack()
                         gitChangesScreen.isVisible -> gitChangesScreen.goBack()
@@ -672,6 +684,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun openSettings() {
+        if (::terminalScreen.isInitialized) terminalScreen.hide()
         OverlayMotion.reveal(settingsPanel)
         renderSettings()
     }
@@ -766,7 +779,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
     }
 
+    private fun showTerminal() {
+        terminalScreen.show()
+    }
+
     private fun showFiles() {
+        if (::terminalScreen.isInitialized) terminalScreen.hide()
         // Ask for shared storage the moment the Files icon is tapped, not only after the user
         // navigates into a storage volume.
         filesScreen.show(requestStoragePermission = !OpenCodeStorage.hasStoragePermission(this))
@@ -1359,6 +1377,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         // Android can kill the process after this callback without calling onDestroy. Give the
         // editor one last chance to put an unsaved buffer into its recovery file.
         if (::editorScreen.isInitialized) editorScreen.onBackground()
+        if (::terminalScreen.isInitialized) terminalScreen.onBackground()
         viewModel.ui = null
         // While the activity is gone the notification keeps the server alive; the page is checked
         // and woken up again in onResume, so the periodic check is not needed here.
@@ -1373,6 +1392,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         viewModel.resumeWebView()
         // Returning from "Open in another app" may leave a modified file behind.
         if (::editorScreen.isInitialized) editorScreen.onActivityResumed()
+        if (::terminalScreen.isInitialized) terminalScreen.onActivityResumed()
         // The GitHub device login finishes in the browser, so check the token as soon as the
         // activity comes back instead of leaving the code screen waiting for the next poll.
         if (::githubScreen.isInitialized) githubScreen.onActivityResumed()
@@ -1416,6 +1436,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (!sessionId.startsWith("ses_")) return
         OpenCodeSettings.setLastSessionId(this, sessionId)
         OpenCodeSessionTracker.setActiveSession(sessionId)
+        if (::terminalScreen.isInitialized) terminalScreen.hide()
         if (settingsPanel.visibility == View.VISIBLE) closeSettings()
         if (::filesScreen.isInitialized && filesScreen.isVisible) filesScreen.hide()
         if (!pageLoaded) {
@@ -2296,6 +2317,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (::gitChangesScreen.isInitialized) gitChangesScreen.release()
         if (::editorScreen.isInitialized) editorScreen.release()
         if (::imagePreviewScreen.isInitialized) imagePreviewScreen.release()
+        if (::terminalScreen.isInitialized) terminalScreen.release()
         probeExecutor.shutdownNow()
         backgroundExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)
