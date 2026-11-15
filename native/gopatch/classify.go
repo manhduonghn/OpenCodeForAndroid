@@ -211,8 +211,9 @@ func classifyFile(path string) (string, string, error) {
 			return "dynamic", img.Interp, nil
 		}
 	}
-	// Static: only an AArch64 Go program can be patched. For x86_64 the site
-	// pattern is different and Android devices of that ABI are rare.
+	// Static: an AArch64 Go program or an AArch64 C program can be patched. For
+	// x86_64 the instruction patterns are different and Android devices of that
+	// ABI are rare.
 	if img.Machine == emAArch64 {
 		if data, err := os.ReadFile(path); err == nil {
 			if _, _, err := findGoSite(data, img); err == nil {

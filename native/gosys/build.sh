@@ -33,7 +33,10 @@ trap 'rm -rf "$tmp"' EXIT
   -mcmodel=tiny -mgeneral-regs-only -mno-outline-atomics \
   -ffixed-x18 -ffixed-x28 \
   -c "$here/gosys.c" -o "$tmp/gosys.o"
-"$ld" -T "$here/gosys.ld" -nostdlib -o "$tmp/gosys.elf" "$tmp/gosys.o"
+# The shared stub of the static-C trampolines lives in its own assembly file;
+# it calls oc_stub_entry, so both objects are linked into the same flat blob.
+"$cc" -c "$here/cstub.S" -o "$tmp/cstub.o"
+"$ld" -T "$here/gosys.ld" -nostdlib -o "$tmp/gosys.elf" "$tmp/gosys.o" "$tmp/cstub.o"
 "$objcopy" -O binary "$tmp/gosys.elf" "$tmp/gosys.bin"
 
 if [ -n "$("$nm" -u "$tmp/gosys.elf")" ]; then
@@ -56,6 +59,12 @@ if [ "$entry" -ne 64 ]; then
   echo "build.sh: oc_stub_entry is at $entry, expected 0x40" >&2
   exit 1
 fi
+cstub=$("$nm" "$tmp/gosys.elf" | awk '$3 == "oc_c_stub" {print $1}')
+if [ -z "$cstub" ]; then
+  echo "build.sh: oc_c_stub is missing" >&2
+  exit 1
+fi
+cstub=$((16#$cstub))
 [ "$(head -c 8 "$tmp/gosys.bin")" = "OCGOSYS1" ] || {
   echo "build.sh: the header is not first in the blob" >&2
   exit 1
@@ -70,6 +79,7 @@ cp "$tmp/gosys.bin" "$out/gosys.bin"
   echo "package main"
   echo
   echo "const gosysEntryOff = $entry"
+  echo "const gosysCStubOff = $cstub"
   echo "const gosysScratchSize = 65600"
   echo
   echo "var gosysBlob = []byte{"

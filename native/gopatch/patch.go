@@ -327,6 +327,21 @@ func (o loadOrderByVaddr) Less(i, j int) bool {
 }
 func (o loadOrderByVaddr) Swap(i, j int) { o.order[i], o.order[j] = o.order[j], o.order[i] }
 
+// patchAuto patches a Go program with the oc-gosys runtime, or a static C
+// program (glibc, musl, ...) by redirecting its "svc #0" sites to the same
+// blob. A file that already carries the blob is refused, so a patched copy is
+// never patched a second time (its call sites no longer match the patterns the
+// patchers look for, but the magic is an explicit guard).
+func patchAuto(data []byte, img *elfImage) ([]byte, error) {
+	if bytes.Contains(data, []byte("OCGOSYS1")) {
+		return nil, errors.New("the program is already patched with oc-gosys")
+	}
+	if out, err := patchData(data, img); err == nil {
+		return out, nil
+	}
+	return patchCData(data, img)
+}
+
 // patchFile writes a patched copy of [src] to [dst].
 func patchFile(src, dst string) error {
 	data, err := os.ReadFile(src)
@@ -337,7 +352,7 @@ func patchFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	out, err := patchData(data, img)
+	out, err := patchAuto(data, img)
 	if err != nil {
 		return err
 	}

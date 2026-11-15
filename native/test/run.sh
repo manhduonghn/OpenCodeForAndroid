@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # End-to-end tests for the two native pieces:
 #   - liboc-pathmap.so through `oc-gopatch run` (host x86_64, the real loader),
-#   - the Go static patch on an AArch64 Go program under qemu-aarch64.
+#   - the oc-gosys patch on an AArch64 Go program and on a static C program,
+#     both under qemu-aarch64.
 #
-# Needs gcc, go, qemu-aarch64 and libc6-dev-arm64-cross. The Go fixture is built
-# with CGO_ENABLED=0, so the host Go toolchain is enough.
+# Needs gcc, go, qemu-aarch64, gcc-aarch64-linux-gnu and libc6-dev-arm64-cross.
+# The Go fixture is built with CGO_ENABLED=0, so the host Go toolchain is enough;
+# the static C fixture is built by the cross compiler and skipped when it is
+# missing.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -77,6 +80,48 @@ echo "native-test: a second patch of a patched program is refused"
 if "$work/oc-gopatch" patch "$work/patched" "$work/patched2" >"$work/second.out" 2>&1; then
   echo "native-test: patching an already patched program unexpectedly succeeded" >&2
   exit 1
+fi
+
+# A static C program makes its own system calls, so LD_PRELOAD cannot reach it:
+# the patcher rewrites its "svc #0" sites instead. The cross compiler is part of
+# the CI image; a host without it skips this block.
+if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+  echo "native-test: building the static C fixture"
+  aarch64-linux-gnu-gcc -static -no-pie -O2 -Wall -Wextra -Werror \
+    -o "$work/static-fixture" "$here/static_fixture.c"
+  [ "$("$work/oc-gopatch" classify "$work/static-fixture")" = "static" ]
+
+  echo "native-test: an unpatched static C program does not see the private prefix"
+  if "${qemu[@]}" "$work/static-fixture" open "$termux_prefix/hello" \
+    >"$work/static-unpatched.out" 2>&1; then
+    echo "native-test: the unpatched static fixture unexpectedly opened $termux_prefix/hello" >&2
+    cat "$work/static-unpatched.out" >&2
+    exit 1
+  fi
+
+  echo "native-test: patching the static C fixture"
+  "$work/oc-gopatch" patch "$work/static-fixture" "$work/static-patched"
+  chmod 0755 "$work/static-patched"
+  [ "$("$work/oc-gopatch" classify "$work/static-patched")" = "static" ]
+
+  echo "native-test: static C paths, getcwd and the syscall policy"
+  "${qemu[@]}" "$work/static-patched" open "$termux_prefix/hello" | grep -q 'hello from the app prefix'
+  "${qemu[@]}" "$work/static-patched" open "$termux_home/hello" | grep -q 'hello from the app home'
+  "${qemu[@]}" "$work/static-patched" getcwd "$app_prefix" | grep -q "cwd: $termux_prefix"
+  "${qemu[@]}" "$work/static-patched" setuid | grep -q 'setuid: ok'
+  "${qemu[@]}" "$work/static-patched" clone3 | grep -q 'clone3: enosys'
+  "${qemu[@]}" "$work/static-patched" getgroups | grep -q 'one empty group'
+  "${qemu[@]}" "$work/static-patched" blocked | grep -q 'blocked: enosys'
+  "${qemu[@]}" "$work/static-patched" fork | grep -q 'fork: ok'
+
+  echo "native-test: a second patch of a patched static program is refused"
+  if "$work/oc-gopatch" patch "$work/static-patched" "$work/static-patched2" \
+    >"$work/static-second.out" 2>&1; then
+    echo "native-test: patching an already patched static program unexpectedly succeeded" >&2
+    exit 1
+  fi
+else
+  echo "native-test: skipping the static C tests (aarch64-linux-gnu-gcc is missing)"
 fi
 
 echo "native-test: the glibc preload through oc-gopatch run"

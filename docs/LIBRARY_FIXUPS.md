@@ -161,7 +161,7 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | `net.c` | DNS: đọc servers từ resolv.conf của prefix (refresh mỗi 5s), tự gửi truy vấn UDP khi glibc không tìm được gì, **redirect truy vấn tới 127.0.0.1/::1 sang server thật** (trên Android không gì listen ở loopback như vậy), hỗ trợ IPv6-only (fallback AAAA + public resolver) |
 | `identity.c` | **fakeroot**: `getuid/geteuid/getgid/...` trả về 0 cho program của rootfs (app không thể root), `lckpwdf` giả (Android mount `/etc` ro → `EROFS`), `getpwnam`/`getgrnam` + `/etc/shadow` từ file của rootfs, `getgroups` trả lại `ngroups=1` đúng theo check của chương trình được fortify (sshd chết vì lệch số lượng) |
 | `signals.c` + `syscalls.c` | Handler `SIGSYS` (Android seccomp chặn syscall): mở rộng từ syscall gì thì trả gì — `set*id` trả 0 (thành công giả), còn lại `-ENOSYS` để glibc retry theo đường cũ (`clone3` → `clone`) |
-| `static_programs.c` | Binary tĩnh (`gcc -static`): quét và vá **call site `svc #0`** trong file, biến set_robust_list/clone3/rseq/set*id thành 0 hoặc `-ENOSYS`, chuẩn hoá kết quả như handler SIGSYS; kết quả nhớ qua xattr (1 lần quét) |
+| `static_programs.c` | Binary tĩnh (`gcc -static`): quét và vá **call site `svc #0`** trong file, biến set_robust_list/clone3/rseq/set*id thành 0 hoặc `-ENOSYS`, chuẩn hoá kết quả như handler SIGSYS; kết quả nhớ qua xattr (1 lần quét). App này port cùng ý tưởng trong `native/gopatch/patchc.go`: trampoline mỗi site gọi chung một stub, không cần xattr vì bản vá là file cache riêng |
 | `go_programs.c` + `gosys/` | Go không dùng libc → preload vô hiệu. Vá file Go (Go 1.19+, arm64): chèn code `gosys.c` (độc lập libc, không relocation) vào **padding giữa segments** của Go linker, nối nhánh `svc #0` tới nó; code dịch path + exec qua loader, đúng như hook cho chương trình C |
 | `hardlinks.c`, `compression.c`, `sockets.c` | hardlink/symlink chroot-cross, zstd cho tar, tên unix socket quá 108 byte được hash vào `$ROOTFS/tmp/.ctx_sock_%016llx` một cách deterministic |
 
@@ -213,6 +213,7 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | --- | --- | --- |
 | 11 | **Preload path-translation** (tham khảo cortex, không sao chép) | Một `.so` nhỏ (glibc) `liboc-pathmap.so` map `/data/data/com.termux/.../X` → `$PREFIX/X` theo cách của `paths.c`; lợi: binary tải thêm/tự override phần path nhúng được mà không cần vá; hại: phải giữ hot-path đó nhanh (không snprintf) và cover đủ `openat2`, `posix_spawn`, `getcwd`, `/proc/self/exe`, unix socket; lưu ý: nó không giúp binary tĩnh |
 | 12 | **Go static patch** (như `gosys.c`) | `gh`, `fzf`… không dùng libc nên preload vô hiệu; chỉ đáng làm khi người dùng thường tải Go binary trong terminal |
+| 13 | **C static patch** (`static_programs.c`) | cùng lý do như #12 nhưng cho binary C tĩnh (`gcc -static`, Rust musl…); dùng chung blob `oc-gosys` và policy, chỉ khác cách nối tại mọi site `svc #0` |
 
 ### 4.4 Bảng "thư viện → vấn đề → vá" (trạng thái hiện tại)
 
@@ -229,7 +230,7 @@ một thư viện `libcortex-hook.so` được `LD_PRELOAD` vào mọi process g
 | JDK | RUNPATH + lib/library-path thứ tự | cài `openjdk-*` | ✅ `JAVA_HOME` + `lib/server` đứng đầu `LD_LIBRARY_PATH` |
 | Node | OPENSSL_CONF fatal nếu EACCES; xattrs/inotify `config` dir thiếu | cài nodejs → opencode | ⚠️ conf đã có; inotify mkdir là bản fix Bun của cortex, không cần cho node thường |
 | dpkg/apt (nếu cài) | fakeroot, mode 0 mkdir, seccomp set*id | cài cùng `glibc` gói glibc | ❌ chưa cần — app dùng `pkg` bridge bionic riêng |
-| Binary tĩnh / Go | syscall tự làm, path sai | kết quả tải thêm trong terminal | ✅ dùng `oc-run` (vá Go AArch64) hoặc `oc-run` + `liboc-pathmap.so` (glibc) |
+| Binary tĩnh (Go / C) | syscall tự làm, path sai | kết quả tải thêm trong terminal | ✅ `oc-run` vá Go và C tĩnh AArch64 tại `svc #0`; glibc động dùng `oc-run` + `liboc-pathmap.so` |
 
 ## 5. Hướng kiểm chứng
 
@@ -249,7 +250,9 @@ Môi trường hiện tại không có JDK/SDK để build, vì vậy các bư�
   `getgroups` trả 1 group rỗng, và `faccessat2`/`openat2`/`name_to_handle_at`/`chroot`
   trả ENOSYS; helper chạy được script `#!/bin/sh` và `#!/usr/bin/env`, nhận path Termux cho
   `run`/`classify`/`patch`; nhánh glibc
-  được chạy qua loader thật với `--preload`. Không cần thiết bị thật để kiểm tra phần logic;
+  được chạy qua loader thật với `--preload`. Cùng bộ assertion đó chạy thêm trên một fixture
+  C tĩnh (`aarch64-linux-gnu-gcc -static -no-pie`) để kiểm tra vá `svc #0`, `fork()` qua
+  `clone` không bị vá, và việc từ chối vá lần hai. Không cần thiết bị thật để kiểm tra phần logic;
   phần Android/SELinux vẫn nên thử trên máy thật trước khi phát hành.
 
 ## 6. Trạng thái triển khai
@@ -274,6 +277,7 @@ rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path c�
 | Python `multiprocessing`: đường dẫn semaphore cắm cứng của Termux | ✅ | `TermuxSemaphorePath`, `OpenCodePackages.extractEntry` / `repair` |
 | 4.3 #11 preload path translation | ✅ | `native/pathmap`, `OpenCodeBootstrap.installNativeTools`, `oc-gopatch run` |
 | 4.3 #12 Go static patch | ✅ (AArch64) | `native/gosys`, `native/gopatch`, `oc-run` |
+| P2 C tĩnh `svc #0` | ✅ (AArch64) | `native/gopatch/patchc.go`, `native/gosys/cstub.S`, `OC_STATIC_PATCH` |
 
 Ghi chú cho #7: asset được kiểm tra SHA-256 trước khi ghi, ghi nguyên tử vào
 `etc/tls/cert.pem`, và **không** ghi đè một bundle hợp lệ đã có. Như vậy bundle mới hơn
@@ -305,8 +309,8 @@ chạy glibc ngoài Termux, binary tĩnh, hoặc thêm tier `apt`/`dpkg` thật:
 | syscall khác bị chặn | `-ENOSYS` | để libc/gọi lại theo đường cũ thay vì `SIGSYS` |
 
 Với binary tĩnh/Go, bảng này phải được áp ngay tại call site `svc #0` (Cortex làm bằng
-`static_programs.c`/`gosys.c`); chỉ `LD_PRELOAD` không can thiệp được syscall do chương
-trình tự phát.
+`static_programs.c`; app này làm bằng `native/gosys` cho cả Go tĩnh lẫn C tĩnh); chỉ
+`LD_PRELOAD` không can thiệp được syscall do chương trình tự phát.
 
 ## 8. Helper native của 4.3 (cách dùng và giới hạn)
 
@@ -315,7 +319,7 @@ APK có thêm ba thứ, được cài bởi `OpenCodeBootstrap.installNativeTool
 | File | Vai trò |
 | --- | --- |
 | `$PREFIX/lib/liboc-pathmap.so` | thư viện glibc `LD_PRELOAD`, map hai root Termux sang prefix của app |
-| `$PREFIX/libexec/oc-gopatch` | binary Go tĩnh: phân loại ELF, chạy glibc qua loader + preload, vá Go tĩnh rồi chạy |
+| `$PREFIX/libexec/oc-gopatch` | binary Go tĩnh: phân loại ELF, chạy glibc qua loader + preload, vá Go tĩnh và C tĩnh rồi chạy |
 | `$PREFIX/bin/oc-run` | vỏ `#!/system/bin/sh` gọi `oc-gopatch run -- "$@"`, fallback chạy trực tiếp |
 
 Người dùng gọi binary tải thêm qua `oc-run`, ví dụ:
@@ -349,7 +353,7 @@ Cơ chế:
     bionic sẽ abort.
   - `OC_DEBUG=1` làm handler SIGSYS ghi `oc-pathmap: SIGSYS <nr> emulated|-> ENOSYS` bằng
     `write(2)` (không `printf`/`malloc` trong signal), và `oc-gopatch run` in
-    `strategy=script|glibc|go|pass` ra stderr.
+    `strategy=script|glibc|go|static|pass` ra stderr.
   - `openat2`/`faccessat2` vẫn có hook nhưng trên Android syscall bị seccomp trap, nên handler
     trả `ENOSYS` và libc tự fallback; "có hook" không có nghĩa là syscall chạy được.
   - Callback của `nftw`/`ftw` nhận path vật lý của prefix (không unmap), vì thư viện không
@@ -368,6 +372,21 @@ Cơ chế:
   build cho `linux` (không phải `android`) thử `faccessat2` mỗi lần `exec.LookPath`.
   Bản đã vá được cache ở `~/.opencode/patched/<tên>-<hash>`; hash gồm cả nội dung blob
   `oc-gosys`, nên bản cache do APK cũ tạo ra không được dùng lại sau khi cập nhật.
+- **C tĩnh (AArch64, glibc/musl)**: binary không có `PT_INTERP` cũng tự phát `svc #0`, nên
+  patcher quét **mọi** site `svc #0` trong các `PT_LOAD` có cờ `X` và thay mỗi site bằng
+  trampoline 5 lệnh `str x30,[sp,#-16]!` / `bl oc_c_stub` / `bti c` / `ldr x30,[sp],#16` /
+  `b site+4`. `oc_c_stub` (trong cùng blob `oc-gosys`) lưu/khôi phục `x1`–`x18`, `x29`,
+  `x30`, `NZCV`, đặt `x6 = x8` (số syscall là tham số thứ 7 của `oc_stub_entry`) rồi gọi
+  stub chung; nhờ vậy mọi site dùng cùng một policy và cùng bảng dịch path mà không cần biết
+  số syscall tại chỗ. Chỉ hai site được để nguyên: `clone` (220, đổi stack nên `x30` đã lưu
+  sẽ bị đọc từ stack của tiến trình con) và `rt_sigreturn` (139, không trở lại sau `svc`);
+  glibc nạp số `220` bằng `mov x8, #0xdc` tĩnh nên bộ giải mã nhận ra và bỏ qua, còn `139`
+  không xuất hiện tĩnh (nằm ở restorer/vDSO). Blob được nối vào cuối file, segment cuối
+  (theo vaddr) được nới `p_filesz` tới hết vùng trampoline và `p_memsz` tới hết scratch
+  64 KB, và cờ `X` được bật; vùng BSS cũ `[off+filesz, need)` phải được zero trong file, nếu
+  không section header tràn vào BSS làm glibc hỏng. Nếu segment cuối không kết thúc file hoặc
+  không ghi được thì patch bị từ chối và `oc-run` chạy bản chưa vá. Bản đã vá mang magic
+  `OCGOSYS1` nên không bị vá lần hai. Tắt bằng `OC_STATIC_PATCH=0`.
 - **Còn lại**: `exec` nguyên bản; script được chạy qua interpreter (kể cả `#!/usr/bin/env`).
   Bản thân helper cũng nhận path Termux cho `run`, `classify` và `patch`: nếu file tương ứng
   tồn tại trong prefix thì nó được map sang trước khi mở/exec, nhờ vậy
@@ -480,9 +499,9 @@ Hàm **cố ý bỏ qua**:
 | `fstat`, `fstat64`, `fchmod`, `fchown`, `fchdir`, `ftruncate`, `ftruncate64`, `futimens`, `fallocate`, `posix_fadvise`, `posix_fallocate`, `sendfile`, `splice`, `mmap` | nhận fd, không có path để dịch; fd đó đã được tạo qua một hook ở trên |
 | `posix_spawn_file_actions_addfchdir_np`, `open_by_handle_at`, `name_to_handle_at` | fd/handle-based, không có path; `open_by_handle_at` còn cần quyền mà app không có |
 | `mount`, `umount2`, `chroot`, `pivot_root`, `mount_setattr`, `open_tree`, `move_mount`, `fsopen`, `fsmount`, `fspick` | Android seccomp chặn và app không có `CAP_SYS_ADMIN`; dịch path không làm các call này chạy được |
-| `syscall(...)` | variadic, nhận số hiệu syscall; hook sẽ phải chặn **mọi** syscall (kể cả syscall nội bộ của libc), tăng chi phí và nguy cơ đệ quy. Path do chương trình tự phát không dịch được; Go tĩnh AArch64 được xử lý riêng bằng `oc-gosys` |
-| binary tĩnh không phải Go (Rust musl, C static, …) | không nạp được `LD_PRELOAD`; muốn dịch path phải vá tại call site như `oc-gosys` |
-| Go tĩnh x86_64 | `oc-gosys` mới hỗ trợ AArch64; Go x86_64 vẫn chạy nhưng path Termux không được dịch |
+| `syscall(...)` | variadic, nhận số hiệu syscall; hook sẽ phải chặn **mọi** syscall (kể cả syscall nội bộ của libc), tăng chi phí và nguy cơ đệ quy. Path do chương trình tự phát không dịch được; binary tĩnh AArch64 (Go, C) được xử lý riêng bằng `oc-gosys` |
+| binary tĩnh AArch64 (Go, C tĩnh) | không nạp được `LD_PRELOAD`; đã vá tại mọi call site `svc #0` bằng `oc-gosys` (xem mục 8), không cần hook |
+| binary tĩnh không phải AArch64 (Rust musl x86_64, C static x86_64, …) | `oc-gosys` mới hỗ trợ AArch64; vẫn chạy nhưng path Termux không được dịch |
 | `wordexp` | nhận chuỗi lệnh, không phải path; dùng `/bin/sh` của bionic và không có nhu cầu route. `system`/`popen` thì đã có wrapper riêng (xem trên) |
 | callback của `ftw`/`ftw64`/`nftw`/`nftw64` | thư viện không thể thay con trỏ hàm của caller, nên callback vẫn thấy path vật lý của prefix; chỉ path gốc được map |
 | `exec` | bảng record Unix socket không theo dõi `exec`; một fd sống qua exec có thể mất cách viết gốc (đã theo dõi `dup`/`dup2`/`dup3`/`close_range`) |
@@ -535,8 +554,11 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
 
 ### 8.2 Giới hạn có chủ ý
 
-- chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
-  Termux không được dịch);
+- chỉ vá binary tĩnh **AArch64**: Go tĩnh (một site `Syscall6`) và C tĩnh (mọi site `svc #0`);
+  binary tĩnh x86_64 có mã lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path Termux không được
+  dịch);
+- vá C tĩnh bỏ qua `clone` (220) và `rt_sigreturn` (139), chỉ chạy khi segment cuối theo vaddr
+  kết thúc file và ghi được, và từ chối bản đã mang magic `OCGOSYS1`;
 - Unix socket chỉ dịch path tuyệt đối trong `bind`/`connect`/`sendto`/`sendmsg`; bảng record
   theo dõi `dup`/`dup2`/`dup3`/`close_range` nhưng **không** theo dõi `exec`, nên một fd sống
   qua `exec` có thể mất cách viết gốc; path đúng 108 byte không có NUL được giữ nguyên;
@@ -570,9 +592,10 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
   sẽ nở một vùng `mmap` ẩn danh (64 KB → 16 MB) chứ **không** quay lại `malloc`, nên cả nhánh
   lớn cũng an toàn sau `fork`; `test_exec_large_env` dùng 6 000 biến để đi nhánh `mmap`;
 - `OC_FHS=0` tắt bảng FHS, `OC_EXEC_ROUTE=0` tắt exec routing, `OC_LOW_PORTS=0` tắt dịch port
-  thấp, `OC_SYSTEM=0` tắt wrapper shell, `OC_REAL_EXE` chỉ có tác dụng khi tiến trình chạy
-  dưới loader; không có biến nào ảnh hưởng tới hai root Termux;
-- binary tĩnh không phải Go (Rust musl, C static…) không được dịch path;
+  thấp, `OC_SYSTEM=0` tắt wrapper shell, `OC_STATIC_PATCH=0` tắt vá C tĩnh, `OC_REAL_EXE` chỉ có
+  tác dụng khi tiến trình chạy dưới loader; không có biến nào ảnh hưởng tới hai root Termux;
+- binary tĩnh AArch64 (Go hoặc C) được dịch path; binary tĩnh x86_64 và các kiến trúc khác thì
+  không;
 - patcher cần một khoảng zero đủ lớn giữa các segment hoặc cuối file; nếu không có, nó báo lỗi
   và `oc-run` chạy binary chưa vá thay vì từ chối;
 - việc vá sửa file đích (bản cache), không sửa file người dùng tải về.

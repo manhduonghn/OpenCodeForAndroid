@@ -144,11 +144,11 @@ func lookPath(name string) (string, error) {
 	return "", fmt.Errorf("%s: executable file not found in $PATH", name)
 }
 
-// patchedCopy returns a cached, patched copy of the Go program [src]. The name
-// includes the size and modification time, so a replaced download is patched
-// again and an unchanged one is reused. The stub bytes are part of the key as
-// well: an app update ships a new oc-gosys blob, and copies patched with the old
-// one must not be reused.
+// patchedCopy returns a cached, patched copy of the program [src], a Go
+// program or a static C program. The name includes the size and modification
+// time, so a replaced download is patched again and an unchanged one is reused.
+// The stub bytes are part of the key as well: an app update ships a new
+// oc-gosys blob, and copies patched with the old one must not be reused.
 func patchedCopy(src string) (string, error) {
 	st, err := os.Stat(src)
 	if err != nil {
@@ -345,6 +345,8 @@ func runCommand(args []string) error {
 			strategy = "glibc"
 		case "go":
 			strategy = "go"
+		case "static":
+			strategy = "static"
 		}
 		extra := ""
 		if detail != "" {
@@ -366,9 +368,32 @@ func runCommand(args []string) error {
 			return syscall.Exec(path, args, env)
 		}
 		return syscall.Exec(patched, args, env)
+	case "static":
+		// A static C program is patched at its "svc #0" sites. Many static
+		// programs (Rust, tiny tools) do not need the policy, and a program
+		// whose patch fails must still run with the paths it was built with.
+		if !staticPatchEnabled() {
+			return syscall.Exec(path, args, env)
+		}
+		patched, err := patchedCopy(path)
+		if err != nil {
+			if debugEnabled() {
+				fmt.Fprintf(os.Stderr, "oc-gopatch: %s: %v; starting it unpatched\n", path, err)
+			}
+			return syscall.Exec(path, args, env)
+		}
+		return syscall.Exec(patched, args, env)
 	default:
 		return syscall.Exec(path, args, env)
 	}
+}
+
+// staticPatchEnabled reports whether the "svc #0" patcher of a static C program
+// is allowed. OC_STATIC_PATCH=0 restores the plain exec for programs that the
+// user knows are happier unpatched.
+func staticPatchEnabled() bool {
+	value := os.Getenv("OC_STATIC_PATCH")
+	return value != "0"
 }
 
 // debugEnabled reports whether OC_DEBUG asked for the strategy line. It is off by

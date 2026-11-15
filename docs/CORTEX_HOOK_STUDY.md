@@ -36,7 +36,7 @@ một loader glibc được gọi tường minh.
 | Khởi động chương trình glibc | `execve` → `ld.so --preload libcortex-hook.so --library-path …` | `oc-run` → `ld.so --preload liboc-pathmap.so --library-path $PREFIX/lib:$PREFIX/glibc/lib` |
 | Chương trình trong prefix | không sửa file, hook lo tất cả | sửa file: relocate chuỗi, PT_INTERP, RUNPATH, shebang |
 | uid | fakeroot (uid 0 giả) | uid thật của app, không giả |
-| Chương trình tĩnh | vá `svc #0` (C tĩnh + Go) | vá Go qua `native/gosys`; C tĩnh chưa |
+| Chương trình tĩnh | vá `svc #0` (C tĩnh + Go) | vá cả Go lẫn C tĩnh qua `native/gosys` |
 | Bề mặt hook | 217 hàm export | 117 hàm export |
 
 Điểm mạnh của cách app này đang làm: **không sửa hành vi của chương trình đã cài** (relocate
@@ -62,7 +62,7 @@ kiểu FHS vẫn trượt. Đó chính là khoảng trống mà hook của Corte
 | `sockets.c` | 494 | `sockaddr_un` dịch + hash 108 byte, port thấp `+8000` | **P1** (hash xong) |
 | `go_programs.c` | 465 | vá Go tĩnh, blob `gosys` | đã có |
 | `paths.c` | 368 | `rewrite_path`, loại trừ mount Android, `/dev/shm` | **P0** |
-| `static_programs.c` | 345 | vá call site `svc #0` cho C tĩnh | P2 |
+| `static_programs.c` | 345 | vá call site `svc #0` cho C tĩnh | đã có (`native/gopatch/patchc.go`) |
 | `setup.c` | 282 | `CORTEX_ROOT`, `CORTEX_REAL_EXE`, cert/TZ, Unix socket hash | **P0** |
 | `memfd_locks.c` | 238 | khoá `memfd` cho phần mềm tin cậy | không |
 | `signals.c` | 226 | SIGSYS, `signal`/`sigaction` | đã có |
@@ -393,7 +393,8 @@ Thứ tự đề xuất (mỗi bước là một PR nhỏ, có test):
 4. **D** (`inotify`) và **E** (Unix socket) — đã làm. **F** (port thấp), **G** (`system`/
    `popen` qua shell glibc) — đã làm. Hardening **P1**: `dup`/`dup2`/`dup3`/`close_range` cho
    bảng record socket và `mmap` cho `preload_env` lớn — đã làm.
-5. **P2**: vá C tĩnh theo bảng `svc #0` (chỉ khi có nhu cầu thật), `lzma_cputhreads` như
+5. **P2**: vá C tĩnh theo bảng `svc #0` — đã làm (`native/gopatch/patchc.go` +
+   `native/gosys/cstub.S`), cùng cờ `OC_STATIC_PATCH=0` để tắt; `lzma_cputhreads` vẫn là
    tuỳ chọn.
 
 Kiểm thử:
@@ -409,6 +410,11 @@ Kiểm thử:
   Trên aarch64/qemu các case exec và shell bị bỏ
   (`OC_TEST_NO_EXEC=1`) vì qemu thay `/proc/self/exe` bằng chính nó và không chạy được shell
   của host; case port thấp vẫn chạy.
+- **End-to-end native** (`native/test/run.sh`): fixture Go tĩnh và fixture C tĩnh AArch64
+  (`aarch64-linux-gnu-gcc -static -no-pie`) dưới `qemu-aarch64`; kiểm tra path Termux, `getcwd`
+  unmap, policy set*id/clone3/getgroups, các syscall ngoài allowlist trả `ENOSYS`, `fork()`
+  qua `clone` không bị vá, và việc từ chối vá lần hai (magic `OCGOSYS1`). Khối C tĩnh bị bỏ
+  khi thiếu cross compiler.
 - **Device smoke** (thủ công, ghi vào PR): các lệnh ở mục 5A–5D, 6E–6F, cộng `git status`,
   `node -v`, `opencode --version` để chắc không hồi quy.
 - **Không hồi quy**: `npm install` trong một project có postinstall, `git clone` qua https,
@@ -421,7 +427,8 @@ Kiểm thử:
 - App này: `native/pathmap/pathmap.c` (`map_path`, `map_fhs`, `preload_env`, exec routing,
   `/proc/self/exe`, `inotify_add_watch`, SIGSYS cuối file), `native/pathmap/pathmap_test.c`,
   `native/pathmap/route_child.c`, `native/gopatch/run.go` (`startGlibc`, `startScript`),
-  `native/gopatch/classify.go`.
+  `native/gopatch/classify.go`, `native/gopatch/patch.go`/`patchc.go` (vá Go và C tĩnh),
+  `native/gosys/gosys.c` + `native/gosys/cstub.S`.
 - APK: `OpenCodeBootstrap.kt` (`PATHMAP_PATH`, `GLIBC_LIB_DIR`, `RESOLV_CONF_PATH`,
   `ensurePathAliases`, `relocateLoader`), `OpenCodePackages.kt` (`repair`, shebang).
 - Tài liệu trước: [`LIBRARY_FIXUPS.md`](LIBRARY_FIXUPS.md) mục 8.1–8.2 (hooked functions và
