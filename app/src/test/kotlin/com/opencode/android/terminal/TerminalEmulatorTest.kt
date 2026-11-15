@@ -284,6 +284,17 @@ class TerminalEmulatorTest {
     }
 
     @Test
+    fun astralCharactersStayOneGlyphOnTheBytePath() {
+        val (terminal, _) = emulator()
+        val bytes = "a😀b".toByteArray(Charsets.UTF_8)
+        terminal.append(bytes, 0, bytes.size)
+        assertEquals("a😀b", terminal.line(0))
+        assertEquals(0x1F600, terminal.glyphAt(0, 1))
+        assertEquals(TerminalEmulator.WIDE_TAIL, terminal.glyphAt(0, 2))
+        assertEquals(4, terminal.cursorCol)
+    }
+
+    @Test
     fun wideCharactersTakeTwoCells() {
         val (terminal, _) = emulator()
         terminal.append("a中b")

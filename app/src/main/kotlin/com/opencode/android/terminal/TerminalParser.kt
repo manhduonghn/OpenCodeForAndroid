@@ -63,13 +63,20 @@ internal class TerminalParser(private val sink: TerminalSink) {
         System.arraycopy(bytes, offset, combined, pending.size, length)
         val input = ByteBuffer.wrap(combined)
         val chars = CharBuffer.allocate(combined.size + 2)
-        if (decode(input, chars)) {
-            chars.flip()
-            while (chars.hasRemaining()) {
-                val codePoint = Character.codePointAt(chars, chars.position())
-                chars.position(chars.position() + Character.charCount(codePoint))
-                consume(codePoint)
-            }
+        decode(input, chars)
+        chars.flip()
+        // Copy out of the buffer first: Character.codePointAt(CharSequence, i)
+        // indexes it absolutely, but CharSequence.length() on a CharBuffer is
+        // the remaining count, so a surrogate pair near the end of the buffer
+        // would be split (or read past the limit). A plain array has the same
+        // origin for both the index and the length.
+        val decoded = CharArray(chars.remaining())
+        chars.get(decoded)
+        var index = 0
+        while (index < decoded.size) {
+            val codePoint = Character.codePointAt(decoded, index)
+            index += Character.charCount(codePoint)
+            consume(codePoint)
         }
         pending = ByteArray(input.remaining())
         input.get(pending)
@@ -85,18 +92,18 @@ internal class TerminalParser(private val sink: TerminalSink) {
         }
     }
 
-    private fun decode(input: ByteBuffer, chars: CharBuffer): Boolean {
+    private fun decode(input: ByteBuffer, chars: CharBuffer) {
         while (true) {
             val result = decoder.decode(input, chars, false)
             when {
-                result.isUnderflow -> return true
-                result.isOverflow -> return true
+                result.isUnderflow -> return
+                result.isOverflow -> return
                 result.isError -> {
-                    if (!input.hasRemaining()) return true
+                    if (!input.hasRemaining()) return
                     input.get()
                     if (chars.remaining() > 0) chars.put('\uFFFD')
                 }
-                else -> return true
+                else -> return
             }
         }
     }
