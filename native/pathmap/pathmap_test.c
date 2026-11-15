@@ -730,12 +730,20 @@ static void test_low_ports(void) {
 static void test_glibc_shell(void) {
     if (getenv("OC_TEST_NO_EXEC") != NULL) return;
     const char *shell = getenv("OC_TEST_GLIBC_SHELL");
-    if (shell == NULL) return;
+    const char *cat = getenv("OC_TEST_GLIBC_CAT");
+    if (shell == NULL || cat == NULL) return;
 
     char prefix_sh[PATH_MAX];
     join(prefix_sh, sizeof(prefix_sh), g_prefix, "/bin/sh");
     (void)unlink(prefix_sh);
     assert(symlink(shell, prefix_sh) == 0);
+
+    /* PATH lookup of "cat" goes through the FHS map, so the test needs a
+     * prefix copy of the host cat, just like it links the shell. */
+    char prefix_cat[PATH_MAX];
+    join(prefix_cat, sizeof(prefix_cat), g_prefix, "/bin/cat");
+    (void)unlink(prefix_cat);
+    assert(symlink(cat, prefix_cat) == 0);
 
     FILE *in = popen("cat /usr/share/pathmap-usr", "r");
     assert(in != NULL);

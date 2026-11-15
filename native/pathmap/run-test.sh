@@ -95,6 +95,14 @@ if [ "$arch" = x86_64 ]; then
       break
     fi
   done
+  # The shell finds cat through PATH, and the FHS map rewrites /usr/bin/cat to
+  # $PREFIX/bin/cat, so the test needs a prefix link to a glibc cat as well.
+  for candidate in /bin/cat /usr/bin/cat; do
+    if [ -x "$candidate" ] && grep -aq 'ld-linux' "$candidate"; then
+      export OC_TEST_GLIBC_CAT=$candidate
+      break
+    fi
+  done
 fi
 
 # find_loader() looks for the exact soname in $PREFIX/glibc/lib. The symlink
