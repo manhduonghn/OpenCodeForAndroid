@@ -98,12 +98,13 @@ if [ "$arch" = x86_64 ]; then
   # The shell finds cat through PATH, and the FHS map rewrites /usr/bin/cat to
   # $PREFIX/bin/cat, so the test needs a prefix link to a glibc cat as well.
   # Copy the binary out of the mapped roots first: a link back to /bin/cat
-  # would be rewritten to the prefix again and end in ELOOP.
+  # would be rewritten to the prefix again and end in ELOOP. Keep the name
+  # "cat": the coreutils of Ubuntu 26 refuse to run under another argv[0].
   for candidate in /bin/cat /usr/bin/cat; do
     if [ -x "$candidate" ] && grep -aq 'ld-linux' "$candidate"; then
-      cp -f "$candidate" "$build/glibc-cat"
-      chmod 0755 "$build/glibc-cat"
-      export OC_TEST_GLIBC_CAT=$build/glibc-cat
+      cp -f "$candidate" "$build/cat"
+      chmod 0755 "$build/cat"
+      export OC_TEST_GLIBC_CAT=$build/cat
       break
     fi
   done
