@@ -184,7 +184,10 @@ class OpenCodeService : Service() {
     private val heartbeat = object : Runnable {
         override fun run() {
             if (!heartbeatRunning) return
-            WORKER.execute { checkServerAlive() }
+            WORKER.execute {
+                reportMovedPorts()
+                checkServerAlive()
+            }
             handler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
         }
     }
@@ -193,6 +196,9 @@ class OpenCodeService : Service() {
         super.onCreate()
         sInstance = this
         createNotificationChannel()
+        // Markers may be left over from the previous app process: report them as soon as the
+        // service exists instead of waiting for the first heartbeat.
+        WORKER.execute { reportMovedPorts() }
         applyWakeLock()
         startForegroundCompat(buildNotification())
         startSessionPolling()
@@ -291,7 +297,10 @@ class OpenCodeService : Service() {
 
     /** Start the OpenCode server, it is a no-op when a server is already running. */
     fun startServer() {
-        WORKER.execute { startServerBlocking() }
+        WORKER.execute {
+            reportMovedPorts()
+            startServerBlocking()
+        }
     }
 
     /** The actual start procedure, it runs on [WORKER] and never on the main thread. */
@@ -820,6 +829,18 @@ class OpenCodeService : Service() {
             if (process?.isAlive == true) return@postDelayed
             startServer()
         }, delay)
+    }
+
+    /**
+     * Report the low ports that the preload library moved, see [MovedPorts]. Runs on [WORKER];
+     * a notification problem must never prevent the heartbeat from checking the server.
+     */
+    private fun reportMovedPorts() {
+        try {
+            MovedPortNotifier.report(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not report the moved ports", e)
+        }
     }
 
     /**

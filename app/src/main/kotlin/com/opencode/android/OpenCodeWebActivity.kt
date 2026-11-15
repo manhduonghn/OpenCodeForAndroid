@@ -1387,6 +1387,20 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
     override fun onResume() {
         super.onResume()
+        // A tutorial server may have moved a privileged port while the app was in the background.
+        // The service heartbeat also scans, but this makes the information visible immediately.
+        try {
+            val context = applicationContext
+            backgroundExecutor.execute {
+                try {
+                    MovedPortNotifier.report(context)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not report the moved ports", e)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not schedule the moved-port report", e)
+        }
         // The screen was off: the WebView of the ViewModel is the same instance, the system (or a
         // long stop) can leave its timers paused, which makes the web UI look frozen.
         viewModel.resumeWebView()

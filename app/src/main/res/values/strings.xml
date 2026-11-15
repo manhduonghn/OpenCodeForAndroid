@@ -84,6 +84,11 @@
     <string name="opencode_notification_phantom_title">Android đã dừng server OpenCode</string>
     <string name="opencode_notification_phantom_text">Server bị Android kill (mã 9/137). Ứng dụng sẽ tự khởi động lại; nếu lặp lại, hãy tắt giới hạn tiến trình phantom.</string>
     <string name="opencode_notification_phantom_big">Android 12 trở lên giới hạn số tiến trình con của mọi ứng dụng (phantom process killer) và gửi SIGKILL khi vượt hạn mức hoặc khi tiến trình dùng quá nhiều CPU. Wake lock và foreground service không chặn được cơ chế này.\n\nCách xử lý:\n• Android 12L/13+: bật Tùy chọn nhà phát triển → “Tắt giới hạn tiến trình con” (Disable child process restrictions) nếu có.\n• Android 12L/13+: adb shell settings put global settings_enable_monitor_phantom_procs false\n• Android 12: adb shell device_config put activity_manager max_phantom_processes 2147483647\n• Android 14+: Tùy chọn nhà phát triển → tắt giới hạn tiến trình con.\n• Xiaomi/Oppo/vivo/Samsung: bật “Khởi động cùng hệ thống”/“Tự khởi động” và tắt tối ưu pin cho OpenCode.\n\nSau đó bấm “Khởi động lại” hoặc mở ứng dụng.</string>
+    <string name="opencode_moved_ports_title">Cổng đã được chuyển</string>
+    <string name="opencode_moved_port_text">Android không cho phép cổng dưới 1024. Cổng %1$d đã được chuyển sang %2$d.</string>
+    <string name="opencode_moved_ports_text">Android không cho phép cổng dưới 1024. %1$d cổng đã được chuyển.</string>
+    <string name="opencode_moved_port_line">Cổng %1$d → %2$d</string>
+    <string name="opencode_moved_ports_big">Hãy dùng cổng mới khi kết nối. Tiến trình chỉ biết cổng gốc vẫn kết nối được qua loopback vì lớp preload tự thử cổng đã chuyển.</string>
 
     <!-- Top bar and settings -->
     <string name="opencode_web_title">OpenCode</string>

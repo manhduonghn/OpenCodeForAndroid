@@ -285,10 +285,12 @@ Cách làm trong `pathmap.c`: `bind()` dịch port `1..1023` thành `port + 8000
 giữ nguyên address); thành công thì ghi `$PREFIX/run/moved-ports/PORT` chứa port mới và in
 một dòng stderr **một lần cho mỗi port gốc** trong tiến trình. `connect()` tới loopback
 (`127/8`, `::1`) chỉ thử port đã dịch khi connect gốc trả `ECONNREFUSED`, rồi phục hồi errno
-nếu cả hai thất bại. `OC_LOW_PORTS=0` tắt cả hai. Giới hạn: không dịch port 0 (ephemeral),
-không đổi `getsockname()` (caller thấy port thật), và retry không áp dụng cho connect
-non-blocking trả `EINPROGRESS`. Kiểm thử: `test_low_ports` (bind + marker + connect retry,
-chọn cặp port trống bằng raw syscall).
+nếu cả hai thất bại. `OC_LOW_PORTS=0` tắt cả hai. Phía app, `MovedPorts` đọc/parse marker và
+`MovedPortNotifier` đăng một notification (xoá marker sau khi đăng thành công); service quét
+lúc khởi động, trong heartbeat 60 giây và activity quét lại ở `onResume`. Giới hạn: không
+dịch port 0 (ephemeral), không đổi `getsockname()` (caller thấy port thật), và retry không
+áp dụng cho connect non-blocking trả `EINPROGRESS`. Kiểm thử: `test_low_ports` (bind, marker,
+connect retry, chọn cặp port trống bằng raw syscall) và `MovedPortsTest` cho parser/consume.
 
 ### G. `system()`/`popen()` qua shell glibc — đã làm
 
@@ -307,8 +309,11 @@ chạy được có `PT_INTERP` glibc; không có thì mọi wrapper rơi về h
 áp dụng lại cho shell và cho lệnh con; `system()` giữ hợp đồng signal (`SIGCHLD` bị block,
 `SIGINT`/`SIGQUIT` ignore ở cha và reset về default ở con), `popen()` giữ bảng 32 record
 `FILE* → pid` để `pclose()` lấy đúng trạng thái, và `pclose()` chỉ gọi hàm thật khi stream
-không có record. `OC_SYSTEM=0` tắt cả ba wrapper. Kiểm thử: `test_glibc_shell` (popen đọc
-`/usr/share/...` qua `cat`, popen ghi bằng redirection, `system("exit 7")`).
+không có record. Bảng record dùng spinlock; constructor đăng ký `pthread_atfork` child handler
+để `fork()` khi thread khác đang giữ lock không làm con treo ở `popen()`/`pclose()`.
+`OC_SYSTEM=0` tắt cả ba wrapper. Kiểm thử: `test_glibc_shell` (popen đọc
+`/usr/share/...` qua `cat`, popen ghi bằng redirection, `system("exit 7")`, và một `fork()`
+mà cả cha lẫn con đều dùng được `popen`).
 
 Hướng 3 (shim bionic) mà Cortex không làm: một `.so` NDK preload vào `/system/bin/sh` để nó
 tự route con glibc. Nghe hấp dẫn nhưng phải strip `LD_PRELOAD`/`LD_LIBRARY_PATH` cho target
@@ -389,7 +394,8 @@ Kiểm thử:
 - **Host test** (`native/pathmap/run-test.sh`, chạy được cả `x86_64` và `aarch64` qua qemu):
   đã có case cho bảng FHS (map + loại trừ `/bin/sh`), `inotify` tự tạo thư mục, Unix socket
   (`bind`/`connect`/`sendto`/`sendmsg`, hash 108 byte + `close`/`unlink`, abstract passthrough),
-  port thấp (`bind` → `+8000`, marker, `connect` retry), `system`/`popen` qua shell glibc, và
+  port thấp (`bind` → `+8000`, marker, `connect` retry), `system`/`popen` qua shell glibc
+  (kể cả `fork()` rồi `popen` ở cả cha và con), và
   exec routing: fixture `route_child.c` với `PT_INTERP` không tồn tại + `$ORIGIN/lib`, script
   `#!/usr/bin/oc-interp`, `/proc/self/exe` qua loader (có và không có `OC_REAL_EXE`), cùng
   môi trường sạch của con và một môi trường 2 100 biến để đi nhánh heap của `preload_env`.

@@ -26,5 +26,5 @@ mkdir -p "$(dirname "$out")"
   -std=gnu11 -O2 -Wall -Wextra -Werror \
   -fPIC -shared -fvisibility=hidden \
   -Wl,-soname,liboc-pathmap.so \
-  -o "$out" "$here/pathmap.c" -ldl
+  -o "$out" "$here/pathmap.c" -ldl -pthread
 echo "build.sh: $out"

@@ -764,6 +764,31 @@ static void test_glibc_shell(void) {
 
     assert(system("exit 7") == (7 << 8));
     assert(system("cat /usr/share/pathmap-usr > /dev/null") == 0);
+
+    /* A forked child inherits the popen table and must be able to use it: the
+     * atfork child handler drops the record lock. The parent still reads its
+     * own stream and collects both children. */
+    FILE *forked = popen("cat /usr/share/pathmap-usr", "r");
+    assert(forked != NULL);
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        char child_text[16] = {0};
+        FILE *child = popen("cat /usr/share/pathmap-usr", "r");
+        if (child == NULL ||
+            fgets(child_text, sizeof(child_text), child) == NULL ||
+            pclose(child) != 0) {
+            _exit(1);
+        }
+        _exit(strcmp(child_text, "usr") == 0 ? 0 : 1);
+    }
+    char forked_text[16] = {0};
+    assert(fgets(forked_text, sizeof(forked_text), forked) != NULL);
+    assert(strcmp(forked_text, "usr") == 0);
+    assert(pclose(forked) == 0);
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 int main(int argc, char **argv) {

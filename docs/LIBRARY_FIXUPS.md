@@ -516,12 +516,14 @@ Các cơ chế mới bổ sung cho bảng trên:
 - **Port thấp**: `bind()` dịch port `1..1023` thành `port + 8000` (IPv4/IPv6), in cảnh báo
   một lần cho mỗi port gốc và ghi `$PREFIX/run/moved-ports/PORT` (nội dung là port mới) cho
   UI. `connect()` tới loopback (`127/8`, `::1`) thử port đã dịch khi connect gốc trả
-  `ECONNREFUSED`; `getsockname()` vẫn trả port thật. Tắt bằng `OC_LOW_PORTS=0`.
+  `ECONNREFUSED`; `getsockname()` vẫn trả port thật. Phía app, `MovedPorts` parse marker và
+  `MovedPortNotifier` thông báo/consume; tắt bằng `OC_LOW_PORTS=0`.
 - **`system`/`popen`**: tìm `$PREFIX/bin/sh` rồi `$PREFIX/bin/bash` và chỉ nhận file glibc
   (`PT_INTERP`). Có shell thì dựng con bằng `posix_spawn()` của thư viện (route + preload áp
   dụng lại), `system()` giữ block `SIGCHLD` + ignore/reset `SIGINT`/`SIGQUIT`; `popen()` dùng
-  `pipe` + fd actions và `pclose()` lấy pid từ bảng 32 record. Không có shell glibc thì gọi
-  hàm thật (`/system/bin/sh`). Tắt bằng `OC_SYSTEM=0`.
+  `pipe` + fd actions và `pclose()` lấy pid từ bảng 32 record. Bảng có spinlock, và
+  `pthread_atfork` child handler reset lock để `fork()` không làm con deadlock. Không có shell
+  glibc thì gọi hàm thật (`/system/bin/sh`). Tắt bằng `OC_SYSTEM=0`.
 
 Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Android: `openat2` và
 `faccessat2` bị seccomp trap, SIGSYS handler trả `ENOSYS` để libc fallback sang
@@ -556,8 +558,10 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
 - `system`/`popen` chỉ route khi `$PREFIX/bin/sh` hoặc `$PREFIX/bin/bash` là ELF glibc; nếu
   shell biến mất giữa lúc kiểm tra và `posix_spawn`, `system()` rơi về hàm thật với `ENOENT`.
   `popen` giữ tối đa 32 stream cùng lúc (bảng record cố định); quá giới hạn thì đóng stream,
-  `waitpid` con và trả `EMFILE`. `system()`/`popen()` không dùng `/bin/sh` đã map, nên
-  `OC_FHS=0` không ảnh hưởng tới việc chọn shell;
+  `waitpid` con và trả `EMFILE`. Bảng dùng spinlock; `pthread_atfork` reset lock trong con nên
+  `fork()` không để lại deadlock, bảng record kế thừa vẫn nguyên vẹn và con có thể tạo record
+  mới. `system()`/`popen()` không dùng `/bin/sh` đã map, nên `OC_FHS=0` không ảnh hưởng tới việc
+  chọn shell;
 - `preload_env` dựng môi trường trong arena static TLS 16 KB mỗi thread; môi trường lớn hơn
   sẽ quay lại `malloc` (đúng hành vi cũ, nhưng có thể chạm lock malloc sau `fork`);
   `test_exec_large_env` dùng 2 100 biến để đi nhánh heap;

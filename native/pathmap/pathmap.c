@@ -71,6 +71,7 @@
 #include <glob.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
@@ -153,6 +154,7 @@ static int g_debug;
 
 static void install_sigsys_policy(void);
 static void create_tree_raw(const char *path);
+static void popen_lock_init(void);
 
 static void copy_env(char *out, size_t size, const char *name) {
     const char *value = getenv(name);
@@ -201,6 +203,11 @@ __attribute__((constructor)) static void pathmap_init(void) {
             if (len > 0 && len < sizeof(g_self)) memcpy(g_self, info.dli_fname, len + 1);
         }
     }
+    /* A fork while another thread is inside popen/pclose must not leave the
+     * spinlock held in the child. The constructor registers the child handler
+     * before any thread can use the table; popen() calls it again for a dlopen
+     * of this library after a fork. */
+    popen_lock_init();
     install_sigsys_policy();
 }
 
@@ -3518,6 +3525,29 @@ struct popen_record {
 static struct popen_record g_popen_records[POPEN_SLOTS];
 static int g_popen_lock;
 
+/*
+ * The record table is protected by a spinlock, not a pthread mutex, because it
+ * is also touched from a child before it execs. fork() only clones the calling
+ * thread: if another thread owned g_popen_lock at that moment, the child would
+ * spin forever in the next popen()/pclose(). The atfork child handler drops the
+ * lock. The records themselves are inherited unchanged; the child may add its
+ * own. add() publishes the stream pointer last, so a fork in the middle of an
+ * insert leaves an empty slot (or a pid without a stream), never a stream whose
+ * pid is missing.
+ */
+static void popen_atfork_child(void) {
+    __atomic_store_n(&g_popen_lock, 0, __ATOMIC_RELEASE);
+}
+
+static int g_popen_atfork_registered;
+
+static void popen_lock_init(void) {
+    /* Exchange before registering: a failure is not worth retrying on every
+     * popen(), and the lock starts at zero for a process that forks before it. */
+    if (__atomic_exchange_n(&g_popen_atfork_registered, 1, __ATOMIC_ACQ_REL) != 0) return;
+    (void)pthread_atfork(NULL, NULL, popen_atfork_child);
+}
+
 static void popen_lock(void) {
     while (__atomic_exchange_n(&g_popen_lock, 1, __ATOMIC_ACQUIRE)) {
         while (__atomic_load_n(&g_popen_lock, __ATOMIC_RELAXED)) {
@@ -3528,11 +3558,13 @@ static void popen_lock(void) {
 static void popen_unlock(void) { __atomic_store_n(&g_popen_lock, 0, __ATOMIC_RELEASE); }
 
 static int popen_record_add(FILE *stream, pid_t pid) {
+    popen_lock_init();
     popen_lock();
     for (size_t i = 0; i < POPEN_SLOTS; i++) {
         if (g_popen_records[i].stream == NULL) {
-            g_popen_records[i].stream = stream;
+            /* Publish the stream last; see the atfork note above. */
             g_popen_records[i].pid = pid;
+            __atomic_store_n(&g_popen_records[i].stream, stream, __ATOMIC_RELEASE);
             popen_unlock();
             return 1;
         }
@@ -3543,6 +3575,7 @@ static int popen_record_add(FILE *stream, pid_t pid) {
 
 static pid_t popen_record_take(FILE *stream) {
     pid_t pid = 0;
+    popen_lock_init();
     popen_lock();
     for (size_t i = 0; i < POPEN_SLOTS; i++) {
         if (g_popen_records[i].stream == stream) {
