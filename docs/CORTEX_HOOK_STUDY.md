@@ -37,7 +37,7 @@ một loader glibc được gọi tường minh.
 | Chương trình trong prefix | không sửa file, hook lo tất cả | sửa file: relocate chuỗi, PT_INTERP, RUNPATH, shebang |
 | uid | fakeroot (uid 0 giả) | uid thật của app, không giả |
 | Chương trình tĩnh | vá `svc #0` (C tĩnh + Go) | vá Go qua `native/gosys`; C tĩnh chưa |
-| Bề mặt hook | 217 hàm export | 113 hàm export |
+| Bề mặt hook | 217 hàm export | 117 hàm export |
 
 Điểm mạnh của cách app này đang làm: **không sửa hành vi của chương trình đã cài** (relocate
 chuỗi cùng độ dài + patchelf là thay đổi tối thiểu, có self-heal), nên `opencode`, `node`,
@@ -74,7 +74,7 @@ kiểu FHS vẫn trượt. Đó chính là khoảng trống mà hook của Corte
 
 Đã có, không cần làm lại:
 
-- Dịch 2 tiền tố Termux ở **113 entry point** (`native/pathmap/pathmap.c`): file, `stat`,
+- Dịch 2 tiền tố Termux ở **117 entry point** (`native/pathmap/pathmap.c`): file, `stat`,
   `readdir`, `glob`, `ftw`, `xattr`, `exec*`, `posix_spawn`, `dlopen`, `chdir`, `realpath`,
   `getcwd` (unmap), `readlink` (unmap), socket Unix, `system`/`popen`/`pclose`.
 - SIGSYS policy trong constructor: `set*id` → 0, `clone3`/`rseq` → `ENOSYS`, `getgroups` → 1.
@@ -111,8 +111,10 @@ G10 và G5 khác bản chất: G5 sửa được bằng exec routing, G10 đã s
 > trong `native/pathmap/pathmap.c` và có test host trong `native/pathmap/pathmap_test.c` +
 > `run-test.sh` (fixture `route_child.c`). **F** (port thấp), **G** (`system`/`popen` qua
 > shell glibc) và **H** (arena tĩnh cho `preload_env`) cũng đã làm trong cùng file; xem chi
-> tiết ở mục 6. Phần thiết kế bên dưới giữ nguyên để tham chiếu; số dòng trong mã nguồn chỉ
-> là tương đối.
+> tiết ở mục 6. Tiếp đó, đợt hardening **P1** đóng các giới hạn của mục 8.2: bảng record Unix
+> socket theo dõi `dup`/`dup2`/`dup3`/`close_range` (chỉ unlink tên hash khi record cuối cùng
+> đóng) và `preload_env` nở bằng `mmap` ẩn danh thay vì `malloc`. Phần thiết kế bên dưới giữ
+> nguyên để tham chiếu; số dòng trong mã nguồn chỉ là tương đối.
 
 ## 5. P0 — bốn việc nên làm trước
 
@@ -259,19 +261,21 @@ Termux cứng hoặc quá dài. Cách làm (theo ý tưởng của Cortex `socke
 - Nếu path sau map ≥ 108 byte: FNV-1a 64 → `$PREFIX/tmp/.oc_sock_%016llx`, và `bind` tạo
   `$PREFIX/tmp` trước. Hai phía tính cùng hash nên gặp nhau.
 - `getsockname`/`getpeername` trả lại cách viết gốc (Termux hoặc FHS) nhờ bảng 64 record theo
-  fd; `accept`/`accept4` copy record local của listener sang fd mới. Không có record (ví dụ fd
-  được `dup`) thì fallback `unmap_buffer`.
-- `close` chỉ unlink tên hash khi pid hiện tại sở hữu record và dev/ino của path vẫn khớp, nên
-  fork hoặc một listener mới bind cùng hash không bị xoá nhầm.
+  fd; `accept`/`accept4` copy record local của listener sang fd mới; `dup`/`dup2`/`dup3` copy
+  cả local+peer+tên hash sang fd mới (và dọn record cũ của fd đích khi bị ghi đè).
+- `close` chỉ unlink tên hash khi pid hiện tại sở hữu record, dev/ino của path vẫn khớp và
+  **không còn record nào khác cùng tên hash**, nên fork, một listener mới bind cùng hash, hoặc
+  một bản `dup` còn sống đều không bị xoá nhầm; `close_range` dọn mọi record trong khoảng khi
+  syscall thành công và không có `CLOSE_RANGE_CLOEXEC`.
 - `unlink`/`unlinkat`/`remove` cũng xoá tên hash và trả 0 khi socket hash đã bị xoá dù kernel
   không tìm thấy đường path vật lý.
 
-Giới hạn: `dup`/`dup2`/`close_range`/`exec` không cập nhật bảng, nên fd trùng số có thể mất
-cách viết gốc; path đúng 108 byte không có NUL được giữ nguyên; bảng đầy thì rơi về unmap
-thường.
+Giới hạn: `exec` không cập nhật bảng, nên một fd sống qua `exec` có thể mất cách viết gốc;
+path đúng 108 byte không có NUL được giữ nguyên; bảng đầy thì rơi về unmap thường.
 
 Kiểm thử: `test_unix_sockets` trong `native/pathmap/pathmap_test.c` — stream với cách viết
-Termux và FHS, hash + `close`/`unlink`, datagram qua `sendto`/`sendmsg`, abstract passthrough.
+Termux và FHS, hash + `close`/`unlink`/`dup`/`dup2`/`dup3`/`close_range`, datagram qua
+`sendto`/`sendmsg`, abstract passthrough.
 
 ### F. Port thấp → `+8000` — đã làm
 
@@ -331,12 +335,14 @@ bằng `memcpy`, không `malloc`; hoặc `pthread_atfork` để chuẩn bị s�
 với B vì B sửa đúng hàm này.
 
 Cách làm: `preload_env()` dựng cả mảng con trỏ và các chuỗi trong một arena `__thread` 16 KB
-(`tls_model("initial-exec")`) bằng bump allocator + `memcpy`; hết chỗ thì thử lại toàn bộ
-trên heap như cũ. Arena thuộc static TLS nên thread tạo trước `fork` đã có sẵn block và con
-kế thừa nguyên trạng; `free_preload_env()` nhận ra con trỏ nằm trong arena và không `free`.
+(`tls_model("initial-exec")`) bằng bump allocator + `memcpy`; hết chỗ thì thử lại trong một
+vùng `mmap` ẩn danh 64 KB → 16 MB, **không** quay lại `malloc`. Arena thuộc static TLS nên
+thread tạo trước `fork` đã có sẵn block và con kế thừa nguyên trạng; `free_preload_env()` nhận
+ra con trỏ nằm trong arena (không `free`) hoặc trong vùng `mmap` (header magic, `munmap` theo
+kích thước ghi trong header) và giải phóng đúng cách.
 `file_is_glibc_depth()` (được gọi trong bước dựng env) đổi sang `open_raw()` để không đi qua
 `openat()` hook. Kiểm thử: các case exec hiện có dùng arena; một môi trường rất lớn sẽ đi
-nhánh heap (xem giới hạn ở `LIBRARY_FIXUPS.md`).
+nhánh `mmap` (xem giới hạn ở `LIBRARY_FIXUPS.md`).
 
 ## 7. Không nên port
 
@@ -385,7 +391,8 @@ Thứ tự đề xuất (mỗi bước là một PR nhỏ, có test):
 3. **B** (exec routing): chuẩn hoá path → probe → loader/argv → shebang → `posix_spawn` —
    đã làm, cùng **H** (arena tĩnh cho `preload_env`).
 4. **D** (`inotify`) và **E** (Unix socket) — đã làm. **F** (port thấp), **G** (`system`/
-   `popen` qua shell glibc) — đã làm.
+   `popen` qua shell glibc) — đã làm. Hardening **P1**: `dup`/`dup2`/`dup3`/`close_range` cho
+   bảng record socket và `mmap` cho `preload_env` lớn — đã làm.
 5. **P2**: vá C tĩnh theo bảng `svc #0` (chỉ khi có nhu cầu thật), `lzma_cputhreads` như
    tuỳ chọn.
 

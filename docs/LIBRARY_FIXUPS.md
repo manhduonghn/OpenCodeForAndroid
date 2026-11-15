@@ -450,7 +450,7 @@ cả hai; `gem install colorize` cài vào prefix và `require "colorize"` chạ
 
 Thư viện chỉ có thể dịch path tại các **entry point của libc mà chương trình gọi**; nó
 không nhìn thấy syscall do chương trình tự phát, path nằm trong `argv`/biến môi trường, hay
-path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (113 symbol export,
+path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (117 symbol export,
 trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 
 | Nhóm | Hàm đã hook |
@@ -466,7 +466,7 @@ trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 | Nạp thư viện | `dlopen`, `dlmopen` |
 | exec / spawn | `execve`, `execv`, `execvp`, `execvpe`, `execveat`, `fexecve`, `execl`, `execlp`, `execle`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_addopen`, `posix_spawn_file_actions_addchdir_np` |
 | Shell | `system`, `popen`, `pclose` (chạy shell glibc trong `$PREFIX/bin` qua `posix_spawn`) |
-| Unix socket | `bind`, `connect`, `sendto`, `sendmsg`, `getsockname`, `getpeername`, `accept`, `accept4`, `close` (chỉ để dọn tên hash) |
+| Unix socket | `bind`, `connect`, `sendto`, `sendmsg`, `getsockname`, `getpeername`, `accept`, `accept4`, `close`, `dup`, `dup2`, `dup3`, `close_range` (theo dõi/dọn tên hash) |
 
 Các hàm trả path (`realpath`, `canonicalize_file_name`, `getcwd`, `glob`, `readlink`) được
 **unmap tại chỗ** về spelling Termux trước khi trả cho caller; các hàm nhận path thì map
@@ -485,7 +485,7 @@ Hàm **cố ý bỏ qua**:
 | Go tĩnh x86_64 | `oc-gosys` mới hỗ trợ AArch64; Go x86_64 vẫn chạy nhưng path Termux không được dịch |
 | `wordexp` | nhận chuỗi lệnh, không phải path; dùng `/bin/sh` của bionic và không có nhu cầu route. `system`/`popen` thì đã có wrapper riêng (xem trên) |
 | callback của `ftw`/`ftw64`/`nftw`/`nftw64` | thư viện không thể thay con trỏ hàm của caller, nên callback vẫn thấy path vật lý của prefix; chỉ path gốc được map |
-| `dup`, `dup2`, `dup3`, `close_range`, `exec` | bảng record Unix socket không theo dõi các thao tác này; fd trùng số sau đó có thể mất cách viết gốc hoặc tên hash không được dọn |
+| `exec` | bảng record Unix socket không theo dõi `exec`; một fd sống qua exec có thể mất cách viết gốc (đã theo dõi `dup`/`dup2`/`dup3`/`close_range`) |
 | `updwtmp`, `setutent`/`pututline` | đường dẫn utmp/wtmp cố định hoặc rất hiếm dùng trong app Android; có thể thêm nếu có nhu cầu thật |
 | path trong `argv`, biến môi trường, nội dung file cấu hình | không phải tham số của hàm libc và không có ý nghĩa chung; chỉ chương trình đích mới biết cách hiểu. Path của chính chương trình và `/proc/self/exe` thì đã được xử lý |
 
@@ -511,7 +511,11 @@ Các cơ chế mới bổ sung cho bảng trên:
   path sau map ≥ 108 byte, tên được thay bằng FNV-1a 64:
   `$PREFIX/tmp/.oc_sock_%016llx` (`bind` tự tạo `$PREFIX/tmp`). `getsockname`/`getpeername`
   trả lại cách viết gốc; `accept`/`accept4` copy record local của listener sang fd mới;
-  `close` dọn tên hash khi pid hiện tại sở hữu listener và dev/ino vẫn khớp;
+  `dup`/`dup2`/`dup3` copy cả record local+peer+tên hash sang fd mới (và `dup2`/`dup3` dọn
+  record cũ của fd đích), nên fd trùng số vẫn giữ cách viết gốc; tên hash chỉ bị `unlink` khi
+  pid hiện tại sở hữu listener, dev/ino vẫn khớp và **không còn record nào khác cùng tên hash**
+  (nhờ vậy `dup` rồi `close` bản gốc không xoá tên khi bản sao còn sống); `close_range` dọn
+  record của mọi fd trong khoảng khi syscall thành công và không có `CLOSE_RANGE_CLOEXEC`;
   `unlink`/`unlinkat`/`remove` cũng xoá tên hash.
 - **Port thấp**: `bind()` dịch port `1..1023` thành `port + 8000` (IPv4/IPv6), in cảnh báo
   một lần cho mỗi port gốc và ghi `$PREFIX/run/moved-ports/PORT` (nội dung là port mới) cho
@@ -534,8 +538,8 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
 - chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
   Termux không được dịch);
 - Unix socket chỉ dịch path tuyệt đối trong `bind`/`connect`/`sendto`/`sendmsg`; bảng record
-  không theo dõi `dup`/`dup2`/`close_range`/`exec`, nên fd trùng số có thể mất cách viết gốc
-  hoặc tên hash không được dọn; path đúng 108 byte không có NUL được giữ nguyên;
+  theo dõi `dup`/`dup2`/`dup3`/`close_range` nhưng **không** theo dõi `exec`, nên một fd sống
+  qua `exec` có thể mất cách viết gốc; path đúng 108 byte không có NUL được giữ nguyên;
 - không dịch path nằm trong `argv`/biến môi trường của chương trình đích (path của chính
   chương trình và `/proc/self/exe` thì có); các chương trình cần path trong argv vẫn phải
   được relocation như gói cài qua `pkg`;
@@ -563,8 +567,8 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
   mới. `system()`/`popen()` không dùng `/bin/sh` đã map, nên `OC_FHS=0` không ảnh hưởng tới việc
   chọn shell;
 - `preload_env` dựng môi trường trong arena static TLS 16 KB mỗi thread; môi trường lớn hơn
-  sẽ quay lại `malloc` (đúng hành vi cũ, nhưng có thể chạm lock malloc sau `fork`);
-  `test_exec_large_env` dùng 2 100 biến để đi nhánh heap;
+  sẽ nở một vùng `mmap` ẩn danh (64 KB → 16 MB) chứ **không** quay lại `malloc`, nên cả nhánh
+  lớn cũng an toàn sau `fork`; `test_exec_large_env` dùng 6 000 biến để đi nhánh `mmap`;
 - `OC_FHS=0` tắt bảng FHS, `OC_EXEC_ROUTE=0` tắt exec routing, `OC_LOW_PORTS=0` tắt dịch port
   thấp, `OC_SYSTEM=0` tắt wrapper shell, `OC_REAL_EXE` chỉ có tác dụng khi tiến trình chạy
   dưới loader; không có biến nào ảnh hưởng tới hai root Termux;

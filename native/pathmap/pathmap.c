@@ -81,6 +81,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -600,6 +601,17 @@ static void socket_unlink_if_owned(const char *path, int has_id, dev_t device, i
     syscall(SYS_unlinkat, AT_FDCWD, path, 0);
 }
 
+/* Another live record shares the same hashed name: a dup() kept the socket
+ * alive, so closing one descriptor must not remove the name. */
+static int socket_record_hashed_shared_locked(const struct socket_record *self) {
+    for (size_t i = 0; i < UNIX_SOCKET_SLOTS; i++) {
+        const struct socket_record *record = &g_socket_records[i];
+        if (record == self || record->fd_plus_one == 0) continue;
+        if (record->owns_hash && strcmp(record->hashed, self->hashed) == 0) return 1;
+    }
+    return 0;
+}
+
 static void socket_record_close(int fd, int closed) {
     if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return;
     char path[UNIX_SOCKET_PATH_MAX];
@@ -612,7 +624,8 @@ static void socket_record_close(int fd, int closed) {
     struct socket_record *record = socket_record_get(fd, 0);
     if (record != NULL) {
         if (closed && record->owns_hash && record->hashed[0] != '\0' &&
-            record->owner_pid == (int)syscall(SYS_getpid)) {
+            record->owner_pid == (int)syscall(SYS_getpid) &&
+            !socket_record_hashed_shared_locked(record)) {
             size_t length = strlen(record->hashed);
             memcpy(path, record->hashed, length + 1);
             unlink_path = 1;
@@ -624,6 +637,48 @@ static void socket_record_close(int fd, int closed) {
     }
     socket_unlock();
     if (unlink_path) socket_unlink_if_owned(path, has_id, device, inode);
+}
+
+/* dup()/dup2()/dup3() keep the same open file description, so the original
+ * name and peer must follow the new descriptor. */
+static void socket_record_dup(int source, int destination) {
+    if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return;
+    socket_lock();
+    struct socket_record *from = socket_record_get(source, 0);
+    if (from != NULL) {
+        struct socket_record *to = socket_record_get(destination, 0);
+        if (to == NULL) to = socket_record_get(destination, 1);
+        if (to != NULL) {
+            to->owner_pid = (int)syscall(SYS_getpid);
+            to->owns_hash = from->owns_hash;
+            to->has_id = from->has_id;
+            to->hash_dev = from->hash_dev;
+            to->hash_ino = from->hash_ino;
+            to->local_len = from->local_len;
+            memcpy(to->local, from->local, (size_t)from->local_len + 1);
+            to->peer_len = from->peer_len;
+            memcpy(to->peer, from->peer, (size_t)from->peer_len + 1);
+            memcpy(to->hashed, from->hashed, sizeof(to->hashed));
+        }
+    }
+    socket_unlock();
+}
+
+/* close_range() drops every descriptor in the window at once; collect the
+ * tracked ones under the lock and then close them one by one. */
+static void socket_record_close_range(unsigned int first, unsigned int last) {
+    if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return;
+    int fds[UNIX_SOCKET_SLOTS];
+    size_t count = 0;
+    socket_lock();
+    for (size_t i = 0; i < UNIX_SOCKET_SLOTS; i++) {
+        const struct socket_record *record = &g_socket_records[i];
+        if (record->fd_plus_one == 0) continue;
+        unsigned int fd = (unsigned int)(record->fd_plus_one - 1);
+        if (fd >= first && fd <= last) fds[count++] = (int)fd;
+    }
+    socket_unlock();
+    for (size_t i = 0; i < count; i++) socket_record_close(fds[i], 1);
 }
 
 /* Remove the short name of a long socket path; used by unlink/unlinkat/remove. */
@@ -1054,8 +1109,8 @@ static int executable_file(const char *path) {
  * of that process can hold the malloc lock at the moment of fork, so an
  * allocation in the child can hang forever. The environment is therefore built
  * in a per-thread arena of static TLS with a bump allocator and memcpy only. A
- * huge environment restarts on the heap, which keeps the old behaviour; the
- * common case of a few dozen variables never calls malloc after fork.
+ * huge environment restarts in an anonymous mmap region (also lock-free); the
+ * common case of a few dozen variables never leaves the arena.
  *
  * The initial-exec model is correct here: this library is preloaded at startup
  * (ld.so --preload or LD_PRELOAD), never dlopen'd into a running process, so
@@ -1063,32 +1118,73 @@ static int executable_file(const char *path) {
  * exists before a fork has already touched its arena and the child inherits it.
  */
 #define ENV_ARENA_SIZE 16384
+#define ENV_MMAP_INITIAL (64u * 1024u)
+#define ENV_MMAP_MAX (16u * 1024u * 1024u)
+#define ENV_REGION_MAGIC UINT64_C(0x4f43454e564d4150)
 
 static __thread union {
     max_align_t align;
     char bytes[ENV_ARENA_SIZE];
 } g_env_arena __attribute__((tls_model("initial-exec")));
 
+/* The size is stored in the mapping itself so free_preload_env() needs no
+ * side table (and no global pointer shared by threads). */
+union env_region_header {
+    max_align_t align;
+    struct {
+        uint64_t magic;
+        size_t size;
+    } fields;
+};
+
 struct env_pool {
-    char *base; /* NULL means malloc */
+    char *base;
     size_t size;
     size_t used;
+    void *region; /* NULL for the static TLS arena */
+    size_t region_size;
 };
 
 static void env_pool_arena(struct env_pool *pool) {
     pool->base = g_env_arena.bytes;
     pool->size = sizeof(g_env_arena.bytes);
     pool->used = 0;
+    pool->region = NULL;
+    pool->region_size = 0;
 }
 
-static void env_pool_heap(struct env_pool *pool) {
+static int env_pool_mmap(struct env_pool *pool, size_t size) {
     pool->base = NULL;
     pool->size = 0;
     pool->used = 0;
+    pool->region = NULL;
+    pool->region_size = 0;
+    if (size == 0 || size > SIZE_MAX - sizeof(union env_region_header)) return 0;
+    size_t total = size + sizeof(union env_region_header);
+    void *region = mmap(NULL, total, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (region == MAP_FAILED) return 0;
+    union env_region_header *header = region;
+    header->fields.magic = ENV_REGION_MAGIC;
+    header->fields.size = total;
+    pool->region = region;
+    pool->region_size = total;
+    pool->base = (char *)region + sizeof(*header);
+    pool->size = size;
+    return 1;
+}
+
+static void env_pool_release(struct env_pool *pool) {
+    if (pool->region != NULL) munmap(pool->region, pool->region_size);
+    pool->base = NULL;
+    pool->size = 0;
+    pool->used = 0;
+    pool->region = NULL;
+    pool->region_size = 0;
 }
 
 static void *env_pool_alloc(struct env_pool *pool, size_t size) {
-    if (pool->base == NULL) return malloc(size);
+    if (pool->base == NULL) return NULL;
     const size_t align = _Alignof(max_align_t);
     if (size > SIZE_MAX - (align - 1)) return NULL;
     size = (size + align - 1) & ~(align - 1);
@@ -1192,19 +1288,25 @@ static int entry_is_original(const char *entry, char *const source[], size_t cou
     return 0;
 }
 
-static int env_is_pooled(char **env) {
+static int env_is_arena(char **env) {
     uintptr_t value = (uintptr_t)env;
     uintptr_t base = (uintptr_t)g_env_arena.bytes;
     return value >= base && value < base + sizeof(g_env_arena.bytes);
 }
 
 static void free_preload_env(char **env, char *const source[], size_t count) {
-    if (env == NULL) return;
-    if (env_is_pooled(env)) return;
-    for (size_t i = 0; env[i] != NULL; i++) {
-        if (!entry_is_original(env[i], source, count)) free(env[i]);
+    if (env == NULL || env_is_arena(env)) return;
+    union env_region_header *header =
+        (union env_region_header *)((char *)env - sizeof(union env_region_header));
+    if (header->fields.magic != ENV_REGION_MAGIC) {
+        /* Kept for a caller that never went through env_pool_mmap(). */
+        for (size_t i = 0; env[i] != NULL; i++) {
+            if (!entry_is_original(env[i], source, count)) free(env[i]);
+        }
+        free(env);
+        return;
     }
-    free(env);
+    munmap(header, header->fields.size);
 }
 
 /*
@@ -1280,10 +1382,7 @@ static char **preload_env_build(const char *target, char *const source[], size_t
     }
     if (!glibc) {
         out[used] = NULL;
-        if (!changed) {
-            if (pool->base == NULL) free(out);
-            return NULL;
-        }
+        if (!changed) return NULL;
         return out;
     }
     if (use_preload && !have_preload) {
@@ -1315,23 +1414,36 @@ static char **preload_env_build(const char *target, char *const source[], size_t
     return out;
 fail:
     *failed = 1;
-    if (pool->base == NULL) free_preload_env(out, source, count);
     return NULL;
 }
 
 static char **preload_env(const char *target, char *const source[], size_t count,
                           int use_preload, int fake_exe) {
     if (!g_enabled || g_self[0] == '\0') return NULL;
-    int failed = 0;
     struct env_pool pool;
+    /* The common environment fits the TLS arena; only a huge one grows. */
     env_pool_arena(&pool);
-    char **out = preload_env_build(target, source, count, use_preload, fake_exe, &pool, &failed);
-    if (failed && pool.base != NULL) {
-        /* The arena is too small for this environment; build it the old way. */
-        env_pool_heap(&pool);
-        out = preload_env_build(target, source, count, use_preload, fake_exe, &pool, &failed);
+    int failed = 0;
+    char **out = preload_env_build(target, source, count, use_preload, fake_exe,
+                                   &pool, &failed);
+    if (!failed) return out;
+    /*
+     * Grow an anonymous mapping instead of falling back to malloc: a fork()
+     * child may still be running after another thread took the malloc lock, so
+     * even the rare large environment must be built without that lock.
+     */
+    for (size_t size = ENV_MMAP_INITIAL; size <= ENV_MMAP_MAX; size *= 2) {
+        if (!env_pool_mmap(&pool, size)) return NULL;
+        failed = 0;
+        out = preload_env_build(target, source, count, use_preload, fake_exe,
+                                &pool, &failed);
+        if (!failed) {
+            if (out == NULL) env_pool_release(&pool);
+            return out;
+        }
+        env_pool_release(&pool);
     }
-    return out;
+    return NULL;
 }
 
 /* ---------------------------------------------------------------- routing core */
@@ -2309,6 +2421,59 @@ EXPORT int close(int fd) {
     int rc = real_close(fd);
     int saved = errno;
     socket_record_close(fd, rc == 0);
+    errno = saved;
+    return rc;
+}
+
+/*
+ * A descriptor that refers to a bound Unix socket can be moved with dup2() or
+ * dup3() (servers that daemonize, or that replace stdio). The socket record is
+ * copied so getsockname()/getpeername() keep returning the original spelling,
+ * and the target of a dup2()/dup3() releases whatever it referred to before.
+ */
+EXPORT int dup(int oldfd) {
+    typedef int (*fn_t)(int);
+    RESOLVE(dup, fn_t)
+    int rc = real_dup(oldfd);
+    if (rc >= 0) socket_record_dup(oldfd, rc);
+    return rc;
+}
+
+EXPORT int dup2(int oldfd, int newfd) {
+    typedef int (*fn_t)(int, int);
+    RESOLVE(dup2, fn_t)
+    int rc = real_dup2(oldfd, newfd);
+    if (rc >= 0 && oldfd != newfd) {
+        socket_record_close(newfd, 1);
+        socket_record_dup(oldfd, newfd);
+    }
+    return rc;
+}
+
+EXPORT int dup3(int oldfd, int newfd, int flags) {
+    typedef int (*fn_t)(int, int, int);
+    RESOLVE(dup3, fn_t)
+    int rc = real_dup3(oldfd, newfd, flags);
+    if (rc >= 0 && oldfd != newfd) {
+        socket_record_close(newfd, 1);
+        socket_record_dup(oldfd, newfd);
+    }
+    return rc;
+}
+
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
+
+EXPORT int close_range(unsigned int first, unsigned int last, int flags) {
+    typedef int (*fn_t)(unsigned int, unsigned int, int);
+    RESOLVE(close_range, fn_t)
+    int rc = real_close_range(first, last, flags);
+    int saved = errno;
+    /* CLOSE_RANGE_CLOEXEC only sets FD_CLOEXEC; the descriptors stay open. */
+    if (rc == 0 && (flags & CLOSE_RANGE_CLOEXEC) == 0) {
+        socket_record_close_range(first, last);
+    }
     errno = saved;
     return rc;
 }

@@ -52,6 +52,10 @@
 #define TERMUX_PREFIX "/data/data/com.termux/files/usr"
 #define TERMUX_HOME "/data/data/com.termux/files/home"
 
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
+
 static char g_root[PATH_MAX];
 static char g_prefix[PATH_MAX];
 static char g_home[PATH_MAX];
@@ -323,16 +327,16 @@ static void test_exec_clean_env(void) {
     assert(WEXITSTATUS(status) == 0);
 }
 
-/* An environment whose pointer array alone exceeds the 16 KB arena forces
- * preload_env() through the heap fallback; the child still gets the preload and
- * the path mapping. */
+/* An environment larger than the 16 KB arena forces preload_env() into the
+ * anonymous mmap region; with more than 64 KB of strings it also exercises the
+ * grow loop. The child still gets the preload and the path mapping. */
 static void test_exec_large_env(void) {
     if (getenv("OC_TEST_NO_EXEC") != NULL) return;
     char physical[PATH_MAX];
     join(physical, sizeof(physical), g_prefix, "/child-check");
     write_file(physical, "child");
 
-    enum { COUNT = 2100 };
+    enum { COUNT = 6000 };
     static char storage[COUNT][32];
     static char *envp[COUNT + 2];
     for (int i = 0; i < COUNT; i++) {
@@ -406,8 +410,8 @@ static void test_unix_stream_termux(void) {
     assert(got.sun_family == AF_UNIX);
     assert(strcmp(got.sun_path, addr.sun_path) == 0);
 
-    /* A duplicated descriptor has no record; the physical prefix is still
-     * unmapped before the caller sees the name. */
+    /* A duplicated descriptor carries the record, so the name is restored
+     * from the copy instead of the generic unmap. */
     int duplicate = dup(listener);
     assert(duplicate >= 0);
     gotlen = sizeof(got);
@@ -568,6 +572,99 @@ static void test_unix_hashed_unlink(void) {
     assert(close(listener) == 0);
 }
 
+/* A dup() keeps the hashed name alive until the last descriptor closes. */
+static void test_unix_hashed_dup(void) {
+    char original[UNIX_SOCKET_PATH_MAX];
+    char hashed[PATH_MAX];
+    struct stat st;
+
+    fill_long_path(original, sizeof(original), 'f');
+    int listener = bind_long_socket(original, hashed, sizeof(hashed));
+    int duplicate = dup(listener);
+    assert(duplicate >= 0);
+
+    struct sockaddr_un got;
+    socklen_t gotlen = sizeof(got);
+    assert(getsockname(duplicate, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, original) == 0);
+
+    /* One descriptor closes; the name stays while the copy is alive. */
+    assert(close(listener) == 0);
+    assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+    gotlen = sizeof(got);
+    assert(getsockname(duplicate, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, original) == 0);
+
+    assert(close(duplicate) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+}
+
+/* dup2()/dup3() move the name onto the target descriptor. */
+static void test_unix_hashed_dup2(void) {
+    char original[UNIX_SOCKET_PATH_MAX];
+    char hashed[PATH_MAX];
+    struct stat st;
+    struct sockaddr_un got;
+    socklen_t gotlen;
+
+    fill_long_path(original, sizeof(original), 'g');
+    int listener = bind_long_socket(original, hashed, sizeof(hashed));
+    int target = open("/dev/null", O_RDONLY);
+    assert(target >= 0);
+    assert(dup2(listener, target) == target);
+
+    gotlen = sizeof(got);
+    assert(getsockname(target, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, original) == 0);
+
+    assert(close(listener) == 0);
+    assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+    assert(close(target) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+
+    /* dup3() replaces a tracked socket and moves the name with it. */
+    fill_long_path(original, sizeof(original), 'h');
+    listener = bind_long_socket(original, hashed, sizeof(hashed));
+    int other = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(other >= 0);
+    assert(dup3(listener, other, 0) == other);
+    gotlen = sizeof(got);
+    assert(getsockname(other, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, original) == 0);
+    assert(close(listener) == 0);
+    assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+    assert(close(other) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+}
+
+/* close_range() drops the tracked records; CLOSE_RANGE_CLOEXEC does not. */
+static void test_unix_hashed_close_range(void) {
+    char original[UNIX_SOCKET_PATH_MAX];
+    char hashed[PATH_MAX];
+    struct stat st;
+
+    fill_long_path(original, sizeof(original), 'i');
+    int listener = bind_long_socket(original, hashed, sizeof(hashed));
+    /* Some Android kernels reject CLOSE_RANGE_CLOEXEC with EINVAL; when the
+     * flag is supported the descriptor stays open and the name must survive. */
+    errno = 0;
+    if (close_range((unsigned int)listener, (unsigned int)listener,
+                    CLOSE_RANGE_CLOEXEC) == 0) {
+        assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+        int flags = fcntl(listener, F_GETFD);
+        assert(flags >= 0 && (flags & FD_CLOEXEC));
+    } else {
+        assert(errno == EINVAL);
+    }
+    assert(close(listener) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+
+    fill_long_path(original, sizeof(original), 'j');
+    listener = bind_long_socket(original, hashed, sizeof(hashed));
+    assert(close_range((unsigned int)listener, (unsigned int)listener, 0) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+}
+
 /* Datagram sockets reach the same hashed name through sendto() and sendmsg(). */
 static void test_unix_datagram(void) {
     char original[UNIX_SOCKET_PATH_MAX];
@@ -640,6 +737,9 @@ static void test_unix_sockets(void) {
     test_unix_stream_fhs();
     test_unix_hashed_close();
     test_unix_hashed_unlink();
+    test_unix_hashed_dup();
+    test_unix_hashed_dup2();
+    test_unix_hashed_close_range();
     test_unix_datagram();
     test_unix_abstract();
 }
