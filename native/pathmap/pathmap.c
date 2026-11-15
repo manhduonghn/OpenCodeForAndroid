@@ -11,8 +11,9 @@
  * The Termux roots are copied once in the constructor from OC_PREFIX /
  * OC_USER_HOME. The FHS table (/usr, /etc, /tmp, /var, /root, /dev/shm, /bin) is
  * checked only after the two Termux roots and can be disabled with OC_FHS=0.
- * /bin/sh is deliberately left alone: system() and the scripts of Android keep
- * the bionic shell. A thread local guard blocks recursion, and a path that does
+ * /bin/sh is deliberately left alone so the scripts of Android keep the bionic
+ * shell; system() and popen() use the glibc shell in $PREFIX/bin instead when
+ * one is installed. A thread local guard blocks recursion, and a path that does
  * not match any root is passed to the real function with its original pointer.
  *
  * A glibc program whose PT_INTERP does not exist is rewritten into
@@ -50,8 +51,9 @@
  * library through `ld.so --preload`, so its LD_PRELOAD stays clean, and a bionic
  * or static child never inherits either the preload or OC_REAL_EXE: loading a
  * glibc object into it aborts, and the stale executable would be reported as
- * /proc/self/exe. `/bin/sh` is left unmapped so `system()` keeps the bionic
- * shell; its internal exec does not go through these wrappers.
+ * /proc/self/exe. `/bin/sh` is left unmapped so scripts and system() keep the
+ * bionic shell when no glibc shell is installed; with one, system()/popen()
+ * start it through posix_spawn() and keep the path translation.
  *
  * Build: see build.sh in this directory. Every hooked symbol carries EXPORT and
  * the build uses -fvisibility=hidden, so the constructor and the helpers stay
@@ -68,6 +70,7 @@
 #include <ftw.h>
 #include <glob.h>
 #include <limits.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
@@ -85,6 +88,7 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/vfs.h>
+#include <sys/wait.h>
 #include <sys/xattr.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -130,6 +134,14 @@ static int g_fhs = 1;
 /* OC_EXEC_ROUTE=0 turns off the routing of a glibc program through the loader. */
 static int g_exec_route = 1;
 
+/*
+ * OC_LOW_PORTS=0 turns off the +8000 translation of a bind() below 1024 and the
+ * loopback retry in connect(). OC_SYSTEM=0 keeps the real system()/popen(),
+ * which run the bionic shell of Android.
+ */
+static int g_low_ports = 1;
+static int g_system = 1;
+
 /* OC_REAL_EXE overrides /proc/self/exe, for a program started through ld.so. */
 static char g_real_exe[PATH_MAX];
 
@@ -140,6 +152,7 @@ static int g_exe_state;
 static int g_debug;
 
 static void install_sigsys_policy(void);
+static void create_tree_raw(const char *path);
 
 static void copy_env(char *out, size_t size, const char *name) {
     const char *value = getenv(name);
@@ -173,6 +186,10 @@ __attribute__((constructor)) static void pathmap_init(void) {
         g_fhs = !(fhs != NULL && strcmp(fhs, "0") == 0);
         const char *route = getenv("OC_EXEC_ROUTE");
         g_exec_route = !(route != NULL && strcmp(route, "0") == 0);
+        const char *ports = getenv("OC_LOW_PORTS");
+        g_low_ports = !(ports != NULL && strcmp(ports, "0") == 0);
+        const char *system_route = getenv("OC_SYSTEM");
+        g_system = !(system_route != NULL && strcmp(system_route, "0") == 0);
     }
     copy_env(g_real_exe, sizeof(g_real_exe), "OC_REAL_EXE");
     {
@@ -240,8 +257,9 @@ static const char *map_path(const char *path, char *buffer, size_t size) {
  * prefix swap. They are checked only after the two Termux roots, so a program
  * that spells the Termux paths keeps the same answer as before.
  *
- * /bin/sh is deliberately NOT mapped: system() and the scripts of Android have
- * to keep resolving to the bionic shell of the platform.
+ * /bin/sh is deliberately NOT mapped: scripts and tools of Android have to keep
+ * resolving to the bionic shell of the platform. system()/popen() bypass this
+ * table and start the glibc shell in $PREFIX/bin directly (see glibc_shell).
  */
 struct fhs_rule {
     const char *from;
@@ -269,7 +287,8 @@ static const char *map_fhs(const char *path, char *buffer, size_t size) {
         if (root_len == 0) continue;
         if (strncmp(path, rule->from, rule->from_len) != 0) continue;
         if (path[rule->from_len] != '\0' && path[rule->from_len] != '/') continue;
-        // Keep the bionic shell of Android for the system() of glibc.
+        // Keep the bionic shell of Android for callers that use /bin/sh
+        // directly (and for system() when no glibc shell is installed).
         if (strcmp(rule->from, "/bin") == 0 && strcmp(path, "/bin/sh") == 0) continue;
 
         size_t suffix_len = strlen(rule->suffix);
@@ -976,7 +995,7 @@ static int elf_is_glibc(int fd) {
  * python3` is glibc when python3 is a glibc program in the private prefix. */
 static int file_is_glibc_depth(const char *path, int depth) {
     if (path == NULL || path[0] == '\0' || depth > 4) return 0;
-    int fd = openat(AT_FDCWD, path, O_RDONLY | O_CLOEXEC);
+    int fd = open_raw(path, O_RDONLY);
     if (fd < 0) return 0;
     int glibc = elf_is_glibc(fd);
     if (!glibc) {
@@ -1022,10 +1041,60 @@ static int executable_file(const char *path) {
     return access(path, X_OK) == 0 && stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
-static char *join_env(const char *name, const char *value) {
+/*
+ * preload_env() runs in the child of fork() when a shell starts a program: the
+ * shell forks, then execve() builds the environment of the child. Another thread
+ * of that process can hold the malloc lock at the moment of fork, so an
+ * allocation in the child can hang forever. The environment is therefore built
+ * in a per-thread arena of static TLS with a bump allocator and memcpy only. A
+ * huge environment restarts on the heap, which keeps the old behaviour; the
+ * common case of a few dozen variables never calls malloc after fork.
+ *
+ * The initial-exec model is correct here: this library is preloaded at startup
+ * (ld.so --preload or LD_PRELOAD), never dlopen'd into a running process, so
+ * glibc reserves the block for every thread when it creates it. A thread that
+ * exists before a fork has already touched its arena and the child inherits it.
+ */
+#define ENV_ARENA_SIZE 16384
+
+static __thread union {
+    max_align_t align;
+    char bytes[ENV_ARENA_SIZE];
+} g_env_arena __attribute__((tls_model("initial-exec")));
+
+struct env_pool {
+    char *base; /* NULL means malloc */
+    size_t size;
+    size_t used;
+};
+
+static void env_pool_arena(struct env_pool *pool) {
+    pool->base = g_env_arena.bytes;
+    pool->size = sizeof(g_env_arena.bytes);
+    pool->used = 0;
+}
+
+static void env_pool_heap(struct env_pool *pool) {
+    pool->base = NULL;
+    pool->size = 0;
+    pool->used = 0;
+}
+
+static void *env_pool_alloc(struct env_pool *pool, size_t size) {
+    if (pool->base == NULL) return malloc(size);
+    const size_t align = _Alignof(max_align_t);
+    if (size > SIZE_MAX - (align - 1)) return NULL;
+    size = (size + align - 1) & ~(align - 1);
+    if (size > pool->size - pool->used) return NULL;
+    void *out = pool->base + pool->used;
+    pool->used += size;
+    return out;
+}
+
+static char *join_env(struct env_pool *pool, const char *name, const char *value) {
     size_t name_len = strlen(name);
     size_t value_len = strlen(value);
-    char *out = malloc(name_len + value_len + 2);
+    char *out = env_pool_alloc(pool, name_len + value_len + 2);
     if (out == NULL) return NULL;
     memcpy(out, name, name_len);
     out[name_len] = '=';
@@ -1033,15 +1102,22 @@ static char *join_env(const char *name, const char *value) {
     return out;
 }
 
-static char *merge_preload(const char *value) {
-    size_t len = strlen("LD_PRELOAD=") + strlen(g_self) + 1 + strlen(value) + 1;
-    char *out = malloc(len);
+static char *merge_preload(struct env_pool *pool, const char *value) {
+    size_t self_len = strlen(g_self);
+    size_t value_len = strlen(value);
+    size_t len = 11 + self_len + (value_len > 0 ? 1 + value_len : 0) + 1;
+    char *out = env_pool_alloc(pool, len);
     if (out == NULL) return NULL;
-    if (value[0] != '\0') {
-        snprintf(out, len, "LD_PRELOAD=%s %s", g_self, value);
-    } else {
-        snprintf(out, len, "LD_PRELOAD=%s", g_self);
+    memcpy(out, "LD_PRELOAD=", 11);
+    char *cursor = out + 11;
+    memcpy(cursor, g_self, self_len);
+    cursor += self_len;
+    if (value_len > 0) {
+        *cursor++ = ' ';
+        memcpy(cursor, value, value_len);
+        cursor += value_len;
     }
+    *cursor = '\0';
     return out;
 }
 
@@ -1064,12 +1140,27 @@ static int preload_mentions_self(const char *value) {
     return 0;
 }
 
-/* Copy [value] without the entry for this library. NULL when nothing is left. */
-static char *filter_preload(const char *value) {
+/* True when at least one entry other than this library survives the filter. */
+static int preload_has_other(const char *value) {
+    const char *cursor = value;
+    while (*cursor != '\0') {
+        while (*cursor == ' ' || *cursor == '\t' || *cursor == ':') cursor++;
+        const char *end = cursor;
+        while (*end != '\0' && *end != ' ' && *end != '\t' && *end != ':') end++;
+        if (end == cursor) break;
+        if (!token_is_self(cursor, end)) return 1;
+        cursor = end;
+    }
+    return 0;
+}
+
+/* Copy [value] without the entry for this library; only called when one remains. */
+static char *filter_preload(struct env_pool *pool, const char *value) {
     size_t length = strlen(value);
-    char *body = malloc(length + 1);
-    if (body == NULL) return NULL;
-    size_t used = 0;
+    char *out = env_pool_alloc(pool, 11 + length + 1);
+    if (out == NULL) return NULL;
+    memcpy(out, "LD_PRELOAD=", 11);
+    size_t used = 11;
     const char *cursor = value;
     while (*cursor != '\0') {
         while (*cursor == ' ' || *cursor == '\t' || *cursor == ':') cursor++;
@@ -1077,19 +1168,13 @@ static char *filter_preload(const char *value) {
         while (*end != '\0' && *end != ' ' && *end != '\t' && *end != ':') end++;
         if (end == cursor) break;
         if (!token_is_self(cursor, end)) {
-            if (used > 0) body[used++] = ' ';
-            memcpy(body + used, cursor, (size_t)(end - cursor));
+            if (used > 11) out[used++] = ' ';
+            memcpy(out + used, cursor, (size_t)(end - cursor));
             used += (size_t)(end - cursor);
         }
         cursor = end;
     }
-    body[used] = '\0';
-    if (used == 0) {
-        free(body);
-        return NULL;
-    }
-    char *out = join_env("LD_PRELOAD", body);
-    free(body);
+    out[used] = '\0';
     return out;
 }
 
@@ -1100,8 +1185,15 @@ static int entry_is_original(const char *entry, char *const source[], size_t cou
     return 0;
 }
 
+static int env_is_pooled(char **env) {
+    uintptr_t value = (uintptr_t)env;
+    uintptr_t base = (uintptr_t)g_env_arena.bytes;
+    return value >= base && value < base + sizeof(g_env_arena.bytes);
+}
+
 static void free_preload_env(char **env, char *const source[], size_t count) {
     if (env == NULL) return;
+    if (env_is_pooled(env)) return;
     for (size_t i = 0; env[i] != NULL; i++) {
         if (!entry_is_original(env[i], source, count)) free(env[i]);
     }
@@ -1121,13 +1213,21 @@ static void free_preload_env(char **env, char *const source[], size_t count) {
  * would ignore or abort on it, and OC_REAL_EXE would be stale. Such a child
  * gets a cleaned copy only when the source contains one of our variables;
  * otherwise NULL tells the caller to pass the original environment.
+ *
+ * [failed] separates "nothing to change" from an allocation failure, so the
+ * caller can retry on the heap after the arena overflows.
  */
-static char **preload_env(const char *target, char *const source[], size_t count,
-                          int use_preload, int fake_exe) {
-    if (!g_enabled || g_self[0] == '\0') return NULL;
+static char **preload_env_build(const char *target, char *const source[], size_t count,
+                                int use_preload, int fake_exe, struct env_pool *pool,
+                                int *failed) {
+    *failed = 0;
     int glibc = file_is_glibc(target) || is_loader_program(target);
-    char **out = calloc(count + 5, sizeof(char *));
-    if (out == NULL) return NULL;
+    char **out = env_pool_alloc(pool, (count + 5) * sizeof(char *));
+    if (out == NULL) {
+        *failed = 1;
+        return NULL;
+    }
+    out[0] = NULL;
     size_t used = 0;
     int have_preload = 0;
     int have_prefix = 0;
@@ -1140,7 +1240,7 @@ static char **preload_env(const char *target, char *const source[], size_t count
                 if (preload_mentions_self(entry + 11)) {
                     out[used++] = source[i];
                 } else {
-                    out[used] = merge_preload(entry + 11);
+                    out[used] = merge_preload(pool, entry + 11);
                     if (out[used] == NULL) goto fail;
                     used++;
                     changed = 1;
@@ -1148,8 +1248,11 @@ static char **preload_env(const char *target, char *const source[], size_t count
                 have_preload = 1;
             } else if (preload_mentions_self(entry + 11)) {
                 /* Redundant for a routed glibc child, fatal for a bionic one. */
-                char *filtered = filter_preload(entry + 11);
-                if (filtered != NULL) out[used++] = filtered;
+                if (preload_has_other(entry + 11)) {
+                    char *filtered = filter_preload(pool, entry + 11);
+                    if (filtered == NULL) goto fail;
+                    out[used++] = filtered;
+                }
                 changed = 1;
             } else {
                 out[used++] = source[i];
@@ -1166,27 +1269,28 @@ static char **preload_env(const char *target, char *const source[], size_t count
         } else {
             out[used++] = source[i];
         }
+        out[used] = NULL;
     }
     if (!glibc) {
         out[used] = NULL;
         if (!changed) {
-            free(out);
+            if (pool->base == NULL) free(out);
             return NULL;
         }
         return out;
     }
     if (use_preload && !have_preload) {
-        out[used] = join_env("LD_PRELOAD", g_self);
+        out[used] = join_env(pool, "LD_PRELOAD", g_self);
         if (out[used] == NULL) goto fail;
         used++;
     }
     if (!have_prefix && g_prefix_len > 0) {
-        out[used] = join_env("OC_PREFIX", g_prefix);
+        out[used] = join_env(pool, "OC_PREFIX", g_prefix);
         if (out[used] == NULL) goto fail;
         used++;
     }
     if (!have_home && g_home_len > 0) {
-        out[used] = join_env("OC_USER_HOME", g_home);
+        out[used] = join_env(pool, "OC_USER_HOME", g_home);
         if (out[used] == NULL) goto fail;
         used++;
     }
@@ -1196,15 +1300,31 @@ static char **preload_env(const char *target, char *const source[], size_t count
      * the current process inherited.
      */
     if (fake_exe && target != NULL && target[0] != '\0') {
-        out[used] = join_env("OC_REAL_EXE", target);
+        out[used] = join_env(pool, "OC_REAL_EXE", target);
         if (out[used] == NULL) goto fail;
         used++;
     }
     out[used] = NULL;
     return out;
 fail:
-    free_preload_env(out, source, count);
+    *failed = 1;
+    if (pool->base == NULL) free_preload_env(out, source, count);
     return NULL;
+}
+
+static char **preload_env(const char *target, char *const source[], size_t count,
+                          int use_preload, int fake_exe) {
+    if (!g_enabled || g_self[0] == '\0') return NULL;
+    int failed = 0;
+    struct env_pool pool;
+    env_pool_arena(&pool);
+    char **out = preload_env_build(target, source, count, use_preload, fake_exe, &pool, &failed);
+    if (failed && pool.base != NULL) {
+        /* The arena is too small for this environment; build it the old way. */
+        env_pool_heap(&pool);
+        out = preload_env_build(target, source, count, use_preload, fake_exe, &pool, &failed);
+    }
+    return out;
 }
 
 /* ---------------------------------------------------------------- routing core */
@@ -1968,6 +2088,85 @@ static int route_build(const char *physical, char *const argv[], char *const env
         }                                                                     \
     }
 
+/* --------------------------------------------------------------- low ports */
+
+/*
+ * Android does not allow the app to bind a port below 1024. A tutorial server
+ * (`python -m http.server 80`, nginx, `node server.js`) then fails with EACCES,
+ * which looks like a broken program. bind() transparently moves such a port by
+ * +8000, and connect() to loopback retries the moved port when the original
+ * refuses the connection. The move is reported once on stderr and in
+ * $PREFIX/run/moved-ports/<original>, so the app can tell the user which port
+ * is really listening. OC_LOW_PORTS=0 turns both rules off.
+ */
+#define LOW_PORT_OFFSET 8000
+
+static int low_port_translate(const struct sockaddr *addr, socklen_t addrlen,
+                              struct sockaddr_storage *out, socklen_t *outlen,
+                              uint16_t *original, int loopback_only) {
+    if (!g_low_ports || addr == NULL || out == NULL || outlen == NULL || original == NULL) {
+        return 0;
+    }
+    if (addrlen < (socklen_t)sizeof(sa_family_t)) return 0;
+    uint16_t port;
+    if (addr->sa_family == AF_INET) {
+        if (addrlen < (socklen_t)sizeof(struct sockaddr_in)) return 0;
+        const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
+        port = ntohs(in->sin_port);
+        if (port == 0 || port >= 1024) return 0;
+        if (loopback_only && (ntohl(in->sin_addr.s_addr) >> 24) != 127) return 0;
+        if ((size_t)addrlen > sizeof(*out)) return 0;
+        memcpy(out, addr, (size_t)addrlen);
+        ((struct sockaddr_in *)out)->sin_port = htons((uint16_t)(port + LOW_PORT_OFFSET));
+    } else if (addr->sa_family == AF_INET6) {
+        if (addrlen < (socklen_t)sizeof(struct sockaddr_in6)) return 0;
+        const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
+        port = ntohs(in6->sin6_port);
+        if (port == 0 || port >= 1024) return 0;
+        if (loopback_only && !IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr)) return 0;
+        if ((size_t)addrlen > sizeof(*out)) return 0;
+        memcpy(out, addr, (size_t)addrlen);
+        ((struct sockaddr_in6 *)out)->sin6_port = htons((uint16_t)(port + LOW_PORT_OFFSET));
+    } else {
+        return 0;
+    }
+    *outlen = addrlen;
+    *original = port;
+    return 1;
+}
+
+/* Warn once per original port; the marker file is refreshed on every bind. */
+static unsigned char g_low_port_warned[1024];
+
+static void moved_port_note(uint16_t original, uint16_t moved) {
+    if (original < sizeof(g_low_port_warned) &&
+        __atomic_exchange_n(&g_low_port_warned[original], 1, __ATOMIC_RELAXED) == 0) {
+        char line[96];
+        int n = snprintf(line, sizeof(line), "oc-pathmap: port %u moved to %u\n",
+                         (unsigned)original, (unsigned)moved);
+        if (n > 0) {
+            size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1;
+            (void)syscall(SYS_write, STDERR_FILENO, line, len);
+        }
+    }
+    int n;
+    if (g_prefix_len == 0) return;
+    char dir[PATH_MAX];
+    n = snprintf(dir, sizeof(dir), "%s/run/moved-ports", g_prefix);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) return;
+    create_tree_raw(dir);
+    char path[PATH_MAX];
+    n = snprintf(path, sizeof(path), "%s/%u", dir, (unsigned)original);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return;
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, path,
+                          O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    char text[32];
+    n = snprintf(text, sizeof(text), "%u\n", (unsigned)moved);
+    if (n > 0) (void)syscall(SYS_write, fd, text, (size_t)n);
+    close_raw(fd);
+}
+
 /* --------------------------------------------------------- Unix socket hooks */
 
 EXPORT int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
@@ -1986,6 +2185,16 @@ EXPORT int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
             const struct stat *id = NULL;
             if (target.hashed && socket_stat_raw(target.physical, &st)) id = &st;
             socket_record_local(sockfd, &target, id);
+        }
+        return rc;
+    }
+    struct sockaddr_storage moved;
+    socklen_t moved_len = 0;
+    uint16_t original = 0;
+    if (low_port_translate(addr, addrlen, &moved, &moved_len, &original, 0)) {
+        int rc = real_bind(sockfd, (const struct sockaddr *)&moved, moved_len);
+        if (rc == 0) {
+            moved_port_note(original, (uint16_t)(original + LOW_PORT_OFFSET));
         }
         return rc;
     }
@@ -2010,7 +2219,19 @@ EXPORT int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         }
         return rc;
     }
-    return real_connect(sockfd, addr, addrlen);
+    int rc = real_connect(sockfd, addr, addrlen);
+    if (rc != 0 && errno == ECONNREFUSED) {
+        int saved = errno;
+        struct sockaddr_storage moved;
+        socklen_t moved_len = 0;
+        uint16_t original = 0;
+        if (low_port_translate(addr, addrlen, &moved, &moved_len, &original, 1)) {
+            int retried = real_connect(sockfd, (const struct sockaddr *)&moved, moved_len);
+            if (retried == 0) return 0;
+        }
+        errno = saved;
+    }
+    return rc;
 }
 
 EXPORT ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
@@ -3165,6 +3386,297 @@ EXPORT int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *acti
     char buffer[PATH_MAX];
     return real_posix_spawn_file_actions_addchdir_np(
         actions, map_path(path, buffer, sizeof(buffer)));
+}
+
+/* ------------------------------------------------------- system() and popen() */
+
+/*
+ * system() and popen() need a shell for `-c COMMAND`. /bin/sh is deliberately
+ * left as the bionic shell of Android, so a child started through it is not
+ * glibc and never sees the path translation or the preload. When the prefix has
+ * a glibc shell, these wrappers build the child themselves with posix_spawn():
+ * the shell and every command it starts keep LD_PRELOAD and the two OC_* roots.
+ * The bionic shell is still the fallback when no glibc shell exists, and
+ * OC_SYSTEM=0 keeps the old behaviour. system() keeps the signal contract of
+ * POSIX: SIGCHLD is blocked, SIGINT/SIGQUIT are ignored in the parent and reset
+ * to default in the child.
+ */
+static int glibc_shell(char *out, size_t size) {
+    if (g_prefix_len == 0) return 0;
+    static const char *const names[] = {"bin/sh", "bin/bash"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char path[PATH_MAX];
+        if (join_path(path, sizeof(path), g_prefix, names[i]) != 0) continue;
+        if (!executable_file(path)) continue;
+        if (!file_is_glibc(path)) continue;
+        if (!copy_path(path, out, size)) continue;
+        return 1;
+    }
+    return 0;
+}
+
+static int spawn_command(const char *shell, const char *command,
+                         const posix_spawn_file_actions_t *actions,
+                         const posix_spawnattr_t *attr, pid_t *pid) {
+    char *argv[] = {(char *)"sh", (char *)"-c", (char *)command, NULL};
+    return posix_spawn(pid, shell, actions, attr, argv, environ);
+}
+
+EXPORT int system(const char *command) {
+    typedef int (*fn_t)(const char *);
+    static fn_t real_system;
+    if (real_system == NULL) {
+        *(void **)(&real_system) = dlsym(RTLD_NEXT, "system");
+        if (real_system == NULL) {
+            errno = ENOSYS;
+            return -1;
+        }
+    }
+    char shell[PATH_MAX];
+    if (!g_system || !glibc_shell(shell, sizeof(shell))) return real_system(command);
+    if (command == NULL) return 1;
+
+    struct sigaction ignore;
+    struct sigaction old_int;
+    struct sigaction old_quit;
+    memset(&ignore, 0, sizeof(ignore));
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&ignore.sa_mask);
+    if (sigaction(SIGINT, &ignore, &old_int) != 0) return -1;
+    if (sigaction(SIGQUIT, &ignore, &old_quit) != 0) {
+        (void)sigaction(SIGINT, &old_int, NULL);
+        return -1;
+    }
+
+    sigset_t block;
+    sigset_t old_mask;
+    sigemptyset(&block);
+    sigaddset(&block, SIGCHLD);
+    if (sigprocmask(SIG_BLOCK, &block, &old_mask) != 0) {
+        (void)sigaction(SIGINT, &old_int, NULL);
+        (void)sigaction(SIGQUIT, &old_quit, NULL);
+        return -1;
+    }
+
+    posix_spawnattr_t attr;
+    int attr_ready = 0;
+    int rc = posix_spawnattr_init(&attr);
+    if (rc == 0) {
+        attr_ready = 1;
+        sigset_t defaults;
+        sigemptyset(&defaults);
+        sigaddset(&defaults, SIGINT);
+        sigaddset(&defaults, SIGQUIT);
+        sigset_t child_mask = old_mask;
+        sigdelset(&child_mask, SIGCHLD);
+        rc = posix_spawnattr_setsigdefault(&attr, &defaults);
+        if (rc == 0) rc = posix_spawnattr_setsigmask(&attr, &child_mask);
+        if (rc == 0) {
+            rc = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF |
+                                                    POSIX_SPAWN_SETSIGMASK);
+        }
+    }
+
+    pid_t pid = -1;
+    if (rc == 0) rc = spawn_command(shell, command, NULL, &attr, &pid);
+    if (attr_ready) (void)posix_spawnattr_destroy(&attr);
+
+    int status = -1;
+    int wait_error = 0;
+    if (rc == 0) {
+        for (;;) {
+            pid_t waited = waitpid(pid, &status, 0);
+            if (waited == pid) break;
+            if (waited < 0 && errno == EINTR) continue;
+            wait_error = errno;
+            status = -1;
+            break;
+        }
+    }
+
+    (void)sigaction(SIGINT, &old_int, NULL);
+    (void)sigaction(SIGQUIT, &old_quit, NULL);
+    (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
+
+    if (rc != 0) {
+        /* The shell disappeared between the check and the spawn. */
+        if (rc == ENOENT) return real_system(command);
+        errno = rc;
+        return -1;
+    }
+    if (wait_error != 0) errno = wait_error;
+    return status;
+}
+
+#define POPEN_SLOTS 32
+
+struct popen_record {
+    FILE *stream;
+    pid_t pid;
+};
+
+static struct popen_record g_popen_records[POPEN_SLOTS];
+static int g_popen_lock;
+
+static void popen_lock(void) {
+    while (__atomic_exchange_n(&g_popen_lock, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&g_popen_lock, __ATOMIC_RELAXED)) {
+        }
+    }
+}
+
+static void popen_unlock(void) { __atomic_store_n(&g_popen_lock, 0, __ATOMIC_RELEASE); }
+
+static int popen_record_add(FILE *stream, pid_t pid) {
+    popen_lock();
+    for (size_t i = 0; i < POPEN_SLOTS; i++) {
+        if (g_popen_records[i].stream == NULL) {
+            g_popen_records[i].stream = stream;
+            g_popen_records[i].pid = pid;
+            popen_unlock();
+            return 1;
+        }
+    }
+    popen_unlock();
+    return 0;
+}
+
+static pid_t popen_record_take(FILE *stream) {
+    pid_t pid = 0;
+    popen_lock();
+    for (size_t i = 0; i < POPEN_SLOTS; i++) {
+        if (g_popen_records[i].stream == stream) {
+            pid = g_popen_records[i].pid;
+            g_popen_records[i].stream = NULL;
+            g_popen_records[i].pid = 0;
+            break;
+        }
+    }
+    popen_unlock();
+    return pid;
+}
+
+EXPORT FILE *popen(const char *command, const char *type) {
+    typedef FILE *(*fn_t)(const char *, const char *);
+    static fn_t real_popen;
+    if (real_popen == NULL) {
+        *(void **)(&real_popen) = dlsym(RTLD_NEXT, "popen");
+        if (real_popen == NULL) {
+            errno = ENOSYS;
+            return NULL;
+        }
+    }
+    if (command == NULL || type == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    int reading;
+    if (type[0] == 'r') {
+        reading = 1;
+    } else if (type[0] == 'w') {
+        reading = 0;
+    } else {
+        errno = EINVAL;
+        return NULL;
+    }
+    int close_on_exec = 0;
+    for (const char *flag = type + 1; *flag != '\0'; flag++) {
+        if (*flag == 'e') {
+            close_on_exec = 1;
+        } else {
+            errno = EINVAL;
+            return NULL;
+        }
+    }
+    char shell[PATH_MAX];
+    if (!g_system || !glibc_shell(shell, sizeof(shell))) return real_popen(command, type);
+
+    int fds[2];
+    if (pipe(fds) != 0) return NULL;
+    for (size_t i = 0; i < 2; i++) {
+        int flags = fcntl(fds[i], F_GETFD);
+        if (flags >= 0) (void)fcntl(fds[i], F_SETFD, flags | FD_CLOEXEC);
+    }
+
+    posix_spawn_file_actions_t actions;
+    int rc = posix_spawn_file_actions_init(&actions);
+    if (rc != 0) {
+        close(fds[0]);
+        close(fds[1]);
+        errno = rc;
+        return NULL;
+    }
+    int child_fd = reading ? fds[1] : fds[0];
+    int target_fd = reading ? STDOUT_FILENO : STDIN_FILENO;
+    if (child_fd == target_fd) {
+        /* dup2(fd, fd) does not clear FD_CLOEXEC; a closed stdio slot can
+         * make pipe() return the target number itself. */
+        int flags = fcntl(child_fd, F_GETFD);
+        if (flags >= 0) (void)fcntl(child_fd, F_SETFD, flags & ~FD_CLOEXEC);
+    }
+    rc = posix_spawn_file_actions_adddup2(&actions, child_fd, target_fd);
+    pid_t pid = -1;
+    if (rc == 0) rc = spawn_command(shell, command, &actions, NULL, &pid);
+    (void)posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) {
+        close(fds[0]);
+        close(fds[1]);
+        errno = rc;
+        return NULL;
+    }
+
+    int parent_fd = reading ? fds[0] : fds[1];
+    close(reading ? fds[1] : fds[0]);
+    if (!close_on_exec) {
+        int flags = fcntl(parent_fd, F_GETFD);
+        if (flags >= 0) (void)fcntl(parent_fd, F_SETFD, flags & ~FD_CLOEXEC);
+    }
+    FILE *stream = fdopen(parent_fd, reading ? "r" : "w");
+    if (stream == NULL) {
+        int saved = errno;
+        close(parent_fd);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+        }
+        errno = saved;
+        return NULL;
+    }
+    if (!popen_record_add(stream, pid)) {
+        (void)fclose(stream);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+        }
+        errno = EMFILE;
+        return NULL;
+    }
+    return stream;
+}
+
+EXPORT int pclose(FILE *stream) {
+    typedef int (*fn_t)(FILE *);
+    static fn_t real_pclose;
+    if (real_pclose == NULL) {
+        *(void **)(&real_pclose) = dlsym(RTLD_NEXT, "pclose");
+        if (real_pclose == NULL) {
+            errno = ENOSYS;
+            return -1;
+        }
+    }
+    pid_t pid = popen_record_take(stream);
+    if (pid == 0) return real_pclose(stream);
+
+    int closed = fclose(stream);
+    int saved = closed == 0 ? 0 : errno;
+    int status = 0;
+    for (;;) {
+        pid_t waited = waitpid(pid, &status, 0);
+        if (waited == pid) break;
+        if (waited < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    if (closed != 0) {
+        errno = saved;
+        return -1;
+    }
+    return status;
 }
 
 /* --------------------------------------------------------------- SIGSYS policy */

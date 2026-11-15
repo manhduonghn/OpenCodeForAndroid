@@ -450,7 +450,7 @@ cả hai; `gem install colorize` cài vào prefix và `require "colorize"` chạ
 
 Thư viện chỉ có thể dịch path tại các **entry point của libc mà chương trình gọi**; nó
 không nhìn thấy syscall do chương trình tự phát, path nằm trong `argv`/biến môi trường, hay
-path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (110 symbol export,
+path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (113 symbol export,
 trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 
 | Nhóm | Hàm đã hook |
@@ -465,6 +465,7 @@ trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 | Duyệt thư mục | `scandir`, `scandir64`, `scandirat`, `scandirat64`, `glob`, `glob64`, `ftw`, `ftw64`, `nftw`, `nftw64` |
 | Nạp thư viện | `dlopen`, `dlmopen` |
 | exec / spawn | `execve`, `execv`, `execvp`, `execvpe`, `execveat`, `fexecve`, `execl`, `execlp`, `execle`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_addopen`, `posix_spawn_file_actions_addchdir_np` |
+| Shell | `system`, `popen`, `pclose` (chạy shell glibc trong `$PREFIX/bin` qua `posix_spawn`) |
 | Unix socket | `bind`, `connect`, `sendto`, `sendmsg`, `getsockname`, `getpeername`, `accept`, `accept4`, `close` (chỉ để dọn tên hash) |
 
 Các hàm trả path (`realpath`, `canonicalize_file_name`, `getcwd`, `glob`, `readlink`) được
@@ -482,13 +483,13 @@ Hàm **cố ý bỏ qua**:
 | `syscall(...)` | variadic, nhận số hiệu syscall; hook sẽ phải chặn **mọi** syscall (kể cả syscall nội bộ của libc), tăng chi phí và nguy cơ đệ quy. Path do chương trình tự phát không dịch được; Go tĩnh AArch64 được xử lý riêng bằng `oc-gosys` |
 | binary tĩnh không phải Go (Rust musl, C static, …) | không nạp được `LD_PRELOAD`; muốn dịch path phải vá tại call site như `oc-gosys` |
 | Go tĩnh x86_64 | `oc-gosys` mới hỗ trợ AArch64; Go x86_64 vẫn chạy nhưng path Termux không được dịch |
-| `system`, `popen`, `wordexp` | nhận chuỗi lệnh, không phải path; `/bin/sh` cố ý **không** được map nên chúng vẫn chạy shell bionic của Android. Lệnh con chỉ được route nếu đi qua `oc-run`/wrapper của prefix; bản thân `system()`/`popen()` gọi exec nội bộ của libc, không đi qua wrapper nên môi trường của tiến trình cha vẫn có thể đi theo |
+| `wordexp` | nhận chuỗi lệnh, không phải path; dùng `/bin/sh` của bionic và không có nhu cầu route. `system`/`popen` thì đã có wrapper riêng (xem trên) |
 | callback của `ftw`/`ftw64`/`nftw`/`nftw64` | thư viện không thể thay con trỏ hàm của caller, nên callback vẫn thấy path vật lý của prefix; chỉ path gốc được map |
 | `dup`, `dup2`, `dup3`, `close_range`, `exec` | bảng record Unix socket không theo dõi các thao tác này; fd trùng số sau đó có thể mất cách viết gốc hoặc tên hash không được dọn |
 | `updwtmp`, `setutent`/`pututline` | đường dẫn utmp/wtmp cố định hoặc rất hiếm dùng trong app Android; có thể thêm nếu có nhu cầu thật |
 | path trong `argv`, biến môi trường, nội dung file cấu hình | không phải tham số của hàm libc và không có ý nghĩa chung; chỉ chương trình đích mới biết cách hiểu. Path của chính chương trình và `/proc/self/exe` thì đã được xử lý |
 
-Bốn cơ chế mới bổ sung cho bảng trên:
+Các cơ chế mới bổ sung cho bảng trên:
 
 - **FHS**: sau hai root Termux, `map_path` dịch `/usr` → `$PREFIX`, `/etc` → `$PREFIX/etc`,
   `/tmp` → `$PREFIX/tmp`, `/var` → `$PREFIX/var`, `/root` → `$HOME`,
@@ -512,6 +513,15 @@ Bốn cơ chế mới bổ sung cho bảng trên:
   trả lại cách viết gốc; `accept`/`accept4` copy record local của listener sang fd mới;
   `close` dọn tên hash khi pid hiện tại sở hữu listener và dev/ino vẫn khớp;
   `unlink`/`unlinkat`/`remove` cũng xoá tên hash.
+- **Port thấp**: `bind()` dịch port `1..1023` thành `port + 8000` (IPv4/IPv6), in cảnh báo
+  một lần cho mỗi port gốc và ghi `$PREFIX/run/moved-ports/PORT` (nội dung là port mới) cho
+  UI. `connect()` tới loopback (`127/8`, `::1`) thử port đã dịch khi connect gốc trả
+  `ECONNREFUSED`; `getsockname()` vẫn trả port thật. Tắt bằng `OC_LOW_PORTS=0`.
+- **`system`/`popen`**: tìm `$PREFIX/bin/sh` rồi `$PREFIX/bin/bash` và chỉ nhận file glibc
+  (`PT_INTERP`). Có shell thì dựng con bằng `posix_spawn()` của thư viện (route + preload áp
+  dụng lại), `system()` giữ block `SIGCHLD` + ignore/reset `SIGINT`/`SIGQUIT`; `popen()` dùng
+  `pipe` + fd actions và `pclose()` lấy pid từ bảng 32 record. Không có shell glibc thì gọi
+  hàm thật (`/system/bin/sh`). Tắt bằng `OC_SYSTEM=0`.
 
 Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Android: `openat2` và
 `faccessat2` bị seccomp trap, SIGSYS handler trả `ENOSYS` để libc fallback sang
@@ -529,7 +539,8 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
   được relocation như gói cài qua `pkg`;
 - FHS chỉ là phép thay tiền tố: nó không tạo file, không đổi quyền và không làm cho một path
   tuyệt đối của Android (`/system`, `/data`, `/apex`, `/proc`, `/sys`…) trở nên ghi được;
-  `/bin/sh` cố ý không map để `system()` giữ shell bionic;
+  `/bin/sh` cố ý không map để script Android giữ shell bionic (system/popen chỉ dùng shell
+  glibc trong prefix khi có, xem dưới);
 - exec routing chỉ áp dụng cho ELF có `PT_INTERP` là loader glibc **không tồn tại**. Binary đã
   được `patchelf` trỏ vào loader của prefix, binary bionic và binary tĩnh chạy đúng như cũ.
   `execveat`/`fexecve` chỉ map path, không route (route cần tên file để đọc ELF);
@@ -537,8 +548,22 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
   `PATH_MAX` vẫn để kernel xử lý và có thể trả `ENOEXEC`;
 - `inotify_add_watch` chỉ tạo thư mục khi path **đã được map** sang prefix/home; lỗi tạo
   thư mục bị bỏ qua và hàm thật vẫn trả lỗi của nó (không che `ENOSPC`/`EACCES`);
-- `OC_FHS=0` tắt bảng FHS, `OC_EXEC_ROUTE=0` tắt exec routing, `OC_REAL_EXE` chỉ có tác dụng
-  khi tiến trình chạy dưới loader; không có biến nào ảnh hưởng tới hai root Termux;
+- port thấp chỉ dịch `1..1023` (port 0 ephemeral giữ nguyên), không đổi `getsockname()` nên
+  caller thấy port thật; retry trong `connect()` chỉ áp dụng cho loopback và khi connect gốc
+  trả `ECONNREFUSED` (connect non-blocking trả `EINPROGRESS` không retry); marker
+  `$PREFIX/run/moved-ports/PORT` được ghi lại mỗi lần bind thành công, còn stderr chỉ cảnh
+  báo một lần cho mỗi port gốc trong tiến trình;
+- `system`/`popen` chỉ route khi `$PREFIX/bin/sh` hoặc `$PREFIX/bin/bash` là ELF glibc; nếu
+  shell biến mất giữa lúc kiểm tra và `posix_spawn`, `system()` rơi về hàm thật với `ENOENT`.
+  `popen` giữ tối đa 32 stream cùng lúc (bảng record cố định); quá giới hạn thì đóng stream,
+  `waitpid` con và trả `EMFILE`. `system()`/`popen()` không dùng `/bin/sh` đã map, nên
+  `OC_FHS=0` không ảnh hưởng tới việc chọn shell;
+- `preload_env` dựng môi trường trong arena static TLS 16 KB mỗi thread; môi trường lớn hơn
+  sẽ quay lại `malloc` (đúng hành vi cũ, nhưng có thể chạm lock malloc sau `fork`);
+  `test_exec_large_env` dùng 2 100 biến để đi nhánh heap;
+- `OC_FHS=0` tắt bảng FHS, `OC_EXEC_ROUTE=0` tắt exec routing, `OC_LOW_PORTS=0` tắt dịch port
+  thấp, `OC_SYSTEM=0` tắt wrapper shell, `OC_REAL_EXE` chỉ có tác dụng khi tiến trình chạy
+  dưới loader; không có biến nào ảnh hưởng tới hai root Termux;
 - binary tĩnh không phải Go (Rust musl, C static…) không được dịch path;
 - patcher cần một khoảng zero đủ lớn giữa các segment hoặc cuối file; nếu không có, nó báo lỗi
   và `oc-run` chạy binary chưa vá thay vì từ chối;

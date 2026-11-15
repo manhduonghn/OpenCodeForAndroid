@@ -37,7 +37,7 @@ một loader glibc được gọi tường minh.
 | Chương trình trong prefix | không sửa file, hook lo tất cả | sửa file: relocate chuỗi, PT_INTERP, RUNPATH, shebang |
 | uid | fakeroot (uid 0 giả) | uid thật của app, không giả |
 | Chương trình tĩnh | vá `svc #0` (C tĩnh + Go) | vá Go qua `native/gosys`; C tĩnh chưa |
-| Bề mặt hook | 217 hàm export | 101 hàm export |
+| Bề mặt hook | 217 hàm export | 113 hàm export |
 
 Điểm mạnh của cách app này đang làm: **không sửa hành vi của chương trình đã cài** (relocate
 chuỗi cùng độ dài + patchelf là thay đổi tối thiểu, có self-heal), nên `opencode`, `node`,
@@ -74,9 +74,9 @@ kiểu FHS vẫn trượt. Đó chính là khoảng trống mà hook của Corte
 
 Đã có, không cần làm lại:
 
-- Dịch 2 tiền tố Termux ở **110 entry point** (`native/pathmap/pathmap.c`): file, `stat`,
+- Dịch 2 tiền tố Termux ở **113 entry point** (`native/pathmap/pathmap.c`): file, `stat`,
   `readdir`, `glob`, `ftw`, `xattr`, `exec*`, `posix_spawn`, `dlopen`, `chdir`, `realpath`,
-  `getcwd` (unmap), `readlink` (unmap).
+  `getcwd` (unmap), `readlink` (unmap), socket Unix, `system`/`popen`/`pclose`.
 - SIGSYS policy trong constructor: `set*id` → 0, `clone3`/`rseq` → `ENOSYS`, `getgroups` → 1.
 - `preload_env()` giữ `LD_PRELOAD`, `OC_PREFIX`, `OC_USER_HOME` khi exec một target glibc;
   **không** đụng target bionic/tĩnh (đúng hơn Cortex ở điểm này — xem 8.2).
@@ -101,16 +101,18 @@ Nghĩa là app này **mạnh hơn Cortex** ở phần "chương trình đã cài
 | G6 | `/usr/bin/env`, `/usr/lib/...`, `/etc/ssl/certs`, `/tmp`, `/var/run`, `/dev/shm` | không map (chỉ có 2 tiền tố Termux) | map cả FHS |
 | G7 | `inotify_add_watch` trên thư mục chưa tồn tại (Vite/Metro/chokidar cache) | `ENOENT`, watcher im lặng | `mkdir -p` rồi watch |
 | G8 | `bind()/connect()` với `sockaddr_un` chứa đường dẫn Termux, hoặc path > 107 byte | không dịch; ssh-agent, tmux, mysqld, X11 fail | dịch + FNV-1a hash vào `tmp` |
-| G9 | Server xin port < 1024 (`python -m http.server 80`) | `EACCES` | `+8000`, ghi file thông báo cho app |
-| G10 | `system()`, `popen()` | exec `/system/bin/sh` (bionic) ⇒ mọi lệnh con mất preload | `clean_env_for_system` (không có shim) |
+| G9 | Server xin port < 1024 (`python -m http.server 80`) | `EACCES` | `+8000`, ghi file thông báo cho app — **đã làm (F)** |
+| G10 | `system()`, `popen()` | exec `/system/bin/sh` (bionic) ⇒ mọi lệnh con mất preload | `clean_env_for_system` (không có shim) — **đã làm (G)** |
 
-G10 và G5 khác bản chất: G5 sửa được bằng exec routing, G10 cần thêm shim bionic hoặc wrapper
-`system()`.
+G10 và G5 khác bản chất: G5 sửa được bằng exec routing, G10 đã sửa bằng wrapper
+`system()`/`popen()` gọi shell glibc trong prefix (không cần shim bionic).
 
 > **Trạng thái (2026-11):** bốn mục P0 **A–D** và P1 **E** (Unix socket) đã được triển khai
 > trong `native/pathmap/pathmap.c` và có test host trong `native/pathmap/pathmap_test.c` +
-> `run-test.sh` (fixture `route_child.c`). Các mục **F–H** vẫn để ngỏ. Phần thiết kế bên dưới
-> giữ nguyên để tham chiếu; số dòng trong mã nguồn chỉ là tương đối.
+> `run-test.sh` (fixture `route_child.c`). **F** (port thấp), **G** (`system`/`popen` qua
+> shell glibc) và **H** (arena tĩnh cho `preload_env`) cũng đã làm trong cùng file; xem chi
+> tiết ở mục 6. Phần thiết kế bên dưới giữ nguyên để tham chiếu; số dòng trong mã nguồn chỉ
+> là tương đối.
 
 ## 5. P0 — bốn việc nên làm trước
 
@@ -225,10 +227,12 @@ trừ các mount của Android (`/apex`, `/data`, `/dev` trừ `/dev/shm`, `/pro
 `/system`, `/vendor`, `/product`, `/odm`, `/sdcard`, `/storage`) — Cortex có sẵn danh sách
 trong `paths.c`, chép ý tưởng, không chép code.
 
-Lưu ý quan trọng: **không map `/system` và không map `/bin/sh`** sang prefix. `system()` và
-script Android phải tiếp tục nhận `/system/bin/sh` của bionic. Vì vậy `/bin` chỉ nên map
-`/bin/sh`-less: hoặc bỏ `/bin`, hoặc map `/bin` → `$PREFIX/bin` nhưng **loại trừ** đúng
-`/bin/sh` (Cortex không cần loại trừ vì rootfs của nó có `/bin/sh` glibc).
+Lưu ý quan trọng: **không map `/system` và không map `/bin/sh`** sang prefix. Script Android
+phải tiếp tục nhận `/system/bin/sh` của bionic. Vì vậy `/bin` chỉ nên map `/bin/sh`-less:
+hoặc bỏ `/bin`, hoặc map `/bin` → `$PREFIX/bin` nhưng **loại trừ** đúng `/bin/sh` (Cortex
+không cần loại trừ vì rootfs của nó có `/bin/sh` glibc). `system()`/`popen()` sau này (G)
+không dựa vào phép map đó: chúng gọi thẳng shell glibc ở `$PREFIX/bin` khi có, còn `/bin/sh`
+vẫn giữ nguyên nghĩa bionic cho mọi caller khác.
 
 Kiểm thử: `python3 -c "import zoneinfo; zoneinfo.ZoneInfo('Asia/Ho_Chi_Minh')"` (cần
 `/usr/share/zoneinfo`), `curl https://…` với `SSL_CERT_FILE` trỏ `/etc/ssl/certs`, ghi
@@ -269,7 +273,7 @@ thường.
 Kiểm thử: `test_unix_sockets` trong `native/pathmap/pathmap_test.c` — stream với cách viết
 Termux và FHS, hash + `close`/`unlink`, datagram qua `sendto`/`sendmsg`, abstract passthrough.
 
-### F. Port thấp → `+8000`
+### F. Port thấp → `+8000` — đã làm
 
 Android không cho app bind < 1024. Cortex map `80→8080`, `443→8443`, `22→8022` trong `bind`,
 và trong `connect` tới loopback thử port đã dịch nếu port gốc không có gì; đồng thời ghi
@@ -277,7 +281,16 @@ và trong `connect` tới loopback thử port đã dịch nếu port gốc khôn
 `python -m http.server 80`, `nginx` mặc định, `node server.js` port 80. Nên kèm thông báo
 một lần (log/`OC_DEBUG` + file trạng thái cho UI), đừng im lặng.
 
-### G. `system()`/`popen()` qua shell glibc
+Cách làm trong `pathmap.c`: `bind()` dịch port `1..1023` thành `port + 8000` (IPv4 và IPv6,
+giữ nguyên address); thành công thì ghi `$PREFIX/run/moved-ports/PORT` chứa port mới và in
+một dòng stderr **một lần cho mỗi port gốc** trong tiến trình. `connect()` tới loopback
+(`127/8`, `::1`) chỉ thử port đã dịch khi connect gốc trả `ECONNREFUSED`, rồi phục hồi errno
+nếu cả hai thất bại. `OC_LOW_PORTS=0` tắt cả hai. Giới hạn: không dịch port 0 (ephemeral),
+không đổi `getsockname()` (caller thấy port thật), và retry không áp dụng cho connect
+non-blocking trả `EINPROGRESS`. Kiểm thử: `test_low_ports` (bind + marker + connect retry,
+chọn cặp port trống bằng raw syscall).
+
+### G. `system()`/`popen()` qua shell glibc — đã làm
 
 Đây là mảnh cuối để "mọi thứ chạy như Linux". Có hai hướng:
 
@@ -288,12 +301,21 @@ một lần (log/`OC_DEBUG` + file trạng thái cho UI), đừng im lặng.
    giữ fallback gọi real khi shell glibc không có. `popen` cần thêm `pipe` + `posix_spawn`
    với fd actions.
 
+Đã chọn hướng 2. `glibc_shell()` tìm `$PREFIX/bin/sh` rồi `$PREFIX/bin/bash`, chỉ nhận file
+chạy được có `PT_INTERP` glibc; không có thì mọi wrapper rơi về hàm thật (shell bionic).
+`system()` và `popen()` dựng con bằng chính `posix_spawn()` của thư viện, nên route/preload
+áp dụng lại cho shell và cho lệnh con; `system()` giữ hợp đồng signal (`SIGCHLD` bị block,
+`SIGINT`/`SIGQUIT` ignore ở cha và reset về default ở con), `popen()` giữ bảng 32 record
+`FILE* → pid` để `pclose()` lấy đúng trạng thái, và `pclose()` chỉ gọi hàm thật khi stream
+không có record. `OC_SYSTEM=0` tắt cả ba wrapper. Kiểm thử: `test_glibc_shell` (popen đọc
+`/usr/share/...` qua `cat`, popen ghi bằng redirection, `system("exit 7")`).
+
 Hướng 3 (shim bionic) mà Cortex không làm: một `.so` NDK preload vào `/system/bin/sh` để nó
 tự route con glibc. Nghe hấp dẫn nhưng phải strip `LD_PRELOAD`/`LD_LIBRARY_PATH` cho target
 Android, thêm lại preload glibc cho target glibc, và chịu rủi ro ABI bionic — **không khuyến
 khích** khi hướng 2 đã đủ.
 
-### H. Ghi chú hardening: fork-safety của `preload_env`
+### H. Ghi chú hardening: fork-safety của `preload_env` — đã làm
 
 `preload_env()` hiện `calloc` + cấp phát chuỗi **sau khi** tiến trình đã `fork()` (shell gọi
 `execve` trong con). Trong tiến trình đa luồng, `fork` giữa lúc thread khác đang giữ lock của
@@ -302,6 +324,14 @@ Cortex giải bằng `prepare_exec_in_parent()` + `rehearse_exec()` ở lần `f
 hơn cho app này: cấp một pool tĩnh (ví dụ 64 KB) trong constructor và dựng env trong pool
 bằng `memcpy`, không `malloc`; hoặc `pthread_atfork` để chuẩn bị sẵn bản env. Làm cùng lúc
 với B vì B sửa đúng hàm này.
+
+Cách làm: `preload_env()` dựng cả mảng con trỏ và các chuỗi trong một arena `__thread` 16 KB
+(`tls_model("initial-exec")`) bằng bump allocator + `memcpy`; hết chỗ thì thử lại toàn bộ
+trên heap như cũ. Arena thuộc static TLS nên thread tạo trước `fork` đã có sẵn block và con
+kế thừa nguyên trạng; `free_preload_env()` nhận ra con trỏ nằm trong arena và không `free`.
+`file_is_glibc_depth()` (được gọi trong bước dựng env) đổi sang `open_raw()` để không đi qua
+`openat()` hook. Kiểm thử: các case exec hiện có dùng arena; một môi trường rất lớn sẽ đi
+nhánh heap (xem giới hạn ở `LIBRARY_FIXUPS.md`).
 
 ## 7. Không nên port
 
@@ -336,9 +366,10 @@ với B vì B sửa đúng hàm này.
 7. **Giới hạn tường minh**: `EXEC_ARG_MAX`, depth đệ quy, hash khi vượt 108 byte, cắt
    `PATH_MAX` như `snprintf`. Đừng để buffer tự do phình.
 8. **Không đụng môi trường của target Android**: điểm mạnh của app này so với Cortex là dùng
-   `--preload` cho tiến trình đầu thay vì `LD_PRELOAD` toàn cục, nên `system()` → bionic
-   `sh` vẫn sạch. Giữ nguyên tính chất đó khi thêm exec routing (chỉ thêm preload cho target
-   glibc, như `preload_env` đang làm).
+   `--preload` cho tiến trình đầu thay vì `LD_PRELOAD` toàn cục. `system()`/`popen()` chỉ
+   route khi prefix có shell glibc; không có thì vẫn là `/system/bin/sh` sạch, và
+   `OC_SYSTEM=0` khôi phục hành vi cũ. Giữ nguyên tính chất đó khi thêm exec routing (chỉ
+   thêm preload cho target glibc, như `preload_env` đang làm).
 
 ## 9. Lộ trình và kiểm thử
 
@@ -347,21 +378,24 @@ Thứ tự đề xuất (mỗi bước là một PR nhỏ, có test):
 1. **A** (`/proc/self/exe`) + `OC_REAL_EXE` + `OC_DEBUG` — đã làm.
 2. **C** (bảng FHS) sau cờ `OC_FHS` — đã làm, mặc định bật.
 3. **B** (exec routing): chuẩn hoá path → probe → loader/argv → shebang → `posix_spawn` —
-   đã làm; **H** (pool tĩnh cho `preload_env`) vẫn để ngỏ.
+   đã làm, cùng **H** (arena tĩnh cho `preload_env`).
 4. **D** (`inotify`) và **E** (Unix socket) — đã làm. **F** (port thấp), **G** (`system`/
-   `popen` qua shell glibc) vẫn để ngỏ.
-5. **P2**: `system()`/`popen()` (nếu G), vá C tĩnh theo bảng `svc #0` (chỉ khi có nhu cầu
-   thật), `lzma_cputhreads` như tuỳ chọn.
+   `popen` qua shell glibc) — đã làm.
+5. **P2**: vá C tĩnh theo bảng `svc #0` (chỉ khi có nhu cầu thật), `lzma_cputhreads` như
+   tuỳ chọn.
 
 Kiểm thử:
 
 - **Host test** (`native/pathmap/run-test.sh`, chạy được cả `x86_64` và `aarch64` qua qemu):
   đã có case cho bảng FHS (map + loại trừ `/bin/sh`), `inotify` tự tạo thư mục, Unix socket
   (`bind`/`connect`/`sendto`/`sendmsg`, hash 108 byte + `close`/`unlink`, abstract passthrough),
-  và exec routing: fixture `route_child.c` với `PT_INTERP` không tồn tại + `$ORIGIN/lib`, script
+  port thấp (`bind` → `+8000`, marker, `connect` retry), `system`/`popen` qua shell glibc, và
+  exec routing: fixture `route_child.c` với `PT_INTERP` không tồn tại + `$ORIGIN/lib`, script
   `#!/usr/bin/oc-interp`, `/proc/self/exe` qua loader (có và không có `OC_REAL_EXE`), cùng
-  môi trường sạch của con. Trên aarch64/qemu các case exec bị bỏ (`OC_TEST_NO_EXEC=1`) vì
-  qemu thay `/proc/self/exe` bằng chính nó.
+  môi trường sạch của con và một môi trường 2 100 biến để đi nhánh heap của `preload_env`.
+  Trên aarch64/qemu các case exec và shell bị bỏ
+  (`OC_TEST_NO_EXEC=1`) vì qemu thay `/proc/self/exe` bằng chính nó và không chạy được shell
+  của host; case port thấp vẫn chạy.
 - **Device smoke** (thủ công, ghi vào PR): các lệnh ở mục 5A–5D, 6E–6F, cộng `git status`,
   `node -v`, `opencode --version` để chắc không hồi quy.
 - **Không hồi quy**: `npm install` trong một project có postinstall, `git clone` qua https,

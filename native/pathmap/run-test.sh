@@ -87,6 +87,14 @@ if [ "$arch" = x86_64 ]; then
     -Wl,--dynamic-linker,"$missing_interp"
   export OC_TEST_ROUTE_PROGRAM="$routebin"
   export OC_TEST_PRELOAD="$lib"
+  # system()/popen() need a glibc shell that the test links into the prefix;
+  # qemu cannot run the host shell, so the aarch64 run skips these cases.
+  for candidate in /bin/sh /bin/bash; do
+    if [ -x "$candidate" ] && grep -aq 'ld-linux' "$candidate"; then
+      export OC_TEST_GLIBC_SHELL=$candidate
+      break
+    fi
+  done
 fi
 
 # find_loader() looks for the exact soname in $PREFIX/glibc/lib. The symlink

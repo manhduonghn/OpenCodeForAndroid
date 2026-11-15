@@ -28,6 +28,7 @@
 #include <ftw.h>
 #include <glob.h>
 #include <limits.h>
+#include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,6 +38,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -140,7 +142,8 @@ static int ftw_cb64(const char *path, const struct stat64 *st, int flag) {
 }
 
 /* /usr, /etc, /tmp, /var, /root, /dev/shm and /bin are rewritten to the prefix
- * or the home. /bin/sh is the one exception: system() keeps the platform shell. */
+ * or the home. /bin/sh is the one exception: a prefix file never shadows the
+ * platform shell for callers that still use its absolute path. */
 static void test_fhs_mapping(void) {
     struct stat st;
 
@@ -318,6 +321,36 @@ static void test_exec_clean_env(void) {
     assert(waitpid(pid, &status, 0) == pid);
     assert(WIFEXITED(status));
     assert(WEXITSTATUS(status) == 0);
+}
+
+/* An environment whose pointer array alone exceeds the 16 KB arena forces
+ * preload_env() through the heap fallback; the child still gets the preload and
+ * the path mapping. */
+static void test_exec_large_env(void) {
+    if (getenv("OC_TEST_NO_EXEC") != NULL) return;
+    char physical[PATH_MAX];
+    join(physical, sizeof(physical), g_prefix, "/child-check");
+    write_file(physical, "child");
+
+    enum { COUNT = 2100 };
+    static char storage[COUNT][32];
+    static char *envp[COUNT + 2];
+    for (int i = 0; i < COUNT; i++) {
+        snprintf(storage[i], sizeof(storage[i]), "OC_TEST_BIG_%04d=1", i);
+        envp[i] = storage[i];
+    }
+    envp[COUNT] = (char *)"OC_TEST_CHILD=1";
+    envp[COUNT + 1] = NULL;
+
+    fflush(NULL);
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        char *const argv[] = {(char *)"/proc/self/exe", (char *)"child", NULL};
+        execve(argv[0], argv, envp);
+        _exit(127);
+    }
+    wait_child(pid);
 }
 
 #define UNIX_SOCKET_PATH_MAX (sizeof(((struct sockaddr_un *)0)->sun_path))
@@ -611,6 +644,120 @@ static void test_unix_sockets(void) {
     test_unix_abstract();
 }
 
+#define LOW_PORT_OFFSET 8000
+
+static void ipv4_loopback(struct sockaddr_in *addr, uint16_t port) {
+    memset(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons(port);
+    addr->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+}
+
+/* Raw syscalls bypass the hooks: connect() must refuse the original port and
+ * bind() must be able to take the moved one. */
+static int loopback_port_closed(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_in addr;
+    ipv4_loopback(&addr, port);
+    int rc = (int)syscall(SYS_connect, fd, &addr, sizeof(addr));
+    int closed = rc != 0 && errno == ECONNREFUSED;
+    assert(close(fd) == 0);
+    return closed;
+}
+
+static int loopback_port_free(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_in addr;
+    ipv4_loopback(&addr, port);
+    int rc = (int)syscall(SYS_bind, fd, &addr, sizeof(addr));
+    assert(close(fd) == 0);
+    return rc == 0;
+}
+
+/* Find a low port with nothing listening on it and a free high port above. */
+static uint16_t pick_low_port(void) {
+    for (uint16_t port = 1; port < 1024; port++) {
+        uint16_t moved = (uint16_t)(port + LOW_PORT_OFFSET);
+        if (loopback_port_closed(port) && loopback_port_free(moved)) return port;
+    }
+    assert(0 && "no free loopback port pair below 1024");
+    return 0;
+}
+
+/* bind() on a low port listens on port+8000, writes the marker and connect()
+ * to the original loopback port retries the moved one. */
+static void test_low_ports(void) {
+    uint16_t low = pick_low_port();
+    uint16_t moved = (uint16_t)(low + LOW_PORT_OFFSET);
+
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    struct sockaddr_in addr;
+    ipv4_loopback(&addr, low);
+    assert(bind(listener, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(listen(listener, 4) == 0);
+
+    struct sockaddr_in got;
+    socklen_t gotlen = sizeof(got);
+    assert(getsockname(listener, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(ntohs(got.sin_port) == moved);
+
+    char relative[32];
+    snprintf(relative, sizeof(relative), "/run/moved-ports/%u", (unsigned)low);
+    char marker[PATH_MAX];
+    join(marker, sizeof(marker), g_prefix, relative);
+    char text[32];
+    read_file(marker, text, sizeof(text));
+    char expected[32];
+    snprintf(expected, sizeof(expected), "%u\n", (unsigned)moved);
+    assert(strcmp(text, expected) == 0);
+
+    int client = socket(AF_INET, SOCK_STREAM, 0);
+    assert(client >= 0);
+    assert(connect(client, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    int accepted = accept(listener, NULL, NULL);
+    assert(accepted >= 0);
+    assert(close(accepted) == 0);
+    assert(close(client) == 0);
+    assert(close(listener) == 0);
+    assert(unlink(marker) == 0);
+}
+
+/* system()/popen() run the glibc shell from the prefix; an external cat then
+ * sees the FHS mapping, which the bionic fallback never would. */
+static void test_glibc_shell(void) {
+    if (getenv("OC_TEST_NO_EXEC") != NULL) return;
+    const char *shell = getenv("OC_TEST_GLIBC_SHELL");
+    if (shell == NULL) return;
+
+    char prefix_sh[PATH_MAX];
+    join(prefix_sh, sizeof(prefix_sh), g_prefix, "/bin/sh");
+    (void)unlink(prefix_sh);
+    assert(symlink(shell, prefix_sh) == 0);
+
+    FILE *in = popen("cat /usr/share/pathmap-usr", "r");
+    assert(in != NULL);
+    char text[16];
+    assert(fgets(text, sizeof(text), in) != NULL);
+    assert(strcmp(text, "usr") == 0);
+    assert(pclose(in) == 0);
+
+    char physical[PATH_MAX];
+    join(physical, sizeof(physical), g_prefix, "/share/pathmap-system-write");
+    (void)unlink(physical);
+    FILE *out = popen("cat > /usr/share/pathmap-system-write", "w");
+    assert(out != NULL);
+    assert(fputs("system\n", out) >= 0);
+    assert(pclose(out) == 0);
+    read_file(physical, text, sizeof(text));
+    assert(strcmp(text, "system\n") == 0);
+
+    assert(system("exit 7") == (7 << 8));
+    assert(system("cat /usr/share/pathmap-usr > /dev/null") == 0);
+}
+
 int main(int argc, char **argv) {
     if (env_flag("OC_TEST_INTERP")) {
         /* Started as the interpreter of a script whose shebang names
@@ -695,6 +842,8 @@ int main(int argc, char **argv) {
     test_fhs_mapping();
     test_inotify_autocreate();
     test_unix_sockets();
+    test_low_ports();
+    test_glibc_shell();
 
     /* statfs / statvfs take a path too. */
     struct statfs sfs;
@@ -840,6 +989,7 @@ int main(int argc, char **argv) {
     test_loader_exe();
     test_script_route();
     test_exec_clean_env();
+    test_exec_large_env();
 
     puts("pathmap: ok");
     return 0;
