@@ -19,7 +19,6 @@ Nguồn đã đọc:
 - `termux/termux-packages` (`termux-services`, `termux-api` build.sh)
 - `agnostic-apollo/Android-Docs` — phantom/cached/empty processes
 - `manhduonghn/opencode-termux`
-- `Sanuu7/AndroidHarness` (`AgentService`, `BgProcessStore`, `LinuxEnvironment`)
 
 ---
 
@@ -134,15 +133,14 @@ trong FGS, vì nó biết trạng thái bootstrap, port, binary, notification.
   (BOOT_COMPLETED → `RUN_COMMAND`). `SystemEventReceiver` của Termux chỉ reset bộ đếm
   shell sau boot, không start service.
 
-### 2.3. Cách AndroidHarness làm
+### 2.3. Mô hình foreground service + process tách rời
 
-- `AgentService`: FGS type `dataSync`, `startForeground`, wake lock **có timeout 12h**,
-  3 notification channel (progress low / result default / action high), action
+- Foreground service kiểu `dataSync` với `startForeground`, wake lock **có timeout 12h**,
+  ba notification channel (progress low / result default / action high), action
   approve-deny-answer qua `RemoteInput`, `START_NOT_STICKY` (chỉ chạy khi có task).
-- `BgProcessStore` + Shizuku: `spawnDetached()` chạy process **trong Shizuku user service**
-  (UID 2000/0), ghi log ra file, lưu `bg-processes.json`, kill theo process group +
-  quét `/proc/*/fd`. Process này **sống sót khi app chết** — đây là "daemon thật" duy nhất
-  không cần root mà vẫn tách khỏi app.
+- Process nền + Shizuku: spawn **trong Shizuku user service** (UID 2000/0), ghi log ra file,
+  lưu danh sách process, kill theo process group + quét `/proc/*/fd`. Process này **sống sót
+  khi app chết** — "daemon thật" duy nhất không cần root mà vẫn tách khỏi app.
 - Resume card, message queue bền, auto-continue: giải quyết "chết giữa chừng" ở tầng UX.
 - Không dùng runit, không dùng Termux:API.
 
@@ -251,9 +249,9 @@ Hệ quả với app này:
 
 Đây là lựa chọn "dễ nhất" nhưng đánh đổi danh tính app. Repo này đã chọn hướng ngược lại.
 
-### 4.2. Cách `Sanuu7/AndroidHarness`: prefix riêng + extract `.deb`
+### 4.2. Prefix riêng + extract `.deb`
 
-Luồng trong `LinuxEnvironment`:
+Luồng chuẩn:
 
 1. Tải `Packages` index từ mirror Termux.
 2. Resolve dependency closure, gồm `Provides:` (virtual package) và alternative `a | b`.
@@ -274,7 +272,7 @@ Luồng trong `LinuxEnvironment`:
    `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `OPENSSL_CONF`,
    `OPENSSL_MODULES`, `OPENSSL_ENGINES`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`,
    `GIT_CONFIG_NOSYSTEM`.
-7. Với `targetSdk >= 29` (AndroidHarness target cao): thêm `termux-exec` preload
+7. Với `targetSdk >= 29`: thêm `termux-exec` preload
    (`lib/libtermux-exec-ld-preload.so`, `TERMUX__PREFIX`, `TERMUX_APP__DATA_DIR`,
    `TERMUX_APP__LEGACY_DATA_DIR`) và/hoặc **linker shim** cho từng binary
    (`/system/bin/linker64 <binary>`), vì Android 10+ cấm `execve()` file trong app data.
@@ -333,7 +331,7 @@ Internet bình thường. Vì vậy app hiện tại:
 Đây là thay đổi lớn, không chỉ là con số:
 
 1. Android 10+ cấm `execve()` file trong app data → cần **termux-exec preload** hoặc
-   **linker shim** cho mọi binary (như AndroidHarness).
+   **linker shim** cho mọi binary.
 2. Android 12+ giới hạn start FGS từ background; Android 14+ bắt buộc khai báo
    `foregroundServiceType` + permission; Android 15 giới hạn `dataSync` 6h/24h →
    dùng `specialUse` (đã khai báo) và tránh `dataSync`.
@@ -644,7 +642,7 @@ chưa có) thì kill rồi spawn server mới, thay vì chờ reboot.
 
 ### P2 — Nâng cao
 
-21. **Shizuku/root detached server** (như AndroidHarness `spawnDetached`):
+21. **Shizuku/root detached server** (process tách rời):
     - chạy `opencode serve` trong Shizuku user service → sống sót khi app chết;
     - app chỉ là client HTTP tới `127.0.0.1`;
     - chỉ bật khi user có Shizuku/root, kèm cảnh báo bảo mật.
@@ -706,6 +704,3 @@ chưa có) thì kill rồi spawn server mới, thay vì chờ reboot.
 - Phantom process killer: <https://github.com/agnostic-apollo/Android-Docs/blob/master/en/docs/apps/processes/phantom-cached-and-empty-processes.md>
 - Termux issue #2366: <https://github.com/termux/termux-app/issues/2366>
 - opencode-termux: <https://github.com/manhduonghn/opencode-termux>
-- AndroidHarness: <https://github.com/Sanuu7/AndroidHarness>
-- AndroidHarness foreground service notes: `repowiki/03-foreground-service-execution-host.md`
-- AndroidHarness background shell notes: `repowiki/22-background-shell-process-management.md`

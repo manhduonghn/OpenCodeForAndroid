@@ -15,7 +15,7 @@ crash log or diagnostics files of its own — see [Logging](#logging).
 
 The app combines the two techniques that make this possible:
 
-1. **Installing Termux packages without Termux** (the AndroidHarness technique).
+1. **Installing Termux packages without Termux.**
    The Termux repository indexes are downloaded, the `.deb` archives are verified
    (SHA-256) and extracted in Kotlin (`commons-compress` + `xz`). While
    extracting, the absolute `/data/data/com.termux/files/usr` paths that are
@@ -408,10 +408,10 @@ installed in the Android SDK. Without them Gradle skips the native block, the AP
 still builds, and the Terminal reports that PTY support is missing. The CI workflows
 install both packages before building.
 
-The PTY bridge, xterm emulator and terminal view are adapted from
-[AndroidHarness](https://github.com/Sanuu7/AndroidHarness) under the MIT license;
-the license text is in `app/src/main/cpp/ANDROIDHARNESS_LICENSE.txt` and the source
-files keep a short attribution header.
+The PTY bridge, xterm emulator and terminal view are an original implementation.
+The terminal core follows the behaviour described by xterm's control-sequence
+documentation and the ECMA-48 standard; the native bridge talks to the kernel
+through `posix_openpt`/`forkpty` and the app's own JNI surface.
 
 ### Server lifecycle
 

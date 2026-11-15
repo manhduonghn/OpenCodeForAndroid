@@ -1,20 +1,22 @@
-// Adapted from AndroidHarness (https://github.com/Sanuu7/AndroidHarness), Copyright (c) 2026 Sanuu7,
-// MIT License. See ANDROIDHARNESS_LICENSE.txt in app/src/main/cpp.
-
 package com.opencode.android.terminal
 
 import android.system.OsConstants
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * A running program on a pseudo-terminal plus the screen it draws. Output is
- * parsed on a reader thread; the UI reads [emulator] while holding its lock.
+ * A program running on a pseudo-terminal and the screen it draws.
  *
- * The session lives in [TerminalSessions] rather than in a screen, so closing
- * the terminal panel or sending the app to the background keeps the shell
- * running.
+ * Output is read on a daemon thread and parsed on the emulator's lock; the
+ * renderer takes the same lock, so it never sees a half-updated cursor or row.
+ * Listeners are called without that lock held and a throwing listener is
+ * isolated, because a UI callback must not be able to stop the reader.
+ *
+ * The session belongs to [TerminalSessions], not to a view. Hiding the panel or
+ * backgrounding the app therefore leaves the shell and every process it started
+ * alive.
  */
 class TerminalSession internal constructor(
     val shellName: String,
@@ -23,8 +25,10 @@ class TerminalSession internal constructor(
     cols: Int,
     private val onExit: (TerminalSession) -> Unit,
 ) {
-    val emulator = TerminalEmulator(rows, cols, maxHistory = 3_000)
+    val emulator = TerminalEmulator(rows, cols, maxHistory = MAX_HISTORY)
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
+    private val exitReported = AtomicBoolean(false)
+    private val terminationStarted = AtomicBoolean(false)
 
     /** Exit code once the shell has ended, or null while it runs. */
     @Volatile
@@ -47,46 +51,65 @@ class TerminalSession internal constructor(
     val pid: Int get() = pty.pid
 
     init {
-        emulator.onReply = { pty.write(it) }
-        emulator.onBell = { onBell?.invoke() }
+        emulator.onReply = pty::write
+        emulator.onBell = {
+            val bell = onBell
+            if (bell != null) runCatching(bell)
+        }
+        startReader()
+        startWaiter()
+    }
+
+    private fun startReader() {
         thread(name = "opencode-terminal-read-${pty.pid}", isDaemon = true) {
-            val buffer = ByteArray(16 * 1024)
+            val buffer = ByteArray(READ_BUFFER)
             try {
                 while (true) {
-                    val n = pty.input.read(buffer)
-                    if (n < 0) break
-                    if (n == 0) continue
+                    val count = pty.input.read(buffer)
+                    if (count < 0) break
+                    if (count == 0) continue
                     synchronized(emulator) {
-                        emulator.append(buffer, 0, n)
+                        emulator.append(buffer, 0, count)
                         title = emulator.title
                         workingDirectory = emulator.workingDirectory
                     }
                     notifyListeners()
                 }
             } catch (_: IOException) {
-                // EIO once every holder of the slave side is gone.
+                // The slave side is closed once the shell and its jobs are gone.
+            } finally {
+                pty.close()
             }
-            pty.close()
         }
+    }
+
+    private fun startWaiter() {
         thread(name = "opencode-terminal-wait-${pty.pid}", isDaemon = true) {
             val code = pty.waitFor()
-            // Jobs the shell left behind still hold the terminal open; hang them up.
+            // Jobs the shell left behind still hold the terminal open; HUP them
+            // so the reader reaches end-of-file instead of blocking for ever.
             pty.signal(OsConstants.SIGHUP)
             exitCode = code
             notifyListeners()
-            onExit(this)
+            if (exitReported.compareAndSet(false, true)) onExit(this)
         }
     }
 
     fun addListener(listener: () -> Unit) {
-        listeners.add(listener)
+        listeners.addIfAbsent(listener)
     }
 
     fun removeListener(listener: () -> Unit) {
         listeners.remove(listener)
     }
 
-    private fun notifyListeners() = listeners.forEach { it() }
+    private fun notifyListeners() {
+        for (listener in listeners) {
+            // A listener runs UI code. One broken callback must not stop the
+            // reader thread or hide output from the other listeners.
+            runCatching(listener)
+        }
+    }
 
     fun write(bytes: ByteArray) {
         if (running) pty.write(bytes)
@@ -101,23 +124,38 @@ class TerminalSession internal constructor(
 
     fun resize(rows: Int, cols: Int, widthPx: Int, heightPx: Int) {
         val changed = synchronized(emulator) {
-            val before = emulator.rows to emulator.cols
+            val beforeRows = emulator.rows
+            val beforeCols = emulator.cols
             emulator.resize(rows, cols)
-            before != (emulator.rows to emulator.cols)
+            beforeRows != emulator.rows || beforeCols != emulator.cols
         }
-        if (changed && running) pty.resize(rows, cols, widthPx, heightPx)
-        if (changed) notifyListeners()
+        if (!changed) return
+        if (running) pty.resize(rows, cols, widthPx, heightPx)
+        notifyListeners()
     }
 
     fun transcript(): String = synchronized(emulator) { emulator.transcriptText() }
 
-    /** Hangs up the shell, then kills it if it is still there shortly after. */
+    /**
+     * Hangs up the shell and kills it if it ignored the first signal. The kill
+     * is delayed because a shell writing its history needs a moment to exit.
+     */
     fun terminate() {
-        if (!running) return
+        if (!terminationStarted.compareAndSet(false, true)) return
         pty.signal(OsConstants.SIGHUP)
         thread(name = "opencode-terminal-kill-${pty.pid}", isDaemon = true) {
-            Thread.sleep(1_500)
+            repeat(KILL_POLLS) {
+                if (!running) return@thread
+                Thread.sleep(KILL_POLL_MS)
+            }
             if (running) pty.signal(OsConstants.SIGKILL)
         }
+    }
+
+    private companion object {
+        const val MAX_HISTORY = 3_000
+        const val READ_BUFFER = 16 * 1024
+        const val KILL_POLLS = 15
+        const val KILL_POLL_MS = 100L
     }
 }

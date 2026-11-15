@@ -1,6 +1,3 @@
-// Adapted from AndroidHarness (https://github.com/Sanuu7/AndroidHarness), Copyright (c) 2026 Sanuu7,
-// MIT License. See ANDROIDHARNESS_LICENSE.txt in app/src/main/cpp.
-
 package com.opencode.android.terminal
 
 import org.junit.Assert.assertEquals
@@ -10,406 +7,547 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TerminalEmulatorTest {
-    private val esc = "\u001b"
+    private val escape = "\u001b"
 
-    private fun emulator(rows: Int = 5, cols: Int = 10, history: Int = 100): Pair<TerminalEmulator, MutableList<String>> {
+    private fun emulator(
+        rows: Int = 5,
+        cols: Int = 10,
+        history: Int = 100,
+    ): Pair<TerminalEmulator, MutableList<String>> {
         val replies = mutableListOf<String>()
-        val emu = TerminalEmulator(rows, cols, history)
-        emu.onReply = { replies.add(String(it, Charsets.UTF_8)) }
-        return emu to replies
+        val emulator = TerminalEmulator(rows, cols, history)
+        emulator.onReply = { replies += String(it, Charsets.UTF_8) }
+        return emulator to replies
     }
 
     private fun TerminalEmulator.line(row: Int): String = lineAt(row)!!.text()
+
     private fun TerminalEmulator.styleAt(row: Int, col: Int): Long = lineAt(row)!!.styles[col]
 
-    @Test fun printsTextAndHandlesCarriageReturnAndLineFeed() {
-        val (emu, _) = emulator()
-        emu.append("hello\r\nworld")
-        assertEquals("hello", emu.line(0))
-        assertEquals("world", emu.line(1))
-        assertEquals(1, emu.cursorRow)
-        assertEquals(5, emu.cursorCol)
+    private fun TerminalEmulator.glyphAt(row: Int, col: Int): Int = lineAt(row)!!.glyphs[col]
+
+    // ---------------------------------------------------------------- printing
+
+    @Test
+    fun printsTextAndHandlesCarriageReturnAndLineFeed() {
+        val (terminal, _) = emulator()
+        terminal.append("hello\r\nworld")
+        assertEquals("hello", terminal.line(0))
+        assertEquals("world", terminal.line(1))
+        assertEquals(1, terminal.cursorRow)
+        assertEquals(5, terminal.cursorCol)
     }
 
-    @Test fun wrapsAtTheRightMarginOnlyWhenTheNextCharacterArrives() {
-        val (emu, _) = emulator(cols = 5)
-        emu.append("abcde")
-        assertEquals(0, emu.cursorRow)
-        assertEquals(4, emu.cursorCol)
-        emu.append("f")
-        assertEquals("abcde", emu.line(0))
-        assertEquals("f", emu.line(1))
-        assertTrue(emu.lineAt(0)!!.wrapped)
+    @Test
+    fun wrapsAtTheRightMarginOnlyWhenTheNextCharacterArrives() {
+        val (terminal, _) = emulator(cols = 5)
+        terminal.append("abcde")
+        assertEquals(0, terminal.cursorRow)
+        assertEquals(4, terminal.cursorCol)
+        terminal.append("f")
+        assertEquals("abcde", terminal.line(0))
+        assertEquals("f", terminal.line(1))
+        assertTrue(terminal.lineAt(0)!!.wrapped)
     }
 
-    @Test fun disablingAutowrapOverwritesTheLastColumn() {
-        val (emu, _) = emulator(cols = 5)
-        emu.append("$esc[?7labcdefg")
-        assertEquals("abcdg", emu.line(0))
-        assertEquals(0, emu.cursorRow)
+    @Test
+    fun disablingAutowrapOverwritesTheLastColumn() {
+        val (terminal, _) = emulator(cols = 5)
+        terminal.append("$escape[?7labcdefg")
+        assertEquals("abcdg", terminal.line(0))
+        assertEquals(0, terminal.cursorRow)
     }
 
-    @Test fun cursorPositioningAndRelativeMoves() {
-        val (emu, _) = emulator()
-        emu.append("$esc[3;4HX")
-        assertEquals("   X", emu.line(2))
-        emu.append("$esc[2A$esc[2DY")
-        assertEquals("  Y", emu.line(0))
-        emu.append("$esc[10B$esc[99CZ")
-        assertEquals(4, emu.cursorRow)
-        assertEquals("         Z", emu.line(4))
-        emu.append("$esc[1G$esc[3dQ")
-        assertEquals("Q  X", emu.line(2))
+    @Test
+    fun cursorPositioningAndRelativeMoves() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[3;4HX")
+        assertEquals("   X", terminal.line(2))
+        terminal.append("$escape[2A$escape[2DY")
+        assertEquals("  Y", terminal.line(0))
+        terminal.append("$escape[10B$escape[99CZ")
+        assertEquals(4, terminal.cursorRow)
+        assertEquals("         Z", terminal.line(4))
+        terminal.append("$escape[1G$escape[3dQ")
+        assertEquals("Q  X", terminal.line(2))
     }
 
-    @Test fun eraseInLineAndDisplay() {
-        val (emu, _) = emulator()
-        emu.append("aaaaa\r\nbbbbb\r\nccccc")
-        emu.append("$esc[2;3H$esc[K")
-        assertEquals("bb", emu.line(1))
-        emu.append("$esc[1K")
-        assertEquals("", emu.line(1))
-        emu.append("$esc[J")
-        assertEquals("aaaaa", emu.line(0))
-        assertEquals("", emu.line(2))
-        emu.append("$esc[2J")
-        assertEquals("", emu.screenText().trim())
+    @Test
+    fun eraseInLineAndDisplay() {
+        val (terminal, _) = emulator()
+        terminal.append("aaaaa\r\nbbbbb\r\nccccc")
+        terminal.append("$escape[2;3H$escape[K")
+        assertEquals("bb", terminal.line(1))
+        terminal.append("$escape[1K")
+        assertEquals("", terminal.line(1))
+        terminal.append("$escape[J")
+        assertEquals("aaaaa", terminal.line(0))
+        assertEquals("", terminal.line(2))
+        terminal.append("$escape[2J")
+        assertEquals("", terminal.screenText().trim())
     }
 
-    @Test fun eraseUsesTheCurrentBackgroundColour() {
-        val (emu, _) = emulator()
-        emu.append("$esc[44m$esc[2K")
-        assertEquals(4, CellStyle.bg(emu.styleAt(0, 9)))
+    @Test
+    fun eraseUsesTheCurrentBackgroundColour() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[44m$escape[2K")
+        assertEquals(4, CellStyle.bg(terminal.styleAt(0, 9)))
     }
 
-    @Test fun basicAndBrightSgrColours() {
-        val (emu, _) = emulator()
-        emu.append("$esc[1;31mA$esc[0;94;42mB$esc[39;49mC")
-        val a = emu.styleAt(0, 0)
-        assertEquals(1, CellStyle.fg(a))
-        assertTrue(CellStyle.attrs(a) and CellStyle.BOLD != 0)
-        val b = emu.styleAt(0, 1)
-        assertEquals(12, CellStyle.fg(b))
-        assertEquals(2, CellStyle.bg(b))
-        assertEquals(0, CellStyle.attrs(b))
-        val c = emu.styleAt(0, 2)
-        assertEquals(CellStyle.DEFAULT_FG, CellStyle.fg(c))
-        assertEquals(CellStyle.DEFAULT_BG, CellStyle.bg(c))
+    @Test
+    fun screenEraseModesDoNotClearHistoryAccidentally() {
+        val (terminal, _) = emulator(rows = 2)
+        terminal.append("a\r\nb\r\nc")
+        assertTrue(terminal.historySize > 0)
+        val before = terminal.historySize
+        terminal.append("$escape[2J")
+        assertEquals(before, terminal.historySize)
+        terminal.append("$escape[3J")
+        assertEquals(0, terminal.historySize)
     }
 
-    @Test fun indexedAndTrueColourInBothSyntaxes() {
-        val (emu, _) = emulator()
-        emu.append("$esc[38;5;208mA$esc[48;2;10;20;30mB$esc[38:2::1:2:3mC$esc[38:5:99mD")
-        assertEquals(208, CellStyle.fg(emu.styleAt(0, 0)))
-        val b = CellStyle.bg(emu.styleAt(0, 1))
-        assertTrue(CellStyle.isTrueColor(b))
-        assertEquals(0x0A141E, b and 0xFFFFFF)
-        val c = CellStyle.fg(emu.styleAt(0, 2))
-        assertEquals(0x010203, c and 0xFFFFFF)
-        assertEquals(99, CellStyle.fg(emu.styleAt(0, 3)))
+    // ---------------------------------------------------------------- styles
+
+    @Test
+    fun basicAndBrightSgrColours() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[1;31mA$escape[0;94;42mB$escape[39;49mC")
+        val first = terminal.styleAt(0, 0)
+        assertEquals(1, CellStyle.fg(first))
+        assertTrue(CellStyle.attrs(first) and CellStyle.BOLD != 0)
+        val second = terminal.styleAt(0, 1)
+        assertEquals(12, CellStyle.fg(second))
+        assertEquals(2, CellStyle.bg(second))
+        assertEquals(0, CellStyle.attrs(second))
+        val third = terminal.styleAt(0, 2)
+        assertEquals(CellStyle.DEFAULT_FG, CellStyle.fg(third))
+        assertEquals(CellStyle.DEFAULT_BG, CellStyle.bg(third))
     }
 
-    @Test fun attributesSetAndReset() {
-        val (emu, _) = emulator()
-        emu.append("$esc[3;4;7;9mA$esc[23;24;27;29mB")
-        val a = CellStyle.attrs(emu.styleAt(0, 0))
-        assertEquals(CellStyle.ITALIC or CellStyle.UNDERLINE or CellStyle.INVERSE or CellStyle.STRIKE, a)
-        assertEquals(0, CellStyle.attrs(emu.styleAt(0, 1)))
+    @Test
+    fun indexedAndTrueColourInBothSyntaxes() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[38;5;208mA$escape[48;2;10;20;30mB")
+        terminal.append("$escape[38:2::1:2:3mC$escape[38:5:99mD")
+        assertEquals(208, CellStyle.fg(terminal.styleAt(0, 0)))
+        val background = CellStyle.bg(terminal.styleAt(0, 1))
+        assertTrue(CellStyle.isTrueColor(background))
+        assertEquals(0x0A141E, background and 0xFFFFFF)
+        val colonColour = CellStyle.fg(terminal.styleAt(0, 2))
+        assertEquals(0x010203, colonColour and 0xFFFFFF)
+        assertEquals(99, CellStyle.fg(terminal.styleAt(0, 3)))
     }
 
-    @Test fun alternateScreenKeepsTheMainScreenAndCursor() {
-        val (emu, _) = emulator()
-        emu.append("prompt$ ")
-        emu.append("$esc[?1049h")
-        assertTrue(emu.isAltScreen)
-        assertEquals("", emu.line(0))
-        emu.append("$esc[Hfull screen app")
-        emu.append("$esc[?1049l")
-        assertFalse(emu.isAltScreen)
-        assertEquals("prompt$", emu.line(0))
-        assertEquals(8, emu.cursorCol)
+    @Test
+    fun underlineColourIsConsumedWithoutChangingTheTextColour() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[58;5;196;31mA")
+        assertEquals(1, CellStyle.fg(terminal.styleAt(0, 0)))
     }
 
-    @Test fun scrollRegionScrollsOnlyInsideTheMargins() {
-        val (emu, _) = emulator(rows = 5)
-        emu.append("top\r\n1\r\n2\r\n3\r\nbottom")
-        emu.append("$esc[2;4r")
+    @Test
+    fun attributesSetAndReset() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[3;4;7;9mA$escape[23;24;27;29mB")
+        val attributes = CellStyle.attrs(terminal.styleAt(0, 0))
+        assertEquals(
+            CellStyle.ITALIC or CellStyle.UNDERLINE or CellStyle.INVERSE or CellStyle.STRIKE,
+            attributes,
+        )
+        assertEquals(0, CellStyle.attrs(terminal.styleAt(0, 1)))
+    }
+
+    // ---------------------------------------------------------------- screens
+
+    @Test
+    fun alternateScreenKeepsTheMainScreenAndCursor() {
+        val (terminal, _) = emulator()
+        terminal.append("prompt$ ")
+        terminal.append("$escape[?1049h")
+        assertTrue(terminal.isAltScreen)
+        assertEquals("", terminal.line(0))
+        terminal.append("$escape[Hfull screen app")
+        terminal.append("$escape[?1049l")
+        assertFalse(terminal.isAltScreen)
+        assertEquals("prompt$", terminal.line(0))
+        assertEquals(8, terminal.cursorCol)
+    }
+
+    @Test
+    fun scrollRegionScrollsOnlyInsideTheMargins() {
+        val (terminal, _) = emulator(rows = 5)
+        terminal.append("top\r\n1\r\n2\r\n3\r\nbottom")
+        terminal.append("$escape[2;4r")
         // DECSTBM homes the cursor; move to the bottom margin and feed a line.
-        emu.append("$esc[4;1H\n")
-        assertEquals("top", emu.line(0))
-        assertEquals("2", emu.line(1))
-        assertEquals("3", emu.line(2))
-        assertEquals("", emu.line(3))
-        assertEquals("bottom", emu.line(4))
-        assertEquals(0, emu.historySize)
+        terminal.append("$escape[4;1H\n")
+        assertEquals("top", terminal.line(0))
+        assertEquals("2", terminal.line(1))
+        assertEquals("3", terminal.line(2))
+        assertEquals("", terminal.line(3))
+        assertEquals("bottom", terminal.line(4))
+        assertEquals(0, terminal.historySize)
     }
 
-    @Test fun reverseIndexAtTheTopMarginScrollsDown() {
-        val (emu, _) = emulator(rows = 4)
-        emu.append("a\r\nb\r\nc\r\nd")
-        emu.append("$esc[H${esc}M")
-        assertEquals("", emu.line(0))
-        assertEquals("a", emu.line(1))
-        assertEquals("c", emu.line(3))
+    @Test
+    fun reverseIndexAtTheTopMarginScrollsDown() {
+        val (terminal, _) = emulator(rows = 4)
+        terminal.append("a\r\nb\r\nc\r\nd")
+        terminal.append("$escape[H${escape}M")
+        assertEquals("", terminal.line(0))
+        assertEquals("a", terminal.line(1))
+        assertEquals("c", terminal.line(3))
     }
 
-    @Test fun insertAndDeleteLinesAndCharacters() {
-        val (emu, _) = emulator(rows = 4)
-        emu.append("a\r\nb\r\nc\r\nd")
-        emu.append("$esc[2;1H$esc[L")
-        assertEquals(listOf("a", "", "b", "c"), (0..3).map { emu.line(it) })
-        emu.append("$esc[2M")
-        assertEquals(listOf("a", "c", "", ""), (0..3).map { emu.line(it) })
-        emu.append("$esc[1;1Habcdef$esc[1;2H$esc[2P")
-        assertEquals("adef", emu.line(0))
-        emu.append("$esc[2@")
-        assertEquals("a  def", emu.line(0))
-        emu.append("$esc[3X")
-        assertEquals("a   ef", emu.line(0))
+    @Test
+    fun insertAndDeleteLinesAndCharacters() {
+        val (terminal, _) = emulator(rows = 4)
+        terminal.append("a\r\nb\r\nc\r\nd")
+        terminal.append("$escape[2;1H$escape[L")
+        assertEquals(listOf("a", "", "b", "c"), (0..3).map { terminal.line(it) })
+        terminal.append("$escape[2M")
+        assertEquals(listOf("a", "c", "", ""), (0..3).map { terminal.line(it) })
+        terminal.append("$escape[1;1Habcdef$escape[1;2H$escape[2P")
+        assertEquals("adef", terminal.line(0))
+        terminal.append("$escape[2@")
+        assertEquals("a  def", terminal.line(0))
+        terminal.append("$escape[3X")
+        assertEquals("a   ef", terminal.line(0))
     }
 
-    @Test fun linesScrolledOffTheTopGoToHistory() {
-        val (emu, _) = emulator(rows = 3)
-        emu.append("1\r\n2\r\n3\r\n4\r\n5")
-        assertEquals(2, emu.historySize)
-        assertEquals("1", emu.lineAt(-2)!!.text())
-        assertEquals("2", emu.lineAt(-1)!!.text())
-        assertEquals("3", emu.line(0))
-        emu.append("$esc[3J")
-        assertEquals(0, emu.historySize)
+    @Test
+    fun linesScrolledOffTheTopGoToHistory() {
+        val (terminal, _) = emulator(rows = 3)
+        terminal.append("1\r\n2\r\n3\r\n4\r\n5")
+        assertEquals(2, terminal.historySize)
+        assertEquals("1", terminal.lineAt(-2)!!.text())
+        assertEquals("2", terminal.lineAt(-1)!!.text())
+        assertEquals("3", terminal.line(0))
+        terminal.append("$escape[3J")
+        assertEquals(0, terminal.historySize)
     }
 
-    @Test fun historyIsCapped() {
-        val (emu, _) = emulator(rows = 2, history = 3)
-        repeat(10) { emu.append("line $it\r\n") }
-        assertEquals(3, emu.historySize)
+    @Test
+    fun historyIsCapped() {
+        val (terminal, _) = emulator(rows = 2, history = 3)
+        repeat(10) { terminal.append("line $it\r\n") }
+        assertEquals(3, terminal.historySize)
     }
 
-    @Test fun answersCursorPositionAndDeviceAttributes() {
-        val (emu, replies) = emulator()
-        emu.append("$esc[3;5H$esc[6n$esc[c$esc[>c$esc[5n")
-        assertEquals(listOf("$esc[3;5R", "$esc[?62;22c", "$esc[>41;320;0c", "$esc[0n"), replies)
+    // ---------------------------------------------------------------- replies
+
+    @Test
+    fun answersCursorPositionAndDeviceAttributes() {
+        val (terminal, replies) = emulator()
+        terminal.append("$escape[3;5H$escape[6n$escape[c$escape[>c$escape[5n")
+        assertEquals(
+            listOf("$escape[3;5R", "$escape[?62;22c", "$escape[>41;320;0c", "$escape[0n"),
+            replies,
+        )
     }
 
-    @Test fun answersBackgroundColourQuery() {
-        val (emu, replies) = emulator()
-        emu.defaultBackgroundRgb = 0x102030
-        emu.append("$esc]11;?\u0007")
-        assertEquals("$esc]11;rgb:1010/2020/3030$esc\\", replies.single())
+    @Test
+    fun answersBackgroundColourQuery() {
+        val (terminal, replies) = emulator()
+        terminal.defaultBackgroundRgb = 0x102030
+        terminal.append("$escape]11;?\u0007")
+        assertEquals("$escape]11;rgb:1010/2020/3030$escape\\", replies.single())
     }
 
-    @Test fun reportsWindowSizeInCells() {
-        val (emu, replies) = emulator(rows = 24, cols = 80)
-        emu.append("$esc[18t")
-        assertEquals("$esc[8;24;80t", replies.single())
+    @Test
+    fun reportsWindowSizeInCells() {
+        val (terminal, replies) = emulator(rows = 24, cols = 80)
+        terminal.append("$escape[18t")
+        assertEquals("$escape[8;24;80t", replies.single())
     }
 
-    @Test fun decodesUtf8AcrossChunkBoundaries() {
-        val (emu, _) = emulator()
+    // ---------------------------------------------------------------- unicode
+
+    @Test
+    fun decodesUtf8AcrossChunkBoundaries() {
+        val (terminal, _) = emulator()
         val bytes = "héllo €".toByteArray(Charsets.UTF_8)
-        bytes.forEach { emu.append(byteArrayOf(it), 0, 1) }
-        assertEquals("héllo €", emu.line(0))
+        bytes.forEach { terminal.append(byteArrayOf(it), 0, 1) }
+        assertEquals("héllo €", terminal.line(0))
     }
 
-    @Test fun wideCharactersTakeTwoCells() {
-        val (emu, _) = emulator()
-        emu.append("a中b")
-        assertEquals(4, emu.cursorCol)
-        assertEquals(TerminalEmulator.WIDE_TAIL, emu.lineAt(0)!!.codes[2])
-        assertEquals("a中b", emu.line(0))
+    @Test
+    fun byteChunksProduceTheSameScreenAsOneWrite() {
+        val text = "héllo 中文 😀\r\nnext €"
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val (whole, _) = emulator(rows = 6, cols = 20)
+        whole.append(bytes, 0, bytes.size)
+        val (chunked, _) = emulator(rows = 6, cols = 20)
+        for (byte in bytes) chunked.append(byteArrayOf(byte), 0, 1)
+        assertEquals(whole.screenText(), chunked.screenText())
+        assertEquals(whole.cursorRow, chunked.cursorRow)
+        assertEquals(whole.cursorCol, chunked.cursorCol)
+    }
+
+    @Test
+    fun wideCharactersTakeTwoCells() {
+        val (terminal, _) = emulator()
+        terminal.append("a中b")
+        assertEquals(4, terminal.cursorCol)
+        assertEquals(TerminalEmulator.WIDE_TAIL, terminal.glyphAt(0, 2))
+        assertEquals("a中b", terminal.line(0))
         // Overwriting the right half clears the whole wide character.
-        emu.append("$esc[1;3HX")
-        assertEquals("a Xb", emu.line(0))
+        terminal.append("$escape[1;3HX")
+        assertEquals("a Xb", terminal.line(0))
     }
 
-    @Test fun wideCharacterAtTheLastColumnWrapsFirst() {
-        val (emu, _) = emulator(cols = 5)
-        emu.append("abcd中")
-        assertEquals("abcd", emu.line(0))
-        assertEquals("中", emu.line(1))
+    @Test
+    fun wideCharacterAtTheLastColumnWrapsFirst() {
+        val (terminal, _) = emulator(cols = 5)
+        terminal.append("abcd中")
+        assertEquals("abcd", terminal.line(0))
+        assertEquals("中", terminal.line(1))
     }
 
-    @Test fun combiningMarksAreNotGivenACell() {
-        val (emu, _) = emulator()
-        emu.append("éx")
-        assertEquals(2, emu.cursorCol)
+    @Test
+    fun combiningMarksDoNotConsumeACell() {
+        val (terminal, _) = emulator()
+        terminal.append("e\u0301x")
+        assertEquals(2, terminal.cursorCol)
     }
 
-    @Test fun decLineDrawingCharset() {
-        val (emu, _) = emulator()
-        emu.append("$esc(0lqk$esc(Bq")
-        assertEquals("┌─┐q", emu.line(0))
+    @Test
+    fun decLineDrawingCharset() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape(0lqk$escape(Bq")
+        assertEquals("┌─┐q", terminal.line(0))
     }
 
-    @Test fun shiftOutUsesTheG1Charset() {
-        val (emu, _) = emulator()
-        emu.append("$esc)0\u000Eqx\u000Fq")
-        assertEquals("─│q", emu.line(0))
+    @Test
+    fun shiftOutUsesTheG1Charset() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape)0\u000Eqx\u000Fq")
+        assertEquals("─│q", terminal.line(0))
     }
 
-    @Test fun tabsStopEveryEightColumns() {
-        val (emu, _) = emulator(cols = 20)
-        emu.append("a\tb\tc")
-        assertEquals("a       b       c", emu.line(0))
-        emu.append("$esc[Z")
-        assertEquals(16, emu.cursorCol)
-        emu.append("$esc[2Z")
-        assertEquals(0, emu.cursorCol)
+    // ---------------------------------------------------------------- controls
+
+    @Test
+    fun tabsStopEveryEightColumns() {
+        val (terminal, _) = emulator(cols = 20)
+        terminal.append("a\tb\tc")
+        assertEquals("a       b       c", terminal.line(0))
+        terminal.append("$escape[Z")
+        assertEquals(16, terminal.cursorCol)
+        terminal.append("$escape[2Z")
+        assertEquals(0, terminal.cursorCol)
     }
 
-    @Test fun saveAndRestoreCursorKeepsStyle() {
-        val (emu, _) = emulator()
-        emu.append("$esc[2;3H$esc[31m${esc}7$esc[H$esc[0mX${esc}8Y")
-        assertEquals("  Y", emu.line(1))
-        assertEquals(1, CellStyle.fg(emu.styleAt(1, 2)))
+    @Test
+    fun saveAndRestoreCursorKeepsStyle() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[2;3H$escape[31m${escape}7$escape[H$escape[0mX${escape}8Y")
+        assertEquals("  Y", terminal.line(1))
+        assertEquals(1, CellStyle.fg(terminal.styleAt(1, 2)))
     }
 
-    @Test fun privateModesAreTracked() {
-        val (emu, _) = emulator()
-        emu.append("$esc[?1h$esc[?2004h$esc[?25l$esc[?1000h$esc[?1006h")
-        assertTrue(emu.applicationCursorKeys)
-        assertTrue(emu.bracketedPaste)
-        assertFalse(emu.cursorVisible)
-        assertEquals(MouseMode.CLICK, emu.mouseMode)
-        assertTrue(emu.mouseSgr)
-        emu.append("$esc[?1l$esc[?2004l$esc[?25h$esc[?1000l")
-        assertFalse(emu.applicationCursorKeys)
-        assertFalse(emu.bracketedPaste)
-        assertTrue(emu.cursorVisible)
-        assertEquals(MouseMode.NONE, emu.mouseMode)
+    @Test
+    fun privateModesAreTracked() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[?1h$escape[?2004h$escape[?25l$escape[?1000h$escape[?1006h")
+        assertTrue(terminal.applicationCursorKeys)
+        assertTrue(terminal.bracketedPaste)
+        assertFalse(terminal.cursorVisible)
+        assertEquals(MouseMode.CLICK, terminal.mouseMode)
+        assertTrue(terminal.mouseSgr)
+        terminal.append("$escape[?1l$escape[?2004l$escape[?25h$escape[?1000l")
+        assertFalse(terminal.applicationCursorKeys)
+        assertFalse(terminal.bracketedPaste)
+        assertTrue(terminal.cursorVisible)
+        assertEquals(MouseMode.NONE, terminal.mouseMode)
     }
 
-    @Test fun reportsDecPrivateModeState() {
-        val (emu, replies) = emulator()
-        emu.append("$esc[?2004h$esc[?2004\$p$esc[?1\$p$esc[?9999\$p")
-        assertEquals(listOf("$esc[?2004;1\$y", "$esc[?1;2\$y", "$esc[?9999;0\$y"), replies)
+    @Test
+    fun reportsDecPrivateModeState() {
+        val (terminal, replies) = emulator()
+        terminal.append("$escape[?2004h$escape[?2004\$p$escape[?1\$p$escape[?9999\$p")
+        assertEquals(
+            listOf("$escape[?2004;1\$y", "$escape[?1;2\$y", "$escape[?9999;0\$y"),
+            replies,
+        )
     }
 
-    @Test fun cursorShapeFromDecscusr() {
-        val (emu, _) = emulator()
-        emu.append("$esc[6 q")
-        assertEquals(CursorShape.BAR, emu.cursorShape)
-        emu.append("$esc[4 q")
-        assertEquals(CursorShape.UNDERLINE, emu.cursorShape)
-        emu.append("$esc[2 q")
-        assertEquals(CursorShape.BLOCK, emu.cursorShape)
+    @Test
+    fun cursorShapeFromDecscusr() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape[6 q")
+        assertEquals(CursorShape.BAR, terminal.cursorShape)
+        terminal.append("$escape[4 q")
+        assertEquals(CursorShape.UNDERLINE, terminal.cursorShape)
+        terminal.append("$escape[2 q")
+        assertEquals(CursorShape.BLOCK, terminal.cursorShape)
     }
 
-    @Test fun oscSetsTitleAndWorkingDirectory() {
-        val (emu, _) = emulator()
-        emu.append("$esc]0;vim notes.txt\u0007")
-        assertEquals("vim notes.txt", emu.title)
-        emu.append("$esc]7;file://localhost/data/my%20dir$esc\\")
-        assertEquals("/data/my dir", emu.workingDirectory)
-        assertEquals("", emu.line(0))
+    // ---------------------------------------------------------------- osc
+
+    @Test
+    fun oscSetsTitleAndWorkingDirectory() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape]0;vim notes.txt\u0007")
+        assertEquals("vim notes.txt", terminal.title)
+        terminal.append("$escape]7;file://localhost/data/my%20dir$escape\\")
+        assertEquals("/data/my dir", terminal.workingDirectory)
+        assertEquals("", terminal.line(0))
     }
 
-    @Test fun unknownSequencesAndStringsAreSwallowed() {
-        val (emu, _) = emulator()
-        emu.append("${esc}P1\$r0m$esc\\$esc[?1;2;3zA$esc]52;c;aGVsbG8=\u0007B")
-        assertEquals("AB", emu.line(0))
+    @Test
+    fun incompleteOscDoesNotLeakIntoTheScreen() {
+        val (terminal, _) = emulator()
+        terminal.append("$escape]0;not finished")
+        assertEquals("", terminal.line(0))
+        assertEquals("", terminal.title)
+        terminal.append("\u0007")
+        assertEquals("not finished", terminal.title)
+        assertEquals("", terminal.line(0))
     }
 
-    @Test fun repeatsTheLastCharacter() {
-        val (emu, _) = emulator()
-        emu.append("x$esc[4b")
-        assertEquals("xxxxx", emu.line(0))
+    @Test
+    fun unknownSequencesAndStringsAreSwallowed() {
+        val (terminal, _) = emulator()
+        terminal.append("${escape}P1\$r0m$escape\\$escape[?1;2;3zA")
+        terminal.append("$escape]52;c;aGVsbG8=\u0007B")
+        assertEquals("AB", terminal.line(0))
     }
 
-    @Test fun resizeNarrowerTruncatesAndKeepsTheCursorInside() {
-        val (emu, _) = emulator(rows = 3, cols = 10)
-        emu.append("0123456789")
-        emu.resize(3, 4)
-        assertEquals("0123", emu.line(0))
-        assertEquals(3, emu.cursorCol)
-        assertEquals(4, emu.cols)
+    @Test
+    fun repeatsTheLastCharacter() {
+        val (terminal, _) = emulator()
+        terminal.append("x$escape[4b")
+        assertEquals("xxxxx", terminal.line(0))
     }
 
-    @Test fun resizeShorterMovesRowsToHistoryAndBack() {
-        val (emu, _) = emulator(rows = 5, cols = 10)
-        emu.append("a\r\nb\r\nc\r\nd\r\ne")
-        emu.resize(3, 10)
-        assertEquals(listOf("c", "d", "e"), (0..2).map { emu.line(it) })
-        assertEquals(2, emu.cursorRow)
-        assertEquals(2, emu.historySize)
-        emu.resize(5, 10)
-        assertEquals(listOf("a", "b", "c", "d", "e"), (0..4).map { emu.line(it) })
-        assertEquals(4, emu.cursorRow)
-        assertEquals(0, emu.historySize)
+    @Test
+    fun controlCharactersInsideCsiStillRun() {
+        val (terminal, _) = emulator()
+        terminal.append("ab$escape[\b2CX")
+        // Backspace runs inside the sequence, then CUF moves right by two.
+        assertEquals("ab X", terminal.line(0))
+        assertEquals(4, terminal.cursorCol)
     }
 
-    @Test fun resizeShorterDropsBlankRowsBelowTheCursorFirst() {
-        val (emu, _) = emulator(rows = 5, cols = 10)
-        emu.append("a\r\nb")
-        emu.resize(3, 10)
-        assertEquals(listOf("a", "b", ""), (0..2).map { emu.line(it) })
-        assertEquals(0, emu.historySize)
-        assertEquals(1, emu.cursorRow)
+    // ---------------------------------------------------------------- resize
+
+    @Test
+    fun resizeNarrowerTruncatesAndKeepsTheCursorInside() {
+        val (terminal, _) = emulator(rows = 3, cols = 10)
+        terminal.append("0123456789")
+        terminal.resize(3, 4)
+        assertEquals("0123", terminal.line(0))
+        assertEquals(3, terminal.cursorCol)
+        assertEquals(4, terminal.cols)
     }
 
-    @Test fun resizeWhileOnTheAlternateScreenRestoresTheMainCursor() {
-        val (emu, _) = emulator(rows = 5, cols = 10)
-        emu.append("a\r\nb\r\nc\r\nd\r\n$ ")
-        emu.append("$esc[?1049h")
-        emu.resize(3, 10)
-        emu.append("$esc[?1049l")
-        assertFalse(emu.isAltScreen)
-        assertTrue(emu.cursorRow in 0..2)
-        assertEquals("$", emu.line(emu.cursorRow))
+    @Test
+    fun resizeShorterMovesRowsToHistoryAndBack() {
+        val (terminal, _) = emulator(rows = 5, cols = 10)
+        terminal.append("a\r\nb\r\nc\r\nd\r\ne")
+        terminal.resize(3, 10)
+        assertEquals(listOf("c", "d", "e"), (0..2).map { terminal.line(it) })
+        assertEquals(2, terminal.cursorRow)
+        assertEquals(2, terminal.historySize)
+        terminal.resize(5, 10)
+        assertEquals(listOf("a", "b", "c", "d", "e"), (0..4).map { terminal.line(it) })
+        assertEquals(4, terminal.cursorRow)
+        assertEquals(0, terminal.historySize)
     }
 
-    @Test fun originModeMakesPositionsRelativeToTheScrollRegion() {
-        val (emu, replies) = emulator(rows = 6)
-        emu.append("$esc[3;5r$esc[?6h$esc[1;1HX$esc[6n")
-        assertEquals("X", emu.line(2))
-        assertEquals("$esc[1;2R", replies.single())
-        emu.append("$esc[99;1HY")
-        assertEquals("Y", emu.line(4))
+    @Test
+    fun resizeShorterDropsBlankRowsBelowTheCursorFirst() {
+        val (terminal, _) = emulator(rows = 5, cols = 10)
+        terminal.append("a\r\nb")
+        terminal.resize(3, 10)
+        assertEquals(listOf("a", "b", ""), (0..2).map { terminal.line(it) })
+        assertEquals(0, terminal.historySize)
+        assertEquals(1, terminal.cursorRow)
     }
 
-    @Test fun backspaceAfterPendingWrapStaysOnTheLine() {
-        val (emu, _) = emulator(cols = 5)
-        emu.append("abcde\bX")
-        assertEquals("abcXe", emu.line(0))
-        assertEquals(0, emu.cursorRow)
+    @Test
+    fun resizeWhileOnTheAlternateScreenRestoresTheMainCursor() {
+        val (terminal, _) = emulator(rows = 5, cols = 10)
+        terminal.append("a\r\nb\r\nc\r\nd\r\n$ ")
+        terminal.append("$escape[?1049h")
+        terminal.resize(3, 10)
+        terminal.append("$escape[?1049l")
+        assertFalse(terminal.isAltScreen)
+        assertTrue(terminal.cursorRow in 0..2)
+        assertEquals("$", terminal.line(terminal.cursorRow))
     }
 
-    @Test fun fullResetClearsTheScreenAndModes() {
-        val (emu, _) = emulator()
-        emu.append("text$esc[?1h$esc[31m${esc}c")
-        assertEquals("", emu.screenText().trim())
-        assertFalse(emu.applicationCursorKeys)
-        assertEquals(0, emu.cursorCol)
-        emu.append("Z")
-        assertEquals(CellStyle.DEFAULT_FG, CellStyle.fg(emu.styleAt(0, 0)))
+    @Test
+    fun everyRowMatchesTheGridAfterRepeatedResizes() {
+        val (terminal, _) = emulator(rows = 6, cols = 12)
+        repeat(40) { terminal.append("row $it with some text\r\n") }
+        for ((height, width) in listOf(3 to 20, 8 to 5, 4 to 12, 2 to 7)) {
+            terminal.resize(height, width)
+            assertEquals(height, terminal.rows)
+            assertEquals(width, terminal.cols)
+            for (row in 0 until terminal.rows) {
+                assertEquals(width, terminal.lineAt(row)!!.size)
+            }
+            for (index in -terminal.historySize until 0) {
+                assertEquals(width, terminal.lineAt(index)!!.size)
+            }
+        }
     }
 
-    @Test fun mouseReportsInSgrAndLegacyEncodings() {
-        val (emu, _) = emulator(rows = 24, cols = 80)
-        assertNull(emu.mouseReport(0, 1, 1, true))
-        emu.append("$esc[?1000h$esc[?1006h")
-        assertEquals("$esc[<0;3;4M", String(emu.mouseReport(0, 2, 3, true)!!))
-        assertEquals("$esc[<0;3;4m", String(emu.mouseReport(0, 2, 3, false)!!))
-        emu.append("$esc[?1006l")
-        val legacy = emu.mouseReport(0, 2, 3, true)!!
+    @Test
+    fun originModeMakesPositionsRelativeToTheScrollRegion() {
+        val (terminal, replies) = emulator(rows = 6)
+        terminal.append("$escape[3;5r$escape[?6h$escape[1;1HX$escape[6n")
+        assertEquals("X", terminal.line(2))
+        assertEquals("$escape[1;2R", replies.single())
+        terminal.append("$escape[99;1HY")
+        assertEquals("Y", terminal.line(4))
+    }
+
+    @Test
+    fun backspaceAfterPendingWrapStaysOnTheLine() {
+        val (terminal, _) = emulator(cols = 5)
+        terminal.append("abcde\bX")
+        assertEquals("abcXe", terminal.line(0))
+        assertEquals(0, terminal.cursorRow)
+    }
+
+    @Test
+    fun fullResetClearsTheScreenAndModes() {
+        val (terminal, _) = emulator()
+        terminal.append("text$escape[?1h$escape[31m${escape}c")
+        assertEquals("", terminal.screenText().trim())
+        assertFalse(terminal.applicationCursorKeys)
+        assertEquals(0, terminal.cursorCol)
+        terminal.append("Z")
+        assertEquals(CellStyle.DEFAULT_FG, CellStyle.fg(terminal.styleAt(0, 0)))
+    }
+
+    // ---------------------------------------------------------------- mouse
+
+    @Test
+    fun mouseReportsInSgrAndLegacyEncodings() {
+        val (terminal, _) = emulator(rows = 24, cols = 80)
+        assertNull(terminal.mouseReport(0, 1, 1, true))
+        terminal.append("$escape[?1000h$escape[?1006h")
+        assertEquals("$escape[<0;3;4M", String(terminal.mouseReport(0, 2, 3, true)!!))
+        assertEquals("$escape[<0;3;4m", String(terminal.mouseReport(0, 2, 3, false)!!))
+        terminal.append("$escape[?1006l")
+        val legacy = terminal.mouseReport(0, 2, 3, true)!!
         assertEquals(listOf(27, '['.code, 'M'.code, 32, 35, 36), legacy.map { it.toInt() and 0xFF })
     }
 
-    @Test fun transcriptJoinsWrappedRows() {
-        val (emu, _) = emulator(rows = 3, cols = 4)
-        emu.append("abcdefgh\r\nnext")
-        assertEquals("abcdefgh\nnext", emu.transcriptText())
+    // ---------------------------------------------------------------- text output
+
+    @Test
+    fun transcriptJoinsWrappedRows() {
+        val (terminal, _) = emulator(rows = 3, cols = 4)
+        terminal.append("abcdefgh\r\nnext")
+        assertEquals("abcdefgh\nnext", terminal.transcriptText())
     }
 
-    @Test fun controlCharactersInsideCsiStillRun() {
-        val (emu, _) = emulator()
-        emu.append("ab$esc[\b2CX")
-        // The backspace inside the sequence moves left first, then the cursor moves right by two.
-        assertEquals("ab X", emu.line(0))
-        assertEquals(4, emu.cursorCol)
-    }
-
-    @Test fun wcwidthTablesAreSortedAndClassifyCommonCharacters() {
+    @Test
+    fun wcwidthClassifiesCommonCharacters() {
         assertEquals(1, WcWidth.of('a'.code))
         assertEquals(2, WcWidth.of('中'.code))
         assertEquals(2, WcWidth.of(0x1F600))
