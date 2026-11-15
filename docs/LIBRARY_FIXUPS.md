@@ -481,12 +481,29 @@ Hàm **cố ý bỏ qua**:
 | `syscall(...)` | variadic, nhận số hiệu syscall; hook sẽ phải chặn **mọi** syscall (kể cả syscall nội bộ của libc), tăng chi phí và nguy cơ đệ quy. Path do chương trình tự phát không dịch được; Go tĩnh AArch64 được xử lý riêng bằng `oc-gosys` |
 | binary tĩnh không phải Go (Rust musl, C static, …) | không nạp được `LD_PRELOAD`; muốn dịch path phải vá tại call site như `oc-gosys` |
 | Go tĩnh x86_64 | `oc-gosys` mới hỗ trợ AArch64; Go x86_64 vẫn chạy nhưng path Termux không được dịch |
-| `system`, `popen`, `wordexp` | nhận chuỗi lệnh, không phải path; chúng chạy `/bin/sh` của Android (bionic), nên preload cũng không được truyền. Dùng `oc-run` hoặc gọi chương trình trực tiếp |
+| `system`, `popen`, `wordexp` | nhận chuỗi lệnh, không phải path; `/bin/sh` cố ý **không** được map nên chúng vẫn chạy shell bionic của Android. Lệnh con chỉ được route nếu đi qua `oc-run`/wrapper của prefix; bản thân `system()`/`popen()` gọi exec nội bộ của libc, không đi qua wrapper nên môi trường của tiến trình cha vẫn có thể đi theo |
 | callback của `ftw`/`ftw64`/`nftw`/`nftw64` | thư viện không thể thay con trỏ hàm của caller, nên callback vẫn thấy path vật lý của prefix; chỉ path gốc được map |
 | `sockaddr_un` trong `connect`/`bind`/`sendto` | path nằm trong `struct sockaddr`, không phải tham số path của libc; muốn hỗ trợ phải hook riêng từng họ socket |
 | `updwtmp`, `setutent`/`pututline` | đường dẫn utmp/wtmp cố định hoặc rất hiếm dùng trong app Android; có thể thêm nếu có nhu cầu thật |
-| script `#!/usr/bin/env ...` khi được exec từ một chương trình glibc | đi qua `env` của bionic nên chuỗi `LD_PRELOAD`/`OC_*` bị mất; chạy qua `oc-run` thì không gặp giới hạn này |
-| path trong `argv`, biến môi trường, nội dung file cấu hình, `/proc/self/exe` | không phải tham số của hàm libc; chỉ chương trình đích mới biết ý nghĩa, nên phải relocation gói hoặc sửa cấu hình |
+| path trong `argv`, biến môi trường, nội dung file cấu hình | không phải tham số của hàm libc và không có ý nghĩa chung; chỉ chương trình đích mới biết cách hiểu. Path của chính chương trình và `/proc/self/exe` thì đã được xử lý |
+
+Ba cơ chế mới bổ sung cho bảng trên:
+
+- **FHS**: sau hai root Termux, `map_path` dịch `/usr` → `$PREFIX`, `/etc` → `$PREFIX/etc`,
+  `/tmp` → `$PREFIX/tmp`, `/var` → `$PREFIX/var`, `/root` → `$HOME`,
+  `/dev/shm` → `$PREFIX/tmp/shm`, `/bin` → `$PREFIX/bin` (trừ đúng `/bin/sh`). Tắt bằng
+  `OC_FHS=0`.
+- **Exec routing**: trong một tiến trình glibc, `execve`/`execvp`/`posix_spawn*` đọc ELF; nếu
+  `PT_INTERP` là loader glibc nhưng không tồn tại trên máy, chương trình được chạy bằng
+  `ld.so --preload liboc-pathmap.so --library-path <runpath>:$PREFIX/lib:$PREFIX/glibc/lib`.
+  Script được exec qua interpreter đã resolve (kể cả `#!/usr/bin/env X`, bỏ qua `env`). Tắt
+  bằng `OC_EXEC_ROUTE=0`. Con không phải glibc nhận môi trường đã bỏ `LD_PRELOAD` của
+  pathmap và `OC_REAL_EXE`; con được route dùng `--preload` nên `LD_PRELOAD` cũng sạch.
+- **`/proc/self/exe`**: khi tiến trình chạy dưới `ld.so`, `readlink`, `open`, `stat`,
+  `access`, `realpath` của `/proc/self/exe` trả target thật, lấy từ `OC_REAL_EXE` hoặc dòng
+  lệnh `/proc/self/cmdline`; `execve("/proc/self/exe")` cũng đổi sang chương trình thật để
+  route/preload áp dụng lại thay vì chạy lại loader trần. `inotify_add_watch` tạo trước cây
+  thư mục còn thiếu bằng `mkdir -p` (mode 0700) để watcher không im lặng.
 
 Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Android: `openat2` và
 `faccessat2` bị seccomp trap, SIGSYS handler trả `ENOSYS` để libc fallback sang
@@ -496,9 +513,22 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
 
 - chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
   Termux không được dịch);
-- không dịch path trong `sockaddr_un` của `connect`/`bind`, `/proc/self/exe`, hay path nằm
-  trong `argv`/biến môi trường của chương trình đích (path của chính chương trình thì có);
-  các chương trình cần những thứ đó vẫn phải được relocation như gói cài qua `pkg`;
+- không dịch path trong `sockaddr_un` của `connect`/`bind`, hay path nằm trong
+  `argv`/biến môi trường của chương trình đích (path của chính chương trình và
+  `/proc/self/exe` thì có); các chương trình cần Unix socket hoặc path trong argv vẫn phải
+  được relocation như gói cài qua `pkg`;
+- FHS chỉ là phép thay tiền tố: nó không tạo file, không đổi quyền và không làm cho một path
+  tuyệt đối của Android (`/system`, `/data`, `/apex`, `/proc`, `/sys`…) trở nên ghi được;
+  `/bin/sh` cố ý không map để `system()` giữ shell bionic;
+- exec routing chỉ áp dụng cho ELF có `PT_INTERP` là loader glibc **không tồn tại**. Binary đã
+  được `patchelf` trỏ vào loader của prefix, binary bionic và binary tĩnh chạy đúng như cũ.
+  `execveat`/`fexecve` chỉ map path, không route (route cần tên file để đọc ELF);
+- script không có shebang, shebang trỏ tới interpreter không resolve được, hoặc vượt quá
+  `PATH_MAX` vẫn để kernel xử lý và có thể trả `ENOEXEC`;
+- `inotify_add_watch` chỉ tạo thư mục khi path **đã được map** sang prefix/home; lỗi tạo
+  thư mục bị bỏ qua và hàm thật vẫn trả lỗi của nó (không che `ENOSPC`/`EACCES`);
+- `OC_FHS=0` tắt bảng FHS, `OC_EXEC_ROUTE=0` tắt exec routing, `OC_REAL_EXE` chỉ có tác dụng
+  khi tiến trình chạy dưới loader; không có biến nào ảnh hưởng tới hai root Termux;
 - binary tĩnh không phải Go (Rust musl, C static…) không được dịch path;
 - patcher cần một khoảng zero đủ lớn giữa các segment hoặc cuối file; nếu không có, nó báo lỗi
   và `oc-run` chạy binary chưa vá thay vì từ chối;

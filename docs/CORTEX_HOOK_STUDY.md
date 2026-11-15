@@ -107,6 +107,11 @@ Nghĩa là app này **mạnh hơn Cortex** ở phần "chương trình đã cài
 G10 và G5 khác bản chất: G5 sửa được bằng exec routing, G10 cần thêm shim bionic hoặc wrapper
 `system()`.
 
+> **Trạng thái (2026-11):** bốn mục P0 **A–D** đã được triển khai trong
+> `native/pathmap/pathmap.c` và có test host trong `native/pathmap/pathmap_test.c` +
+> `run-test.sh` (fixture `route_child.c`). Các mục **E–H** vẫn để ngỏ. Phần thiết kế bên dưới
+> giữ nguyên để tham chiếu; số dòng trong mã nguồn chỉ là tương đối.
+
 ## 5. P0 — bốn việc nên làm trước
 
 ### A. Ảo hoá `/proc/self/exe`
@@ -333,21 +338,23 @@ với B vì B sửa đúng hàm này.
 
 Thứ tự đề xuất (mỗi bước là một PR nhỏ, có test):
 
-1. **A** (`/proc/self/exe`) + `OC_REAL_EXE` + `OC_DEBUG`. Không phụ thuộc gì, ít rủi ro.
-2. **C** (bảng FHS) sau cờ `OC_FHS`, mặc định bật sau khi chạy hết smoke test.
-3. **B** (exec routing): chuẩn hoá path → probe → loader/argv → shebang → `posix_spawn`;
-   kèm **H** (pool tĩnh cho `preload_env`) trong cùng đợt.
-4. **D** (`inotify`), **E** (Unix socket), **F** (port thấp), cuối cùng là **G**.
+1. **A** (`/proc/self/exe`) + `OC_REAL_EXE` + `OC_DEBUG` — đã làm.
+2. **C** (bảng FHS) sau cờ `OC_FHS` — đã làm, mặc định bật.
+3. **B** (exec routing): chuẩn hoá path → probe → loader/argv → shebang → `posix_spawn` —
+   đã làm; **H** (pool tĩnh cho `preload_env`) vẫn để ngỏ.
+4. **D** (`inotify`) — đã làm. **E** (Unix socket), **F** (port thấp), **G** (`system`/
+   `popen` qua shell glibc) vẫn để ngỏ.
 5. **P2**: `system()`/`popen()` (nếu G), vá C tĩnh theo bảng `svc #0` (chỉ khi có nhu cầu
    thật), `lzma_cputhreads` như tuỳ chọn.
 
 Kiểm thử:
 
 - **Host test** (`native/pathmap/run-test.sh`, chạy được cả `x86_64` và `aarch64` qua qemu):
-  thêm case vào `pathmap_test.c` cho bảng FHS (map + loại trừ `/system`), `absolutize`,
-  dựng argv loader, `/proc/self/exe` (giả `OC_REAL_EXE`), socket hash (cùng input → cùng
-  path, path ngắn giữ nguyên), `inotify` tự tạo thư mục. Test hiện có đã chạy nhị phân test
-  bằng chính nó với môi trường sạch — dùng lại đúng mẫu đó cho exec routing.
+  đã có case cho bảng FHS (map + loại trừ `/bin/sh`), `inotify` tự tạo thư mục, và exec
+  routing: fixture `route_child.c` với `PT_INTERP` không tồn tại + `$ORIGIN/lib`, script
+  `#!/usr/bin/oc-interp`, `/proc/self/exe` qua loader (có và không có `OC_REAL_EXE`), cùng
+  môi trường sạch của con. Trên aarch64/qemu các case exec bị bỏ (`OC_TEST_NO_EXEC=1`) vì
+  qemu thay `/proc/self/exe` bằng chính nó.
 - **Device smoke** (thủ công, ghi vào PR): các lệnh ở mục 5A–5D, 6E–6F, cộng `git status`,
   `node -v`, `opencode --version` để chắc không hồi quy.
 - **Không hồi quy**: `npm install` trong một project có postinstall, `git clone` qua https,
@@ -357,9 +364,10 @@ Kiểm thử:
 
 - Cortex: `app/src/main/cpp/hook/{setup,files,fileops,exec,exec_probe,paths,sockets,env,static_programs}.c`
   tại commit `2e95f52`.
-- App này: `native/pathmap/pathmap.c` (`map_path` dòng 145, `preload_env` dòng 370,
-  `inotify_add_watch` dòng 1074, `execve` dòng 1220, SIGSYS cuối file), `native/pathmap/pathmap_test.c`,
-  `native/gopatch/run.go` (`startGlibc`), `native/gopatch/classify.go`.
+- App này: `native/pathmap/pathmap.c` (`map_path`, `map_fhs`, `preload_env`, exec routing,
+  `/proc/self/exe`, `inotify_add_watch`, SIGSYS cuối file), `native/pathmap/pathmap_test.c`,
+  `native/pathmap/route_child.c`, `native/gopatch/run.go` (`startGlibc`, `startScript`),
+  `native/gopatch/classify.go`.
 - APK: `OpenCodeBootstrap.kt` (`PATHMAP_PATH`, `GLIBC_LIB_DIR`, `RESOLV_CONF_PATH`,
   `ensurePathAliases`, `relocateLoader`), `OpenCodePackages.kt` (`repair`, shebang).
 - Tài liệu trước: [`LIBRARY_FIXUPS.md`](LIBRARY_FIXUPS.md) mục 8.1–8.2 (hooked functions và

@@ -9,7 +9,11 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
-work=$(mktemp -d)
+# /tmp is mapped into the private prefix by liboc-pathmap.so, so the fixtures
+# (and the scripts the glibc shell opens) must live outside it.
+work=$here/build/run-$$
+rm -rf "$work"
+mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
 # The tests are self-contained: build the generated pieces when this script is

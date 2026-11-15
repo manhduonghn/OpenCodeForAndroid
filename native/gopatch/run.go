@@ -57,6 +57,33 @@ func setIfEmpty(env []string, name, value string) []string {
 	return append(env, prefix+value)
 }
 
+// realExeEnv sets OC_REAL_EXE, replacing a value inherited from a routed
+// parent. The preload uses it for /proc/self/exe because the kernel reports the
+// loader there.
+func realExeEnv(env []string, path string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "OC_REAL_EXE=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "OC_REAL_EXE="+path)
+}
+
+// withoutRealExe drops the override before an exec that does not go through the
+// loader: the kernel then reports the real executable.
+func withoutRealExe(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "OC_REAL_EXE=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func resolveProgram(name string) (string, error) {
 	if strings.Contains(name, "/") {
 		if filepath.IsAbs(name) {
@@ -152,11 +179,30 @@ func startScript(path string, args []string, env []string, detail string) error 
 	interp := fields[0]
 	extra := fields[1:]
 	if filepath.Base(interp) == "env" {
-		for len(extra) > 0 && strings.HasPrefix(extra[0], "-") {
+		options := true
+		for len(extra) > 0 && options {
 			option := extra[0]
-			extra = extra[1:]
-			if option == "-S" || strings.Contains(option, "S") {
+			if !strings.HasPrefix(option, "-") {
+				if strings.Contains(option, "=") {
+					// env NAME=VALUE PROGRAM ...: the assignment does not change
+					// which program runs.
+					extra = extra[1:]
+					continue
+				}
 				break
+			}
+			extra = extra[1:]
+			switch option {
+			case "--":
+				options = false
+			case "-S", "--split-string":
+				// The rest of the line is the command line of the program.
+				options = false
+			case "-u", "--unset", "-C", "--chdir":
+				// These options take the next word with them.
+				if len(extra) > 0 {
+					extra = extra[1:]
+				}
 			}
 		}
 		if len(extra) == 0 {
@@ -205,7 +251,7 @@ func startScript(path string, args []string, env []string, detail string) error 
 	if kind, _, err := classifyFile(interp); err == nil && kind == "glibc" {
 		return startGlibc(interp, argv, env)
 	}
-	return syscall.Exec(interp, argv, env)
+	return syscall.Exec(interp, argv, withoutRealExe(env))
 }
 
 // startGlibc starts a dynamic program through the glibc loader of the prefix
@@ -215,15 +261,21 @@ func startGlibc(path string, args []string, env []string) error {
 	if loader == "" {
 		// Nothing named glibc is installed: let the kernel produce its own
 		// error instead of hiding the real problem.
-		return syscall.Exec(path, args, env)
+		return syscall.Exec(path, args, withoutRealExe(env))
 	}
 	prefix := ocPrefix()
 	argv := []string{loader}
+	preloaded := false
 	if preload := filepath.Join(prefix, "lib", "liboc-pathmap.so"); fileExists(preload) {
 		argv = append(argv, "--preload", preload)
+		preloaded = true
 	}
-	// Without --argv0 (glibc 2.33) the loader passes [path] as argv[0]; the
-	// basename is the same, and an older loader still understands the rest.
+	// --argv0 (glibc 2.33) preserves the name the caller asked for. Without it
+	// the loader uses the program path, which is close enough for an older
+	// loader that only understands the rest of the options.
+	if len(args) > 0 && args[0] != path && loaderSupportsArgv0(loader) {
+		argv = append(argv, "--argv0", args[0])
+	}
 	argv = append(argv,
 		"--library-path", prefix+"/lib:"+prefix+"/glibc/lib",
 		path,
@@ -231,7 +283,23 @@ func startGlibc(path string, args []string, env []string) error {
 	if len(args) > 1 {
 		argv = append(argv, args[1:]...)
 	}
-	return syscall.Exec(loader, argv, env)
+	// OC_REAL_EXE is only meaningful with the preload: without it, the variable
+	// would leak into children that never translate /proc/self/exe.
+	if !preloaded {
+		return syscall.Exec(loader, argv, withoutRealExe(env))
+	}
+	return syscall.Exec(loader, argv, realExeEnv(env, path))
+}
+
+// loaderSupportsArgv0 reports whether the loader understands --argv0. The
+// option name is present in the option table of every loader that implements
+// it, so a byte scan avoids running the loader just to test a flag.
+func loaderSupportsArgv0(loader string) bool {
+	data, err := os.ReadFile(loader)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "--argv0")
 }
 
 func findLoader() string {
