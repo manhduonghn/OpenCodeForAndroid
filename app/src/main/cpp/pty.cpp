@@ -1,18 +1,18 @@
-// Adapted from AndroidHarness (https://github.com/Sanuu7/AndroidHarness), Copyright (c) 2026 Sanuu7,
-// MIT License. See ANDROIDHARNESS_LICENSE.txt in this directory.
-
-// Pseudo-terminal support for the interactive Terminal.
+// Pseudo-terminal bridge for the interactive terminal.
 //
-// Opens a master/slave pair through /dev/ptmx, forks, makes the child a
-// session leader with the slave as its controlling terminal, and execs the
-// shell. The parent keeps the master fd; Kotlin reads and writes it, resizes
-// it with TIOCSWINSZ and waits for the child with waitpid.
+// The JVM side asks for a master/slave pair, a child in its own session with
+// the slave as controlling terminal, and the shell exec'ed on it. Everything
+// that allocates happens before fork(); the child only uses async-signal-safe
+// calls until execve(). Reads and writes of the master descriptor happen on the
+// Java side through a ParcelFileDescriptor.
+
 #include <jni.h>
+
 #include <dirent.h>
-#include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -21,59 +21,135 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <string>
+#include <vector>
+
 namespace {
 
-void throwIo(JNIEnv *env, const char *what) {
+/** Owns a file descriptor and closes it on every exit path. */
+class Descriptor {
+public:
+    Descriptor() = default;
+    explicit Descriptor(int value) : value_(value) {}
+    ~Descriptor() { close(); }
+
+    Descriptor(const Descriptor&) = delete;
+    Descriptor& operator=(const Descriptor&) = delete;
+
+    int get() const { return value_; }
+    bool valid() const { return value_ >= 0; }
+
+    int release() {
+        const int value = value_;
+        value_ = -1;
+        return value;
+    }
+
+    void close() {
+        if (value_ >= 0) {
+            ::close(value_);
+            value_ = -1;
+        }
+    }
+
+private:
+    int value_ = -1;
+};
+
+void throwIOException(JNIEnv *env, const char *action, int error) {
     char message[256];
-    snprintf(message, sizeof(message), "%s: %s", what, strerror(errno));
-    jclass cls = env->FindClass("java/io/IOException");
-    if (cls != nullptr) env->ThrowNew(cls, message);
+    snprintf(message, sizeof(message), "%s: %s", action, strerror(error));
+    jclass type = env->FindClass("java/io/IOException");
+    if (type != nullptr) env->ThrowNew(type, message);
 }
 
-char *copyString(JNIEnv *env, jstring value) {
-    const char *utf = env->GetStringUTFChars(value, nullptr);
-    char *copy = strdup(utf);
-    env->ReleaseStringUTFChars(value, utf);
+std::string utf8(JNIEnv *env, jstring value) {
+    const char *characters = env->GetStringUTFChars(value, nullptr);
+    if (characters == nullptr) return {};
+    std::string copy(characters);
+    env->ReleaseStringUTFChars(value, characters);
     return copy;
 }
 
-// Null-terminated copy of a Java string array, built before fork so the child
-// only reads memory.
-char **toArgv(JNIEnv *env, jobjectArray array) {
-    jsize n = array == nullptr ? 0 : env->GetArrayLength(array);
-    auto out = static_cast<char **>(calloc(n + 1, sizeof(char *)));
-    jsize used = 0;
-    for (jsize i = 0; i < n; i++) {
-        auto item = (jstring) env->GetObjectArrayElement(array, i);
+/** Copies a Java string array into stable C strings and a NULL terminated argv. */
+std::vector<char *> argumentVector(JNIEnv *env, jobjectArray array, std::vector<std::string> &storage) {
+    const jsize count = array == nullptr ? 0 : env->GetArrayLength(array);
+    storage.reserve(static_cast<size_t>(count));
+    for (jsize index = 0; index < count; index++) {
+        auto item = static_cast<jstring>(env->GetObjectArrayElement(array, index));
         if (item == nullptr) continue;
-        out[used++] = copyString(env, item);
+        storage.push_back(utf8(env, item));
         env->DeleteLocalRef(item);
     }
-    return out;
+    std::vector<char *> pointers;
+    pointers.reserve(storage.size() + 1);
+    for (auto &value : storage) pointers.push_back(value.data());
+    pointers.push_back(nullptr);
+    return pointers;
 }
 
-void freeArgv(char **argv) {
-    for (char **p = argv; *p != nullptr; p++) free(*p);
-    free(argv);
-}
-
-void closeInheritedFds() {
+/**
+ * Closes every descriptor above stderr. close_range is one syscall; when the
+ * kernel or the headers do not provide it, /proc/self/fd lists what is open.
+ */
+void closeInheritedDescriptors() {
 #ifdef __NR_close_range
     if (syscall(__NR_close_range, 3, ~0U, 0) == 0) return;
 #endif
-    DIR *dir = opendir("/proc/self/fd");
-    if (dir == nullptr) {
-        long max = sysconf(_SC_OPEN_MAX);
-        for (int fd = 3; fd < max; fd++) close(fd);
+    DIR *directory = opendir("/proc/self/fd");
+    if (directory == nullptr) {
+        const long maximum = sysconf(_SC_OPEN_MAX);
+        for (int fd = 3; fd < maximum; fd++) ::close(fd);
         return;
     }
-    int self = dirfd(dir);
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        int fd = atoi(entry->d_name);
-        if (fd > 2 && fd != self) close(fd);
+    const int listing = dirfd(directory);
+    while (struct dirent *entry = readdir(directory)) {
+        const int fd = atoi(entry->d_name);
+        if (fd > STDERR_FILENO && fd != listing) ::close(fd);
     }
-    closedir(dir);
+    closedir(directory);
+}
+
+void resetSignalState() {
+    sigset_t empty;
+    sigemptyset(&empty);
+    sigprocmask(SIG_SETMASK, &empty, nullptr);
+
+    struct sigaction action {};
+    action.sa_handler = SIG_DFL;
+    sigemptyset(&action.sa_mask);
+    for (int signalNumber = 1; signalNumber < NSIG; signalNumber++) {
+        sigaction(signalNumber, &action, nullptr);
+    }
+}
+
+/** Runs in the child after fork; must not allocate or touch the JVM. */
+[[noreturn]] void runChild(
+    const char *slavePath,
+    const char *workingDirectory,
+    const char *executable,
+    char *const *arguments,
+    char *const *environment) {
+    resetSignalState();
+    setsid();
+
+    Descriptor slave(::open(slavePath, O_RDWR | O_NOCTTY));
+    if (!slave.valid()) _exit(126);
+    ioctl(slave.get(), TIOCSCTTY, 0);
+
+    for (int target = 0; target <= 2; target++) {
+        if (dup2(slave.get(), target) < 0) _exit(126);
+    }
+    if (slave.get() > STDERR_FILENO) slave.close();
+    closeInheritedDescriptors();
+
+    if (chdir(workingDirectory) != 0) chdir("/");
+    execve(executable, arguments, environment);
+
+    const char failure[] = "pty: cannot execute the shell\r\n";
+    ssize_t ignored = write(STDERR_FILENO, failure, sizeof(failure) - 1);
+    (void) ignored;
+    _exit(127);
 }
 
 }  // namespace
@@ -82,83 +158,72 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_opencode_android_terminal_Pty_nativeStart(
     JNIEnv *env, jclass, jstring jpath, jobjectArray jargv, jobjectArray jenvp,
     jstring jcwd, jint rows, jint cols, jintArray jpid) {
-    char *path = copyString(env, jpath);
-    char *cwd = copyString(env, jcwd);
-    char **argv = toArgv(env, jargv);
-    char **envp = toArgv(env, jenvp);
-    auto release = [&]() { free(path); free(cwd); freeArgv(argv); freeArgv(envp); };
+    const std::string path = utf8(env, jpath);
+    const std::string workingDirectory = utf8(env, jcwd);
+    std::vector<std::string> argumentStorage;
+    std::vector<std::string> environmentStorage;
+    std::vector<char *> arguments = argumentVector(env, jargv, argumentStorage);
+    std::vector<char *> environment = argumentVector(env, jenvp, environmentStorage);
 
-    int master = open("/dev/ptmx", O_RDWR | O_CLOEXEC);
-    if (master < 0) { throwIo(env, "open /dev/ptmx"); release(); return -1; }
-    char slaveName[64];
-    if (grantpt(master) != 0 || unlockpt(master) != 0 ||
-        ptsname_r(master, slaveName, sizeof(slaveName)) != 0) {
-        throwIo(env, "pty setup");
-        close(master);
-        release();
+    Descriptor master(::open("/dev/ptmx", O_RDWR | O_CLOEXEC));
+    if (!master.valid()) {
+        throwIOException(env, "open /dev/ptmx", errno);
         return -1;
     }
 
-    // UTF-8 aware line discipline, no flow control so Ctrl+S reaches programs.
-    struct termios tios{};
-    tcgetattr(master, &tios);
-    tios.c_iflag |= IUTF8;
-    tios.c_iflag &= ~(IXON | IXOFF);
-    tcsetattr(master, TCSANOW, &tios);
+    char slavePath[64];
+    if (grantpt(master.get()) != 0 || unlockpt(master.get()) != 0 ||
+        ptsname_r(master.get(), slavePath, sizeof(slavePath)) != 0) {
+        throwIOException(env, "prepare pseudo-terminal", errno);
+        return -1;
+    }
 
-    struct winsize size{};
-    size.ws_row = (unsigned short) rows;
-    size.ws_col = (unsigned short) cols;
-    ioctl(master, TIOCSWINSZ, &size);
+    // UTF-8 input so bash and readline map multi-byte characters correctly.
+    // Software flow control is off so Ctrl+S and Ctrl+Q reach the program.
+    struct termios settings {};
+    if (tcgetattr(master.get(), &settings) == 0) {
+#ifdef IUTF8
+        settings.c_iflag |= IUTF8;
+#endif
+        settings.c_iflag &= ~(IXON | IXOFF);
+        tcsetattr(master.get(), TCSANOW, &settings);
+    }
 
-    pid_t pid = fork();
+    struct winsize size {};
+    size.ws_row = static_cast<unsigned short>(rows);
+    size.ws_col = static_cast<unsigned short>(cols);
+    ioctl(master.get(), TIOCSWINSZ, &size);
+
+    const pid_t pid = fork();
     if (pid < 0) {
-        throwIo(env, "fork");
-        close(master);
-        release();
+        throwIOException(env, "fork", errno);
         return -1;
     }
     if (pid == 0) {
-        // Child: only async-signal-safe calls from here on where possible.
-        sigset_t all;
-        sigfillset(&all);
-        sigprocmask(SIG_UNBLOCK, &all, nullptr);
-        for (int sig = 1; sig < NSIG; sig++) signal(sig, SIG_DFL);
-        close(master);
-        setsid();
-        int slave = open(slaveName, O_RDWR);
-        if (slave < 0) _exit(126);
-        ioctl(slave, TIOCSCTTY, 0);
-        dup2(slave, 0);
-        dup2(slave, 1);
-        dup2(slave, 2);
-        if (slave > 2) close(slave);
-        closeInheritedFds();
-        if (chdir(cwd) != 0) chdir("/");
-        execve(path, argv, envp);
-        const char *msg = "failed to start shell\r\n";
-        write(2, msg, strlen(msg));
-        _exit(127);
+        runChild(
+            slavePath,
+            workingDirectory.c_str(),
+            path.c_str(),
+            arguments.data(),
+            environment.data());
     }
 
-    release();
-    jint pidValue = pid;
-    env->SetIntArrayRegion(jpid, 0, 1, &pidValue);
-    return master;
+    const jint child = pid;
+    env->SetIntArrayRegion(jpid, 0, 1, &child);
+    return master.release();
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_opencode_android_terminal_Pty_nativeResize(
-    JNIEnv *, jclass, jint fd, jint rows, jint cols, jint widthPx, jint heightPx) {
-    struct winsize size{};
-    size.ws_row = (unsigned short) rows;
-    size.ws_col = (unsigned short) cols;
-    size.ws_xpixel = (unsigned short) widthPx;
-    size.ws_ypixel = (unsigned short) heightPx;
+    JNIEnv *, jclass, jint fd, jint rows, jint cols, jint widthPixels, jint heightPixels) {
+    struct winsize size {};
+    size.ws_row = static_cast<unsigned short>(rows);
+    size.ws_col = static_cast<unsigned short>(cols);
+    size.ws_xpixel = static_cast<unsigned short>(widthPixels);
+    size.ws_ypixel = static_cast<unsigned short>(heightPixels);
     ioctl(fd, TIOCSWINSZ, &size);
 }
 
-// Blocks until the child exits. Returns the exit code, or 128 + signal.
 extern "C" JNIEXPORT jint JNICALL
 Java_com_opencode_android_terminal_Pty_nativeWaitFor(JNIEnv *, jclass, jint pid) {
     int status = 0;
@@ -170,7 +235,6 @@ Java_com_opencode_android_terminal_Pty_nativeWaitFor(JNIEnv *, jclass, jint pid)
     return -1;
 }
 
-// Process group of the terminal's foreground job, or -1.
 extern "C" JNIEXPORT jint JNICALL
 Java_com_opencode_android_terminal_Pty_nativeForegroundGroup(JNIEnv *, jclass, jint fd) {
     return tcgetpgrp(fd);

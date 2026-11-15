@@ -1,112 +1,131 @@
-// Adapted from AndroidHarness (https://github.com/Sanuu7/AndroidHarness), Copyright (c) 2026 Sanuu7,
-// MIT License. See ANDROIDHARNESS_LICENSE.txt in app/src/main/cpp.
-
 package com.opencode.android.terminal
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class KeyEncoderTest {
-    private val esc = "\u001b"
+    private val escape = "\u001b"
 
-    private fun key(k: TermKey, mods: KeyModifiers = KeyModifiers.NONE, app: Boolean = false) = KeyEncoder.keyText(k, mods, app)
-    private fun char(c: Char, mods: KeyModifiers = KeyModifiers.NONE) = String(KeyEncoder.char(c.code, mods), Charsets.UTF_8)
+    private fun key(
+        value: TermKey,
+        modifiers: KeyModifiers = KeyModifiers.NONE,
+        applicationCursor: Boolean = false,
+    ): String = KeyEncoder.keyText(value, modifiers, applicationCursor)
 
-    @Test fun arrowsFollowCursorKeyMode() {
-        assertEquals("$esc[A", key(TermKey.UP))
-        assertEquals("$esc[B", key(TermKey.DOWN))
-        assertEquals("$esc[C", key(TermKey.RIGHT))
-        assertEquals("$esc[D", key(TermKey.LEFT))
-        assertEquals("${esc}OA", key(TermKey.UP, app = true))
-        assertEquals("${esc}OD", key(TermKey.LEFT, app = true))
+    private fun character(value: Int, modifiers: KeyModifiers = KeyModifiers.NONE): String =
+        String(KeyEncoder.char(value, modifiers), Charsets.UTF_8)
+
+    @Test
+    fun cursorKeysUseCsiOrSs3AccordingToDecCkm() {
+        assertEquals("$escape[A", key(TermKey.UP))
+        assertEquals("$escape[B", key(TermKey.DOWN))
+        assertEquals("$escape[C", key(TermKey.RIGHT))
+        assertEquals("$escape[D", key(TermKey.LEFT))
+        assertEquals("${escape}OA", key(TermKey.UP, applicationCursor = true))
+        assertEquals("${escape}OD", key(TermKey.LEFT, applicationCursor = true))
     }
 
-    @Test fun modifiedArrowsUseTheXtermParameter() {
-        assertEquals("$esc[1;5A", key(TermKey.UP, KeyModifiers(ctrl = true)))
-        assertEquals("$esc[1;3C", key(TermKey.RIGHT, KeyModifiers(alt = true)))
-        assertEquals("$esc[1;2D", key(TermKey.LEFT, KeyModifiers(shift = true)))
-        assertEquals("$esc[1;8B", key(TermKey.DOWN, KeyModifiers(ctrl = true, alt = true, shift = true)))
-        // Modifiers win over application cursor mode, like xterm.
-        assertEquals("$esc[1;5A", key(TermKey.UP, KeyModifiers(ctrl = true), app = true))
+    @Test
+    fun modifiedCursorKeysAlwaysUseTheCsiParameterForm() {
+        assertEquals("$escape[1;5A", key(TermKey.UP, KeyModifiers(ctrl = true)))
+        assertEquals("$escape[1;3C", key(TermKey.RIGHT, KeyModifiers(alt = true)))
+        assertEquals("$escape[1;2D", key(TermKey.LEFT, KeyModifiers(shift = true)))
+        assertEquals(
+            "$escape[1;8B",
+            key(TermKey.DOWN, KeyModifiers(ctrl = true, alt = true, shift = true)),
+        )
+        // Like xterm, a modifier wins over application cursor mode.
+        assertEquals("$escape[1;5A", key(TermKey.UP, KeyModifiers(ctrl = true), true))
     }
 
-    @Test fun homeEndAndEditingKeys() {
-        assertEquals("$esc[H", key(TermKey.HOME))
-        assertEquals("$esc[F", key(TermKey.END))
-        assertEquals("${esc}OH", key(TermKey.HOME, app = true))
-        assertEquals("$esc[2~", key(TermKey.INSERT))
-        assertEquals("$esc[3~", key(TermKey.DELETE))
-        assertEquals("$esc[5~", key(TermKey.PAGE_UP))
-        assertEquals("$esc[6~", key(TermKey.PAGE_DOWN))
-        assertEquals("$esc[3;5~", key(TermKey.DELETE, KeyModifiers(ctrl = true)))
-        assertEquals("$esc[5;2~", key(TermKey.PAGE_UP, KeyModifiers(shift = true)))
+    @Test
+    fun homeEndEditingAndPagingKeys() {
+        assertEquals("$escape[H", key(TermKey.HOME))
+        assertEquals("$escape[F", key(TermKey.END))
+        assertEquals("${escape}OH", key(TermKey.HOME, applicationCursor = true))
+        assertEquals("$escape[2~", key(TermKey.INSERT))
+        assertEquals("$escape[3~", key(TermKey.DELETE))
+        assertEquals("$escape[5~", key(TermKey.PAGE_UP))
+        assertEquals("$escape[6~", key(TermKey.PAGE_DOWN))
+        assertEquals("$escape[3;5~", key(TermKey.DELETE, KeyModifiers(ctrl = true)))
+        assertEquals("$escape[5;2~", key(TermKey.PAGE_UP, KeyModifiers(shift = true)))
     }
 
-    @Test fun functionKeys() {
-        assertEquals("${esc}OP", key(TermKey.F1))
-        assertEquals("${esc}OS", key(TermKey.F4))
-        assertEquals("$esc[15~", key(TermKey.F5))
-        assertEquals("$esc[17~", key(TermKey.F6))
-        assertEquals("$esc[21~", key(TermKey.F10))
-        assertEquals("$esc[24~", key(TermKey.F12))
-        assertEquals("$esc[1;5P", key(TermKey.F1, KeyModifiers(ctrl = true)))
-        assertEquals("$esc[15;2~", key(TermKey.F5, KeyModifiers(shift = true)))
+    @Test
+    fun functionKeysUseTheDocumentedXtermSequences() {
+        assertEquals("${escape}OP", key(TermKey.F1))
+        assertEquals("${escape}OS", key(TermKey.F4))
+        assertEquals("$escape[15~", key(TermKey.F5))
+        assertEquals("$escape[17~", key(TermKey.F6))
+        assertEquals("$escape[21~", key(TermKey.F10))
+        assertEquals("$escape[24~", key(TermKey.F12))
+        assertEquals("$escape[1;5P", key(TermKey.F1, KeyModifiers(ctrl = true)))
+        assertEquals("$escape[15;2~", key(TermKey.F5, KeyModifiers(shift = true)))
     }
 
-    @Test fun enterTabEscapeBackspace() {
+    @Test
+    fun enterTabEscapeAndBackspace() {
         assertEquals("\r", key(TermKey.ENTER))
-        assertEquals("$esc\r", key(TermKey.ENTER, KeyModifiers(alt = true)))
+        assertEquals("$escape\r", key(TermKey.ENTER, KeyModifiers(alt = true)))
         assertEquals("\t", key(TermKey.TAB))
-        assertEquals("$esc[Z", key(TermKey.TAB, KeyModifiers(shift = true)))
-        assertEquals(esc, key(TermKey.ESCAPE))
+        assertEquals("$escape[Z", key(TermKey.TAB, KeyModifiers(shift = true)))
+        assertEquals(escape, key(TermKey.ESCAPE))
         assertEquals("\u007f", key(TermKey.BACKSPACE))
         assertEquals("\b", key(TermKey.BACKSPACE, KeyModifiers(ctrl = true)))
-        assertEquals("$esc\u007f", key(TermKey.BACKSPACE, KeyModifiers(alt = true)))
+        assertEquals("$escape\u007f", key(TermKey.BACKSPACE, KeyModifiers(alt = true)))
     }
 
-    @Test fun ctrlLettersBecomeControlCodes() {
-        assertEquals("\u0003", char('c', KeyModifiers(ctrl = true)))
-        assertEquals("\u0003", char('C', KeyModifiers(ctrl = true)))
-        assertEquals("\u0001", char('a', KeyModifiers(ctrl = true)))
-        assertEquals("\u001a", char('z', KeyModifiers(ctrl = true)))
-        assertEquals("\u0004", char('d', KeyModifiers(ctrl = true)))
+    @Test
+    fun controlFoldLettersAndSymbols() {
+        assertEquals("\u0003", character('c'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u0003", character('C'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u0001", character('a'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u001a", character('z'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u0004", character('d'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u0000", character(' '.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u0000", character('@'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u001b", character('['.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u001c", character('\\'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u001d", character(']'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u001f", character('_'.code, KeyModifiers(ctrl = true)))
+        assertEquals("\u007f", character('?'.code, KeyModifiers(ctrl = true)))
+        // Ctrl has no meaning for these characters, so they pass through.
+        assertEquals("1", character('1'.code, KeyModifiers(ctrl = true)))
     }
 
-    @Test fun ctrlSymbols() {
-        assertEquals("\u0000", char(' ', KeyModifiers(ctrl = true)))
-        assertEquals("\u0000", char('@', KeyModifiers(ctrl = true)))
-        assertEquals("\u001b", char('[', KeyModifiers(ctrl = true)))
-        assertEquals("\u001c", char('\\', KeyModifiers(ctrl = true)))
-        assertEquals("\u001d", char(']', KeyModifiers(ctrl = true)))
-        assertEquals("\u001f", char('_', KeyModifiers(ctrl = true)))
-        assertEquals("\u007f", char('?', KeyModifiers(ctrl = true)))
-        // Characters Ctrl does not change pass through.
-        assertEquals("1", char('1', KeyModifiers(ctrl = true)))
+    @Test
+    fun altAddsAnEscapePrefix() {
+        assertEquals("${escape}x", character('x'.code, KeyModifiers(alt = true)))
+        assertEquals("$escape\u0018", character('x'.code, KeyModifiers(ctrl = true, alt = true)))
     }
 
-    @Test fun altPrefixesEscape() {
-        assertEquals("${esc}x", char('x', KeyModifiers(alt = true)))
-        assertEquals("$esc\u0018", char('x', KeyModifiers(ctrl = true, alt = true)))
-    }
-
-    @Test fun nonAsciiCharactersAreUtf8() {
-        assertEquals("é", char('é'))
-        assertEquals("é", char('é', KeyModifiers(ctrl = true)))
+    @Test
+    fun nonAsciiInputIsEncodedAsUtf8() {
+        assertEquals("é", character('é'.code))
+        assertEquals("é", character('é'.code, KeyModifiers(ctrl = true)))
         assertEquals("😀", String(KeyEncoder.char(0x1F600), Charsets.UTF_8))
     }
 
-    @Test fun pasteUsesCarriageReturnsAndBrackets() {
+    @Test
+    fun pasteUsesCarriageReturnsAndBracketedMarkers() {
         assertEquals("a\rb\rc", String(KeyEncoder.paste("a\nb\r\nc", bracketed = false)))
-        assertEquals("$esc[200~ls\r$esc[201~", String(KeyEncoder.paste("ls\n", bracketed = true)))
-        // An embedded end marker cannot close the paste early.
-        assertEquals("$esc[200~xy$esc[201~", String(KeyEncoder.paste("x$esc[201~y", bracketed = true)))
+        assertEquals(
+            "$escape[200~ls\r$escape[201~",
+            String(KeyEncoder.paste("ls\n", bracketed = true)),
+        )
+        assertEquals(
+            "$escape[200~xy$escape[201~",
+            String(KeyEncoder.paste("x$escape[201~y", bracketed = true)),
+        )
     }
 
-    @Test fun modifierParameter() {
+    @Test
+    fun modifierParameterMatchesXterm() {
         assertEquals(1, KeyModifiers.NONE.xtermParam)
         assertEquals(2, KeyModifiers(shift = true).xtermParam)
         assertEquals(3, KeyModifiers(alt = true).xtermParam)
         assertEquals(5, KeyModifiers(ctrl = true).xtermParam)
         assertEquals(7, KeyModifiers(ctrl = true, alt = true).xtermParam)
+        assertEquals(8, KeyModifiers(ctrl = true, alt = true, shift = true).xtermParam)
     }
 }

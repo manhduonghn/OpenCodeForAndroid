@@ -1,62 +1,99 @@
-// Adapted from AndroidHarness (https://github.com/Sanuu7/AndroidHarness), Copyright (c) 2026 Sanuu7,
-// MIT License. See ANDROIDHARNESS_LICENSE.txt in app/src/main/cpp.
-
 package com.opencode.android.terminal
 
+/** A key that has a fixed xterm escape sequence. */
 enum class TermKey {
     UP, DOWN, LEFT, RIGHT, HOME, END, PAGE_UP, PAGE_DOWN, INSERT, DELETE,
     ENTER, TAB, ESCAPE, BACKSPACE,
     F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
 }
 
-data class KeyModifiers(val ctrl: Boolean = false, val alt: Boolean = false, val shift: Boolean = false) {
+/** The modifiers held while a key is pressed. */
+data class KeyModifiers(
+    val ctrl: Boolean = false,
+    val alt: Boolean = false,
+    val shift: Boolean = false,
+) {
     val any: Boolean get() = ctrl || alt || shift
 
-    /** xterm modifier parameter: 1 + Shift(1) + Alt(2) + Ctrl(4). */
-    val xtermParam: Int get() = 1 + (if (shift) 1 else 0) + (if (alt) 2 else 0) + (if (ctrl) 4 else 0)
+    /** xterm's modifier parameter: 1 + Shift(1) + Alt(2) + Ctrl(4). */
+    val xtermParam: Int get() =
+        1 + (if (shift) 1 else 0) + (if (alt) 2 else 0) + (if (ctrl) 4 else 0)
 
-    companion object { val NONE = KeyModifiers() }
+    companion object {
+        val NONE = KeyModifiers()
+    }
 }
 
-/** Turns key presses into the bytes an xterm sends, following the current terminal modes. */
+/**
+ * Translates key presses into the bytes an xterm sends.
+ *
+ * The sequences are the documented xterm defaults. Arrow and Home/End keys
+ * have two forms: the normal CSI form and the SS3 form a program selects with
+ * DECCKM (application cursor keys). A modifier always uses the CSI form with
+ * the modifier parameter, never SS3.
+ */
 object KeyEncoder {
     private const val ESC = "\u001b"
 
-    fun key(key: TermKey, mods: KeyModifiers = KeyModifiers.NONE, applicationCursor: Boolean = false): ByteArray =
-        keyText(key, mods, applicationCursor).toByteArray(Charsets.UTF_8)
+    /** Final byte of the cursor/home/end keys, in CSI and SS3 forms. */
+    private val cursorFinal = mapOf(
+        TermKey.UP to 'A',
+        TermKey.DOWN to 'B',
+        TermKey.RIGHT to 'C',
+        TermKey.LEFT to 'D',
+        TermKey.HOME to 'H',
+        TermKey.END to 'F',
+    )
 
-    fun keyText(key: TermKey, mods: KeyModifiers = KeyModifiers.NONE, applicationCursor: Boolean = false): String {
-        val m = mods.xtermParam
-        fun cursor(final: Char): String = when {
-            mods.any -> "$ESC[1;$m$final"
-            applicationCursor -> "${ESC}O$final"
-            else -> "$ESC[$final"
+    /** Numeric parameter of the keys that use the `CSI n ~` form. */
+    private val tildeCode = mapOf(
+        TermKey.INSERT to 2,
+        TermKey.DELETE to 3,
+        TermKey.PAGE_UP to 5,
+        TermKey.PAGE_DOWN to 6,
+        TermKey.F5 to 15,
+        TermKey.F6 to 17,
+        TermKey.F7 to 18,
+        TermKey.F8 to 19,
+        TermKey.F9 to 20,
+        TermKey.F10 to 21,
+        TermKey.F11 to 23,
+        TermKey.F12 to 24,
+    )
+
+    /** Final byte of F1-F4, which use SS3 rather than a numeric parameter. */
+    private val functionFinal = mapOf(
+        TermKey.F1 to 'P',
+        TermKey.F2 to 'Q',
+        TermKey.F3 to 'R',
+        TermKey.F4 to 'S',
+    )
+
+    fun key(
+        key: TermKey,
+        mods: KeyModifiers = KeyModifiers.NONE,
+        applicationCursor: Boolean = false,
+    ): ByteArray = keyText(key, mods, applicationCursor).toByteArray(Charsets.UTF_8)
+
+    fun keyText(
+        key: TermKey,
+        mods: KeyModifiers = KeyModifiers.NONE,
+        applicationCursor: Boolean = false,
+    ): String {
+        cursorFinal[key]?.let { final ->
+            return when {
+                mods.any -> "$ESC[1;${mods.xtermParam}$final"
+                applicationCursor -> "${ESC}O$final"
+                else -> "$ESC[$final"
+            }
         }
-        fun tilde(code: Int): String = if (mods.any) "$ESC[$code;$m~" else "$ESC[$code~"
-        fun ss3(final: Char): String = if (mods.any) "$ESC[1;$m$final" else "${ESC}O$final"
+        tildeCode[key]?.let { code ->
+            return if (mods.any) "$ESC[$code;${mods.xtermParam}~" else "$ESC[$code~"
+        }
+        functionFinal[key]?.let { final ->
+            return if (mods.any) "$ESC[1;${mods.xtermParam}$final" else "${ESC}O$final"
+        }
         return when (key) {
-            TermKey.UP -> cursor('A')
-            TermKey.DOWN -> cursor('B')
-            TermKey.RIGHT -> cursor('C')
-            TermKey.LEFT -> cursor('D')
-            TermKey.HOME -> cursor('H')
-            TermKey.END -> cursor('F')
-            TermKey.INSERT -> tilde(2)
-            TermKey.DELETE -> tilde(3)
-            TermKey.PAGE_UP -> tilde(5)
-            TermKey.PAGE_DOWN -> tilde(6)
-            TermKey.F1 -> ss3('P')
-            TermKey.F2 -> ss3('Q')
-            TermKey.F3 -> ss3('R')
-            TermKey.F4 -> ss3('S')
-            TermKey.F5 -> tilde(15)
-            TermKey.F6 -> tilde(17)
-            TermKey.F7 -> tilde(18)
-            TermKey.F8 -> tilde(19)
-            TermKey.F9 -> tilde(20)
-            TermKey.F10 -> tilde(21)
-            TermKey.F11 -> tilde(23)
-            TermKey.F12 -> tilde(24)
             TermKey.ENTER -> if (mods.alt) "$ESC\r" else "\r"
             TermKey.TAB -> when {
                 mods.shift -> "$ESC[Z"
@@ -70,35 +107,50 @@ object KeyEncoder {
                 mods.alt -> "$ESC\u007f"
                 else -> "\u007f"
             }
+            else -> ""
         }
     }
 
-    /** A typed character, with Ctrl folding it to a control code and Alt adding an Escape prefix. */
+    /**
+     * A typed character. Ctrl folds the character to the matching C0 control
+     * code when one exists; Alt adds an Escape prefix. Other modifiers leave
+     * the character unchanged, as a terminal has no encoding for them.
+     */
     fun char(codePoint: Int, mods: KeyModifiers = KeyModifiers.NONE): ByteArray {
-        var cp = codePoint
-        if (mods.ctrl) cp = controlCode(cp) ?: cp
-        val text = String(Character.toChars(cp))
+        val folded = if (mods.ctrl) controlCode(codePoint) ?: codePoint else codePoint
+        val text = String(Character.toChars(folded))
         return (if (mods.alt) ESC + text else text).toByteArray(Charsets.UTF_8)
     }
 
-    /** The C0 code Ctrl+[codePoint] produces, or null when Ctrl does not change it. */
-    fun controlCode(codePoint: Int): Int? = when (val c = codePoint.toChar()) {
-        in 'a'..'z' -> c - 'a' + 1
-        in 'A'..'Z' -> c - 'A' + 1
-        ' ', '@', '2' -> 0
-        '[', '3' -> 27
-        '\\', '4' -> 28
-        ']', '5' -> 29
-        '^', '6', '~' -> 30
-        '_', '-', '7', '/' -> 31
-        '?', '8' -> 127
-        else -> null
-    }.takeIf { codePoint < 0x80 }
+    /** The C0 code Ctrl+[codePoint] sends, or null when Ctrl has no effect. */
+    fun controlCode(codePoint: Int): Int? {
+        if (codePoint !in 0x00..0x7F) return null
+        val c = codePoint.toChar()
+        return when {
+            c in 'a'..'z' -> c - 'a' + 1
+            c in 'A'..'Z' -> c - 'A' + 1
+            c in charArrayOf(' ', '@', '2') -> 0
+            c in charArrayOf('[', '3') -> 27
+            c in charArrayOf('\\', '4') -> 28
+            c in charArrayOf(']', '5') -> 29
+            c in charArrayOf('^', '6', '~') -> 30
+            c in charArrayOf('_', '-', '7', '/') -> 31
+            c in charArrayOf('?', '8') -> 127
+            else -> null
+        }
+    }
 
-    /** Wraps pasted text in bracketed-paste markers when the program asked for them, and uses CR for newlines. */
+    /**
+     * Clipboard text as terminal input. Newlines become carriage returns,
+     * which is what the line discipline expects from the Enter key. With
+     * bracketed paste enabled the text is wrapped in the begin/end markers,
+     * and an end marker inside the text is removed so it cannot close the
+     * paste early.
+     */
     fun paste(text: String, bracketed: Boolean): ByteArray {
         val body = text.replace("\r\n", "\r").replace('\n', '\r')
-        val safe = if (bracketed) body.replace("$ESC[201~", "") else body
-        return (if (bracketed) "$ESC[200~$safe$ESC[201~" else safe).toByteArray(Charsets.UTF_8)
+        if (!bracketed) return body.toByteArray(Charsets.UTF_8)
+        val safe = body.replace("$ESC[201~", "")
+        return "$ESC[200~$safe$ESC[201~".toByteArray(Charsets.UTF_8)
     }
 }

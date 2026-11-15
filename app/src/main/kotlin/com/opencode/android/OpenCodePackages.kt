@@ -36,7 +36,7 @@ import java.util.Locale
  * are rewritten while extracting, so the package does not need the Termux app and does not need
  * the com.termux package name.
  *
- * The extraction rules follow the AndroidHarness project:
+ * Extraction rules:
  *
  *  - absolute symlinks into `/data/data/com.termux/files/usr` become relative links, so the tree
  *    stays relocatable and never points at another app;

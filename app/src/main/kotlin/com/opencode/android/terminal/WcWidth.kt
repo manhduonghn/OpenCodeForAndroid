@@ -1,16 +1,16 @@
-// Adapted from AndroidHarness (https://github.com/Sanuu7/AndroidHarness), Copyright (c) 2026 Sanuu7,
-// MIT License. See ANDROIDHARNESS_LICENSE.txt in app/src/main/cpp.
-
 package com.opencode.android.terminal
 
 /**
- * Display width of a code point in terminal cells: 0 for combining marks and
- * other zero-width characters, 2 for East Asian wide characters and most
- * emoji, 1 otherwise. Close enough to the wcwidth tables that full-screen
- * programs and the terminal agree on column positions.
+ * Number of terminal columns a code point occupies.
+ *
+ * The rules come from the Unicode East Asian Width property and the wcwidth
+ * convention: combining marks and other zero-width code points need no cell,
+ * East Asian wide characters and most emoji need two, everything else one.
+ * The tables are sorted and searched with a binary search.
  */
 object WcWidth {
-    private val zeroWidth = intArrayOf(
+    /** Code points that combine with the previous character and take no cell. */
+    private val combining = intArrayOf(
         0x0300, 0x036F, 0x0483, 0x0489, 0x0591, 0x05BD, 0x05BF, 0x05BF, 0x05C1, 0x05C2,
         0x05C4, 0x05C5, 0x05C7, 0x05C7, 0x0610, 0x061A, 0x064B, 0x065F, 0x0670, 0x0670,
         0x06D6, 0x06DC, 0x06DF, 0x06E4, 0x06E7, 0x06E8, 0x06EA, 0x06ED, 0x0711, 0x0711,
@@ -31,7 +31,8 @@ object WcWidth {
         0xE0100, 0xE01EF,
     )
 
-    private val wide = intArrayOf(
+    /** Code points drawn in two cells. */
+    private val doubleWidth = intArrayOf(
         0x1100, 0x115F, 0x231A, 0x231B, 0x2329, 0x232A, 0x23E9, 0x23EC, 0x23F0, 0x23F0,
         0x23F3, 0x23F3, 0x25FD, 0x25FE, 0x2614, 0x2615, 0x2648, 0x2653, 0x267F, 0x267F,
         0x2693, 0x2693, 0x26A1, 0x26A1, 0x26AA, 0x26AB, 0x26BD, 0x26BE, 0x26C4, 0x26C5,
@@ -52,25 +53,30 @@ object WcWidth {
         0x1FA70, 0x1FAFF, 0x20000, 0x2FFFD, 0x30000, 0x3FFFD,
     )
 
-    private fun inTable(table: IntArray, cp: Int): Boolean {
-        if (cp < table[0] || cp > table[table.size - 1]) return false
-        var lo = 0
-        var hi = table.size / 2 - 1
-        while (lo <= hi) {
-            val mid = (lo + hi) ushr 1
+    /**
+     * Display width of [codePoint]: 0 for a combining mark, 2 for a wide
+     * character, 1 otherwise.
+     */
+    fun of(codePoint: Int): Int {
+        if (codePoint < 0x300) return 1
+        if (inRanges(combining, codePoint)) return 0
+        if (inRanges(doubleWidth, codePoint)) return 2
+        return 1
+    }
+
+    /** True when [codePoint] is in one of the `[start, end]` pairs of [table]. */
+    private fun inRanges(table: IntArray, codePoint: Int): Boolean {
+        if (codePoint < table[0] || codePoint > table[table.lastIndex]) return false
+        var low = 0
+        var high = table.size / 2 - 1
+        while (low <= high) {
+            val middle = (low + high) ushr 1
             when {
-                cp < table[mid * 2] -> hi = mid - 1
-                cp > table[mid * 2 + 1] -> lo = mid + 1
+                codePoint < table[middle * 2] -> high = middle - 1
+                codePoint > table[middle * 2 + 1] -> low = middle + 1
                 else -> return true
             }
         }
         return false
-    }
-
-    fun of(cp: Int): Int {
-        if (cp < 0x300) return 1
-        if (inTable(zeroWidth, cp)) return 0
-        if (inTable(wide, cp)) return 2
-        return 1
     }
 }
