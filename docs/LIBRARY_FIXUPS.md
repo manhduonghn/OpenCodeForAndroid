@@ -450,7 +450,7 @@ cả hai; `gem install colorize` cài vào prefix và `require "colorize"` chạ
 
 Thư viện chỉ có thể dịch path tại các **entry point của libc mà chương trình gọi**; nó
 không nhìn thấy syscall do chương trình tự phát, path nằm trong `argv`/biến môi trường, hay
-path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (101 symbol export,
+path đã được kernel trả về qua một fd. Bảng dưới đây là hợp đồng hiện tại (110 symbol export,
 trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 
 | Nhóm | Hàm đã hook |
@@ -465,6 +465,7 @@ trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 | Duyệt thư mục | `scandir`, `scandir64`, `scandirat`, `scandirat64`, `glob`, `glob64`, `ftw`, `ftw64`, `nftw`, `nftw64` |
 | Nạp thư viện | `dlopen`, `dlmopen` |
 | exec / spawn | `execve`, `execv`, `execvp`, `execvpe`, `execveat`, `fexecve`, `execl`, `execlp`, `execle`, `posix_spawn`, `posix_spawnp`, `posix_spawn_file_actions_addopen`, `posix_spawn_file_actions_addchdir_np` |
+| Unix socket | `bind`, `connect`, `sendto`, `sendmsg`, `getsockname`, `getpeername`, `accept`, `accept4`, `close` (chỉ để dọn tên hash) |
 
 Các hàm trả path (`realpath`, `canonicalize_file_name`, `getcwd`, `glob`, `readlink`) được
 **unmap tại chỗ** về spelling Termux trước khi trả cho caller; các hàm nhận path thì map
@@ -483,11 +484,11 @@ Hàm **cố ý bỏ qua**:
 | Go tĩnh x86_64 | `oc-gosys` mới hỗ trợ AArch64; Go x86_64 vẫn chạy nhưng path Termux không được dịch |
 | `system`, `popen`, `wordexp` | nhận chuỗi lệnh, không phải path; `/bin/sh` cố ý **không** được map nên chúng vẫn chạy shell bionic của Android. Lệnh con chỉ được route nếu đi qua `oc-run`/wrapper của prefix; bản thân `system()`/`popen()` gọi exec nội bộ của libc, không đi qua wrapper nên môi trường của tiến trình cha vẫn có thể đi theo |
 | callback của `ftw`/`ftw64`/`nftw`/`nftw64` | thư viện không thể thay con trỏ hàm của caller, nên callback vẫn thấy path vật lý của prefix; chỉ path gốc được map |
-| `sockaddr_un` trong `connect`/`bind`/`sendto` | path nằm trong `struct sockaddr`, không phải tham số path của libc; muốn hỗ trợ phải hook riêng từng họ socket |
+| `dup`, `dup2`, `dup3`, `close_range`, `exec` | bảng record Unix socket không theo dõi các thao tác này; fd trùng số sau đó có thể mất cách viết gốc hoặc tên hash không được dọn |
 | `updwtmp`, `setutent`/`pututline` | đường dẫn utmp/wtmp cố định hoặc rất hiếm dùng trong app Android; có thể thêm nếu có nhu cầu thật |
 | path trong `argv`, biến môi trường, nội dung file cấu hình | không phải tham số của hàm libc và không có ý nghĩa chung; chỉ chương trình đích mới biết cách hiểu. Path của chính chương trình và `/proc/self/exe` thì đã được xử lý |
 
-Ba cơ chế mới bổ sung cho bảng trên:
+Bốn cơ chế mới bổ sung cho bảng trên:
 
 - **FHS**: sau hai root Termux, `map_path` dịch `/usr` → `$PREFIX`, `/etc` → `$PREFIX/etc`,
   `/tmp` → `$PREFIX/tmp`, `/var` → `$PREFIX/var`, `/root` → `$HOME`,
@@ -504,6 +505,13 @@ Ba cơ chế mới bổ sung cho bảng trên:
   lệnh `/proc/self/cmdline`; `execve("/proc/self/exe")` cũng đổi sang chương trình thật để
   route/preload áp dụng lại thay vì chạy lại loader trần. `inotify_add_watch` tạo trước cây
   thư mục còn thiếu bằng `mkdir -p` (mode 0700) để watcher không im lặng.
+- **Unix socket**: `bind`/`connect`/`sendto`/`sendmsg` map path tuyệt đối trong `sockaddr_un`
+  sang bản copy (không sửa `sockaddr` của caller); abstract và path tương đối giữ nguyên. Nếu
+  path sau map ≥ 108 byte, tên được thay bằng FNV-1a 64:
+  `$PREFIX/tmp/.oc_sock_%016llx` (`bind` tự tạo `$PREFIX/tmp`). `getsockname`/`getpeername`
+  trả lại cách viết gốc; `accept`/`accept4` copy record local của listener sang fd mới;
+  `close` dọn tên hash khi pid hiện tại sở hữu listener và dev/ino vẫn khớp;
+  `unlink`/`unlinkat`/`remove` cũng xoá tên hash.
 
 Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Android: `openat2` và
 `faccessat2` bị seccomp trap, SIGSYS handler trả `ENOSYS` để libc fallback sang
@@ -513,9 +521,11 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
 
 - chỉ vá Go tĩnh **AArch64**; Go x86_64 có mẫu lệnh khác và chưa hỗ trợ (vẫn chạy, nhưng path
   Termux không được dịch);
-- không dịch path trong `sockaddr_un` của `connect`/`bind`, hay path nằm trong
-  `argv`/biến môi trường của chương trình đích (path của chính chương trình và
-  `/proc/self/exe` thì có); các chương trình cần Unix socket hoặc path trong argv vẫn phải
+- Unix socket chỉ dịch path tuyệt đối trong `bind`/`connect`/`sendto`/`sendmsg`; bảng record
+  không theo dõi `dup`/`dup2`/`close_range`/`exec`, nên fd trùng số có thể mất cách viết gốc
+  hoặc tên hash không được dọn; path đúng 108 byte không có NUL được giữ nguyên;
+- không dịch path nằm trong `argv`/biến môi trường của chương trình đích (path của chính
+  chương trình và `/proc/self/exe` thì có); các chương trình cần path trong argv vẫn phải
   được relocation như gói cài qua `pkg`;
 - FHS chỉ là phép thay tiền tố: nó không tạo file, không đổi quyền và không làm cho một path
   tuyệt đối của Android (`/system`, `/data`, `/apex`, `/proc`, `/sys`…) trở nên ghi được;

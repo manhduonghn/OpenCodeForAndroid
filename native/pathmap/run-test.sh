@@ -44,9 +44,18 @@ CC="$cc" "$here/build.sh" "$arch" "$lib"
 "$cc" -std=gnu11 -O2 -Wall -Wextra -Werror -o "$testbin" "$here/pathmap_test.c" -ldl
 
 # /tmp is mapped into the prefix by the library, so the test tree must live
-# somewhere else. A directory below build/ is stable between runs and is removed
-# first, which also makes the inotify test reproducible.
-root=$build/test-root-$arch
+# somewhere else. It also has to stay short: a Unix socket name is limited to
+# 108 bytes, and the hashed name adds $PREFIX/tmp/.oc_sock_ plus 16 hex digits.
+# $HOME is not one of the mapped roots, and the prefix below it is still longer
+# than the Termux prefix, which keeps the unmap-shrinks-the-path property.
+if [ -n "${OC_TEST_BASE:-}" ]; then
+  root=$OC_TEST_BASE
+else
+  case "${HOME:-}" in
+    /root|/root/*) root=/home/oc-pathmap-test-$arch ;;
+    *) root=${HOME:-/home}/.oc-pathmap-test-$arch ;;
+  esac
+fi
 rm -rf "$root"
 mkdir -p "$root"
 trap 'rm -rf "$root"' EXIT

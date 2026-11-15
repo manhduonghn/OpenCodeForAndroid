@@ -59,7 +59,7 @@ kiểu FHS vẫn trượt. Đó chính là khoảng trống mà hook của Corte
 | `fileops.c` | 723 | `readlink`, `stat`, `access`, `inotify_add_watch`, `rename`, `mkdir` | **P0** (`inotify`) |
 | `hardlinks.c` | 628 | bảng hardlink chia sẻ + copy thay thế | không (xem 7) |
 | `sysv_shm.c` | 548 | SysV shared memory giả | không |
-| `sockets.c` | 494 | `sockaddr_un` dịch + hash 108 byte, port thấp `+8000` | **P1** |
+| `sockets.c` | 494 | `sockaddr_un` dịch + hash 108 byte, port thấp `+8000` | **P1** (hash xong) |
 | `go_programs.c` | 465 | vá Go tĩnh, blob `gosys` | đã có |
 | `paths.c` | 368 | `rewrite_path`, loại trừ mount Android, `/dev/shm` | **P0** |
 | `static_programs.c` | 345 | vá call site `svc #0` cho C tĩnh | P2 |
@@ -74,7 +74,7 @@ kiểu FHS vẫn trượt. Đó chính là khoảng trống mà hook của Corte
 
 Đã có, không cần làm lại:
 
-- Dịch 2 tiền tố Termux ở **101 entry point** (`native/pathmap/pathmap.c`): file, `stat`,
+- Dịch 2 tiền tố Termux ở **110 entry point** (`native/pathmap/pathmap.c`): file, `stat`,
   `readdir`, `glob`, `ftw`, `xattr`, `exec*`, `posix_spawn`, `dlopen`, `chdir`, `realpath`,
   `getcwd` (unmap), `readlink` (unmap).
 - SIGSYS policy trong constructor: `set*id` → 0, `clone3`/`rseq` → `ENOSYS`, `getgroups` → 1.
@@ -107,9 +107,9 @@ Nghĩa là app này **mạnh hơn Cortex** ở phần "chương trình đã cài
 G10 và G5 khác bản chất: G5 sửa được bằng exec routing, G10 cần thêm shim bionic hoặc wrapper
 `system()`.
 
-> **Trạng thái (2026-11):** bốn mục P0 **A–D** đã được triển khai trong
-> `native/pathmap/pathmap.c` và có test host trong `native/pathmap/pathmap_test.c` +
-> `run-test.sh` (fixture `route_child.c`). Các mục **E–H** vẫn để ngỏ. Phần thiết kế bên dưới
+> **Trạng thái (2026-11):** bốn mục P0 **A–D** và P1 **E** (Unix socket) đã được triển khai
+> trong `native/pathmap/pathmap.c` và có test host trong `native/pathmap/pathmap_test.c` +
+> `run-test.sh` (fixture `route_child.c`). Các mục **F–H** vẫn để ngỏ. Phần thiết kế bên dưới
 > giữ nguyên để tham chiếu; số dòng trong mã nguồn chỉ là tương đối.
 
 ## 5. P0 — bốn việc nên làm trước
@@ -244,24 +244,30 @@ kernel) — cái đó phải hạ số file watched hoặc dùng polling.
 
 ## 6. P1 — làm sau P0
 
-### E. Dịch `sockaddr_un` + hash 108 byte
+### E. Dịch `sockaddr_un` + hash 108 byte — đã làm
 
-Hiện không có hook nào cho `bind`/`connect`/`sendto`/`getsockname`/`getpeername`. Hệ quả:
 `ssh-agent`, `tmux`, `gpg-agent`, `mysqld`, `emacs --daemon`, X11 đều tạo socket ở đường dẫn
-Termux cứng hoặc quá dài. Cách làm (Cortex `sockets.c` + `setup.c`):
+Termux cứng hoặc quá dài. Cách làm (theo ý tưởng của Cortex `sockets.c` + `setup.c`):
 
-- `bind`/`connect`: nếu `AF_UNIX` và path tuyệt đối, map path rồi copy vào bản `sockaddr_un`
-  cục bộ; abstract socket (byte đầu `\0`) giữ nguyên.
-- Nếu path sau map ≥ 108 byte: FNV-1a 64 → `$PREFIX/tmp/.oc_sock_%016llx`. Hai phía tính
-  cùng hash nên gặp nhau; phải `unlink` đường đã hash khi đóng listener (Cortex có
-  `unlink_mapped_unix_socket`).
-- `getsockname`/`getpeername`: unmap để chương trình in ra đường dẫn gốc (người dùng copy
-  vào client).
-- `sun_path` là mảng trong `sockaddr` của caller: **không** sửa tại chỗ nếu `addrlen` nhỏ
-  hơn `sizeof(sockaddr_un)`; dùng bản copy.
+- `bind`/`connect`/`sendto`/`sendmsg`: nếu `AF_UNIX` và path tuyệt đối, map path rồi copy vào
+  bản `sockaddr_un` cục bộ; abstract socket (byte đầu `\0`) và path tương đối giữ nguyên.
+  `sockaddr` của caller không bao giờ bị sửa.
+- Nếu path sau map ≥ 108 byte: FNV-1a 64 → `$PREFIX/tmp/.oc_sock_%016llx`, và `bind` tạo
+  `$PREFIX/tmp` trước. Hai phía tính cùng hash nên gặp nhau.
+- `getsockname`/`getpeername` trả lại cách viết gốc (Termux hoặc FHS) nhờ bảng 64 record theo
+  fd; `accept`/`accept4` copy record local của listener sang fd mới. Không có record (ví dụ fd
+  được `dup`) thì fallback `unmap_buffer`.
+- `close` chỉ unlink tên hash khi pid hiện tại sở hữu record và dev/ino của path vẫn khớp, nên
+  fork hoặc một listener mới bind cùng hash không bị xoá nhầm.
+- `unlink`/`unlinkat`/`remove` cũng xoá tên hash và trả 0 khi socket hash đã bị xoá dù kernel
+  không tìm thấy đường path vật lý.
 
-Kiểm thử: `ssh-agent` + `ssh-add`, `tmux new -s t`, một server Python bind `$PREFIX/tmp/x.sock`,
-và một path cố tình dài > 107 byte.
+Giới hạn: `dup`/`dup2`/`close_range`/`exec` không cập nhật bảng, nên fd trùng số có thể mất
+cách viết gốc; path đúng 108 byte không có NUL được giữ nguyên; bảng đầy thì rơi về unmap
+thường.
+
+Kiểm thử: `test_unix_sockets` trong `native/pathmap/pathmap_test.c` — stream với cách viết
+Termux và FHS, hash + `close`/`unlink`, datagram qua `sendto`/`sendmsg`, abstract passthrough.
 
 ### F. Port thấp → `+8000`
 
@@ -342,7 +348,7 @@ Thứ tự đề xuất (mỗi bước là một PR nhỏ, có test):
 2. **C** (bảng FHS) sau cờ `OC_FHS` — đã làm, mặc định bật.
 3. **B** (exec routing): chuẩn hoá path → probe → loader/argv → shebang → `posix_spawn` —
    đã làm; **H** (pool tĩnh cho `preload_env`) vẫn để ngỏ.
-4. **D** (`inotify`) — đã làm. **E** (Unix socket), **F** (port thấp), **G** (`system`/
+4. **D** (`inotify`) và **E** (Unix socket) — đã làm. **F** (port thấp), **G** (`system`/
    `popen` qua shell glibc) vẫn để ngỏ.
 5. **P2**: `system()`/`popen()` (nếu G), vá C tĩnh theo bảng `svc #0` (chỉ khi có nhu cầu
    thật), `lzma_cputhreads` như tuỳ chọn.
@@ -350,8 +356,9 @@ Thứ tự đề xuất (mỗi bước là một PR nhỏ, có test):
 Kiểm thử:
 
 - **Host test** (`native/pathmap/run-test.sh`, chạy được cả `x86_64` và `aarch64` qua qemu):
-  đã có case cho bảng FHS (map + loại trừ `/bin/sh`), `inotify` tự tạo thư mục, và exec
-  routing: fixture `route_child.c` với `PT_INTERP` không tồn tại + `$ORIGIN/lib`, script
+  đã có case cho bảng FHS (map + loại trừ `/bin/sh`), `inotify` tự tạo thư mục, Unix socket
+  (`bind`/`connect`/`sendto`/`sendmsg`, hash 108 byte + `close`/`unlink`, abstract passthrough),
+  và exec routing: fixture `route_child.c` với `PT_INTERP` không tồn tại + `$ORIGIN/lib`, script
   `#!/usr/bin/oc-interp`, `/proc/self/exe` qua loader (có và không có `OC_REAL_EXE`), cùng
   môi trường sạch của con. Trên aarch64/qemu các case exec bị bỏ (`OC_TEST_NO_EXEC=1`) vì
   qemu thay `/proc/self/exe` bằng chính nó.

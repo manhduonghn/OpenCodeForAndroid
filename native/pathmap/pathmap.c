@@ -31,6 +31,12 @@
  * Inotify watches on a path that does not exist yet create the directory first,
  * because Vite, Metro and chokidar otherwise silently watch nothing.
  *
+ * Unix socket names are mapped too: bind/connect/sendto/sendmsg translate an
+ * absolute AF_UNIX path into a local sockaddr_un copy, and a mapped name that no
+ * longer fits in sun_path is replaced by a deterministic FNV-1a hash under
+ * $PREFIX/tmp. getsockname/getpeername report the original spelling, and close
+ * removes a hashed listener name.
+ *
  * The same library installs the SIGSYS policy that Android needs for glibc: an app
  * cannot change its uid, and the seccomp filter of the platform kills the process
  * on these syscalls. The handler emulates them instead: set*id and setgroups
@@ -71,11 +77,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/vfs.h>
 #include <sys/xattr.h>
 #include <ucontext.h>
@@ -300,6 +308,354 @@ static void unmap_buffer(char *buffer, size_t *n) {
     memmove(buffer + new_len, buffer + old_len, *n - old_len);
     memcpy(buffer, replacement, new_len);
     *n = *n - old_len + new_len;
+}
+
+/* ------------------------------------------------------------- Unix sockets */
+
+/*
+ * A Unix socket path lives inside struct sockaddr_un and is limited to 108
+ * bytes, so it needs its own translation: map_path() is applied to the name,
+ * and a mapped name that no longer fits is replaced by a deterministic hash
+ * under $PREFIX/tmp. A server and a client that spell the same original path
+ * compute the same hash and meet at the same socket.
+ *
+ * The caller's sockaddr is never modified: the translated address is a local
+ * copy. Abstract names (sun_path[0] == '\0') and relative names are left alone.
+ * The table remembers the original spelling for getsockname/getpeername, and
+ * the hashed path of a bound socket so close() can remove it. An inode check
+ * keeps an old listener from removing a path that a newer listener has already
+ * bound under the same hash.
+ */
+
+#define UNIX_SOCKET_PATH_MAX (sizeof(((struct sockaddr_un *)0)->sun_path))
+#define UNIX_SOCKET_SLOTS 64
+
+struct unix_target {
+    struct sockaddr_un addr;
+    socklen_t len;
+    char original[UNIX_SOCKET_PATH_MAX];
+    size_t original_len;
+    char physical[UNIX_SOCKET_PATH_MAX];
+    size_t physical_len;
+    int hashed;
+};
+
+struct socket_record {
+    int fd_plus_one; /* 0 = free */
+    int owner_pid;
+    int owns_hash;
+    int has_id;
+    dev_t hash_dev;
+    ino_t hash_ino;
+    unsigned char local_len;
+    unsigned char peer_len;
+    char local[UNIX_SOCKET_PATH_MAX];
+    char peer[UNIX_SOCKET_PATH_MAX];
+    char hashed[UNIX_SOCKET_PATH_MAX];
+};
+
+static struct socket_record g_socket_records[UNIX_SOCKET_SLOTS];
+static int g_socket_record_count;
+static int g_socket_lock;
+
+static void socket_lock(void) {
+    while (__atomic_exchange_n(&g_socket_lock, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&g_socket_lock, __ATOMIC_RELAXED)) {
+        }
+    }
+}
+
+static void socket_unlock(void) { __atomic_store_n(&g_socket_lock, 0, __ATOMIC_RELEASE); }
+
+static int socket_stat_raw(const char *path, struct stat *st) {
+    return syscall(SYS_newfstatat, AT_FDCWD, path, st, AT_SYMLINK_NOFOLLOW) == 0;
+}
+
+static uint64_t socket_hash(const char *text) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; p++) {
+        hash ^= *p;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static void socket_hash_hex(uint64_t value, char *out) {
+    static const char digits[] = "0123456789abcdef";
+    for (int i = 15; i >= 0; i--) {
+        out[i] = digits[value & 0xf];
+        value >>= 4;
+    }
+}
+
+/* The deterministic short name for a mapped path that is too long for sun_path. */
+static int socket_hashed_path(const char *mapped, char *out, size_t size) {
+    if (mapped == NULL || g_prefix_len == 0) return 0;
+    static const char suffix[] = "/tmp/.oc_sock_";
+    const size_t suffix_len = sizeof(suffix) - 1;
+    size_t total = g_prefix_len + suffix_len + 16;
+    if (total >= size) return 0;
+    memcpy(out, g_prefix, g_prefix_len);
+    memcpy(out + g_prefix_len, suffix, suffix_len);
+    socket_hash_hex(socket_hash(mapped), out + g_prefix_len + suffix_len);
+    out[total] = '\0';
+    return 1;
+}
+
+/* $PREFIX/tmp is the directory of the hashed names; create it for a listener. */
+static void socket_ensure_dir(void) {
+    if (g_prefix_len == 0 || g_prefix_len + 5 > PATH_MAX) return;
+    char dir[PATH_MAX];
+    memcpy(dir, g_prefix, g_prefix_len);
+    memcpy(dir + g_prefix_len, "/tmp", 5);
+    syscall(SYS_mkdirat, AT_FDCWD, dir, 0700);
+}
+
+static int translate_unix(const struct sockaddr *addr, socklen_t addrlen,
+                          struct unix_target *target) {
+    if (addr == NULL || target == NULL || addrlen < (socklen_t)sizeof(sa_family_t)) return 0;
+    if (addr->sa_family != AF_UNIX) return 0;
+    const size_t base = offsetof(struct sockaddr_un, sun_path);
+    if (addrlen <= base) return 0;
+    const struct sockaddr_un *sun = (const struct sockaddr_un *)addr;
+    size_t available = (size_t)addrlen - base;
+    if (available > UNIX_SOCKET_PATH_MAX) available = UNIX_SOCKET_PATH_MAX;
+    if (available == 0 || sun->sun_path[0] == '\0' || sun->sun_path[0] != '/') return 0;
+    size_t length = strnlen(sun->sun_path, available);
+    if (length == 0 || length == available) return 0;
+
+    memcpy(target->original, sun->sun_path, length + 1);
+    target->original_len = length;
+
+    char mapped[PATH_MAX];
+    const char *physical = map_path(target->original, mapped, sizeof(mapped));
+    size_t physical_len = strlen(physical);
+    if (physical_len < UNIX_SOCKET_PATH_MAX) {
+        memcpy(target->physical, physical, physical_len + 1);
+        target->hashed = 0;
+    } else {
+        if (!socket_hashed_path(physical, target->physical, sizeof(target->physical))) return 0;
+        physical_len = strlen(target->physical);
+        target->hashed = 1;
+    }
+    target->physical_len = physical_len;
+
+    memset(&target->addr, 0, sizeof(target->addr));
+    target->addr.sun_family = AF_UNIX;
+    memcpy(target->addr.sun_path, target->physical, physical_len + 1);
+    target->len = (socklen_t)(base + physical_len + 1);
+    return 1;
+}
+
+static struct socket_record *socket_record_get(int fd, int create) {
+    if (fd < 0) return NULL;
+    for (size_t i = 0; i < UNIX_SOCKET_SLOTS; i++) {
+        struct socket_record *record = &g_socket_records[i];
+        if (record->fd_plus_one == fd + 1) return record;
+    }
+    if (!create) return NULL;
+    for (size_t i = 0; i < UNIX_SOCKET_SLOTS; i++) {
+        struct socket_record *record = &g_socket_records[i];
+        if (record->fd_plus_one != 0) continue;
+        memset(record, 0, sizeof(*record));
+        record->fd_plus_one = fd + 1;
+        record->owner_pid = (int)syscall(SYS_getpid);
+        __atomic_add_fetch(&g_socket_record_count, 1, __ATOMIC_RELAXED);
+        return record;
+    }
+    return NULL;
+}
+
+static void socket_record_release(struct socket_record *record) {
+    record->fd_plus_one = 0;
+    __atomic_sub_fetch(&g_socket_record_count, 1, __ATOMIC_RELAXED);
+}
+
+static void socket_record_maybe_release(struct socket_record *record) {
+    if (record->local_len == 0 && record->peer_len == 0 && !record->owns_hash) {
+        socket_record_release(record);
+    }
+}
+
+static void socket_record_local(int fd, const struct unix_target *target,
+                                const struct stat *st) {
+    socket_lock();
+    struct socket_record *record = socket_record_get(fd, 1);
+    if (record != NULL) {
+        record->owner_pid = (int)syscall(SYS_getpid);
+        record->owns_hash = target->hashed;
+        record->local_len = (unsigned char)target->original_len;
+        memcpy(record->local, target->original, target->original_len + 1);
+        record->peer_len = 0;
+        record->peer[0] = '\0';
+        record->has_id = 0;
+        if (target->hashed) {
+            size_t length = strlen(target->physical);
+            memcpy(record->hashed, target->physical, length + 1);
+            if (st != NULL && S_ISSOCK(st->st_mode)) {
+                record->has_id = 1;
+                record->hash_dev = st->st_dev;
+                record->hash_ino = st->st_ino;
+            }
+        } else {
+            record->hashed[0] = '\0';
+        }
+    }
+    socket_unlock();
+}
+
+static void socket_record_peer(int fd, const struct unix_target *target) {
+    socket_lock();
+    struct socket_record *record = socket_record_get(fd, 1);
+    if (record != NULL) {
+        record->peer_len = (unsigned char)target->original_len;
+        memcpy(record->peer, target->original, target->original_len + 1);
+    }
+    socket_unlock();
+}
+
+static void socket_record_clear_peer(int fd) {
+    if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return;
+    socket_lock();
+    struct socket_record *record = socket_record_get(fd, 0);
+    if (record != NULL) {
+        record->peer_len = 0;
+        record->peer[0] = '\0';
+        socket_record_maybe_release(record);
+    }
+    socket_unlock();
+}
+
+static int socket_record_lookup(int fd, int peer, char *out, size_t *out_len) {
+    if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return 0;
+    int found = 0;
+    socket_lock();
+    struct socket_record *record = socket_record_get(fd, 0);
+    if (record != NULL) {
+        unsigned char length = peer ? record->peer_len : record->local_len;
+        if (length > 0) {
+            memcpy(out, peer ? record->peer : record->local, (size_t)length + 1);
+            *out_len = length;
+            found = 1;
+        }
+    }
+    socket_unlock();
+    return found;
+}
+
+static void socket_record_copy_local(int source, int destination) {
+    if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return;
+    socket_lock();
+    struct socket_record *from = socket_record_get(source, 0);
+    if (from != NULL) {
+        struct socket_record *to = socket_record_get(destination, 1);
+        if (to != NULL) {
+            to->owner_pid = (int)syscall(SYS_getpid);
+            to->owns_hash = 0;
+            to->has_id = 0;
+            to->hashed[0] = '\0';
+            to->local_len = from->local_len;
+            if (from->local_len > 0) {
+                memcpy(to->local, from->local, (size_t)from->local_len + 1);
+            } else {
+                to->local[0] = '\0';
+            }
+            to->peer_len = 0;
+            to->peer[0] = '\0';
+        }
+    }
+    socket_unlock();
+}
+
+static void socket_unlink_if_owned(const char *path, int has_id, dev_t device, ino_t inode) {
+    struct stat st;
+    if (!socket_stat_raw(path, &st) || !S_ISSOCK(st.st_mode)) return;
+    if (has_id && (st.st_dev != device || st.st_ino != inode)) return;
+    syscall(SYS_unlinkat, AT_FDCWD, path, 0);
+}
+
+static void socket_record_close(int fd, int closed) {
+    if (__atomic_load_n(&g_socket_record_count, __ATOMIC_RELAXED) == 0) return;
+    char path[UNIX_SOCKET_PATH_MAX];
+    path[0] = '\0';
+    int unlink_path = 0;
+    int has_id = 0;
+    dev_t device = 0;
+    ino_t inode = 0;
+    socket_lock();
+    struct socket_record *record = socket_record_get(fd, 0);
+    if (record != NULL) {
+        if (closed && record->owns_hash && record->hashed[0] != '\0' &&
+            record->owner_pid == (int)syscall(SYS_getpid)) {
+            size_t length = strlen(record->hashed);
+            memcpy(path, record->hashed, length + 1);
+            unlink_path = 1;
+            has_id = record->has_id;
+            device = record->hash_dev;
+            inode = record->hash_ino;
+        }
+        socket_record_release(record);
+    }
+    socket_unlock();
+    if (unlink_path) socket_unlink_if_owned(path, has_id, device, inode);
+}
+
+/* Remove the short name of a long socket path; used by unlink/unlinkat/remove. */
+static int socket_unlink_hashed(const char *mapped) {
+    if (mapped == NULL || mapped[0] != '/' || g_prefix_len == 0) return 0;
+    if (strlen(mapped) < UNIX_SOCKET_PATH_MAX) return 0;
+    char path[UNIX_SOCKET_PATH_MAX];
+    if (!socket_hashed_path(mapped, path, sizeof(path))) return 0;
+    struct stat st;
+    if (!socket_stat_raw(path, &st) || !S_ISSOCK(st.st_mode)) return 0;
+    return syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0;
+}
+
+static void restore_socket_name(int fd, struct sockaddr *addr, socklen_t *addrlen,
+                                socklen_t capacity, int peer) {
+    if (addr == NULL || addrlen == NULL) return;
+    if (capacity < (socklen_t)sizeof(sa_family_t)) return;
+    size_t limit = (size_t)*addrlen;
+    if (limit > (size_t)capacity) limit = (size_t)capacity;
+    const size_t base = offsetof(struct sockaddr_un, sun_path);
+    if (limit <= base) return;
+    if (addr->sa_family != AF_UNIX) return;
+    struct sockaddr_un *sun = (struct sockaddr_un *)addr;
+    size_t available = limit - base;
+    if (available > UNIX_SOCKET_PATH_MAX) available = UNIX_SOCKET_PATH_MAX;
+    if (available == 0 || sun->sun_path[0] == '\0') return;
+    size_t length = strnlen(sun->sun_path, available);
+    if (length == 0 || length == available) return;
+
+    char original[UNIX_SOCKET_PATH_MAX];
+    size_t original_len = 0;
+    if (socket_record_lookup(fd, peer, original, &original_len)) {
+        size_t needed = base + original_len + 1;
+        if (needed <= (size_t)capacity && original_len < UNIX_SOCKET_PATH_MAX) {
+            memcpy(sun->sun_path, original, original_len + 1);
+            *addrlen = (socklen_t)needed;
+            return;
+        }
+    }
+
+    char temp[PATH_MAX];
+    memcpy(temp, sun->sun_path, length + 1);
+    size_t temp_len = length;
+    unmap_buffer(temp, &temp_len);
+    temp[temp_len] = '\0';
+    if (temp_len < UNIX_SOCKET_PATH_MAX && base + temp_len + 1 <= (size_t)capacity) {
+        memcpy(sun->sun_path, temp, temp_len + 1);
+        *addrlen = (socklen_t)(base + temp_len + 1);
+    }
+}
+
+static void accept_done(int listener, int newfd, struct sockaddr *addr, socklen_t *addrlen,
+                        socklen_t capacity) {
+    if (newfd < 0) return;
+    socket_record_copy_local(listener, newfd);
+    if (addr != NULL && addrlen != NULL) {
+        restore_socket_name(newfd, addr, addrlen, capacity, 1);
+    }
 }
 
 /* ------------------------------------------------ /proc/self/exe virtualization */
@@ -1612,6 +1968,123 @@ static int route_build(const char *physical, char *const argv[], char *const env
         }                                                                     \
     }
 
+/* --------------------------------------------------------- Unix socket hooks */
+
+EXPORT int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    typedef int (*fn_t)(int, const struct sockaddr *, socklen_t);
+    RESOLVE(bind, fn_t)
+    struct unix_target target;
+    if (translate_unix(addr, addrlen, &target)) {
+        if (target.hashed) {
+            int saved = errno;
+            socket_ensure_dir();
+            errno = saved;
+        }
+        int rc = real_bind(sockfd, (const struct sockaddr *)&target.addr, target.len);
+        if (rc == 0) {
+            struct stat st;
+            const struct stat *id = NULL;
+            if (target.hashed && socket_stat_raw(target.physical, &st)) id = &st;
+            socket_record_local(sockfd, &target, id);
+        }
+        return rc;
+    }
+    return real_bind(sockfd, addr, addrlen);
+}
+
+EXPORT int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    typedef int (*fn_t)(int, const struct sockaddr *, socklen_t);
+    RESOLVE(connect, fn_t)
+    socket_record_clear_peer(sockfd);
+    struct unix_target target;
+    if (translate_unix(addr, addrlen, &target)) {
+        int rc = real_connect(sockfd, (const struct sockaddr *)&target.addr, target.len);
+        if (rc == 0) {
+            socket_record_peer(sockfd, &target);
+        } else {
+            int saved = errno;
+            if (saved == EINPROGRESS || saved == EALREADY || saved == EISCONN) {
+                socket_record_peer(sockfd, &target);
+            }
+            errno = saved;
+        }
+        return rc;
+    }
+    return real_connect(sockfd, addr, addrlen);
+}
+
+EXPORT ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+                      const struct sockaddr *dest_addr, socklen_t addrlen) {
+    typedef ssize_t (*fn_t)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
+    RESOLVE(sendto, fn_t)
+    struct unix_target target;
+    if (translate_unix(dest_addr, addrlen, &target)) {
+        return real_sendto(sockfd, buf, len, flags, (const struct sockaddr *)&target.addr,
+                           target.len);
+    }
+    return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+}
+
+EXPORT ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
+    typedef ssize_t (*fn_t)(int, const struct msghdr *, int);
+    RESOLVE(sendmsg, fn_t)
+    struct unix_target target;
+    if (msg != NULL &&
+        translate_unix((const struct sockaddr *)msg->msg_name, msg->msg_namelen, &target)) {
+        struct msghdr copy = *msg;
+        copy.msg_name = &target.addr;
+        copy.msg_namelen = target.len;
+        return real_sendmsg(sockfd, &copy, flags);
+    }
+    return real_sendmsg(sockfd, msg, flags);
+}
+
+EXPORT int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    typedef int (*fn_t)(int, struct sockaddr *, socklen_t *);
+    RESOLVE(getsockname, fn_t)
+    socklen_t capacity = addrlen != NULL ? *addrlen : 0;
+    int rc = real_getsockname(sockfd, addr, addrlen);
+    if (rc == 0) restore_socket_name(sockfd, addr, addrlen, capacity, 0);
+    return rc;
+}
+
+EXPORT int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    typedef int (*fn_t)(int, struct sockaddr *, socklen_t *);
+    RESOLVE(getpeername, fn_t)
+    socklen_t capacity = addrlen != NULL ? *addrlen : 0;
+    int rc = real_getpeername(sockfd, addr, addrlen);
+    if (rc == 0) restore_socket_name(sockfd, addr, addrlen, capacity, 1);
+    return rc;
+}
+
+EXPORT int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    typedef int (*fn_t)(int, struct sockaddr *, socklen_t *);
+    RESOLVE(accept, fn_t)
+    socklen_t capacity = addrlen != NULL ? *addrlen : 0;
+    int fd = real_accept(sockfd, addr, addrlen);
+    accept_done(sockfd, fd, addr, addrlen, capacity);
+    return fd;
+}
+
+EXPORT int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+    typedef int (*fn_t)(int, struct sockaddr *, socklen_t *, int);
+    RESOLVE(accept4, fn_t)
+    socklen_t capacity = addrlen != NULL ? *addrlen : 0;
+    int fd = real_accept4(sockfd, addr, addrlen, flags);
+    accept_done(sockfd, fd, addr, addrlen, capacity);
+    return fd;
+}
+
+EXPORT int close(int fd) {
+    typedef int (*fn_t)(int);
+    RESOLVE(close, fn_t)
+    int rc = real_close(fd);
+    int saved = errno;
+    socket_record_close(fd, rc == 0);
+    errno = saved;
+    return rc;
+}
+
 /* ------------------------------------------------------------------- open/openat */
 
 EXPORT int open(const char *path, int flags, ...) {
@@ -2056,14 +2529,22 @@ EXPORT int unlink(const char *path) {
     typedef int (*fn_t)(const char *);
     RESOLVE(unlink, fn_t)
     char buffer[PATH_MAX];
-    return real_unlink(map_path(path, buffer, sizeof(buffer)));
+    const char *mapped = map_path(path, buffer, sizeof(buffer));
+    int hashed = socket_unlink_hashed(mapped);
+    int rc = real_unlink(mapped);
+    if (rc != 0 && hashed) return 0;
+    return rc;
 }
 
 EXPORT int unlinkat(int dirfd, const char *path, int flags) {
     typedef int (*fn_t)(int, const char *, int);
     RESOLVE(unlinkat, fn_t)
     char buffer[PATH_MAX];
-    return real_unlinkat(dirfd, map_path(path, buffer, sizeof(buffer)), flags);
+    const char *mapped = map_path(path, buffer, sizeof(buffer));
+    int hashed = (flags & AT_REMOVEDIR) ? 0 : socket_unlink_hashed(mapped);
+    int rc = real_unlinkat(dirfd, mapped, flags);
+    if (rc != 0 && hashed) return 0;
+    return rc;
 }
 
 /* remove() is unlink() for files and rmdir() for directories. */
@@ -2071,7 +2552,11 @@ EXPORT int remove(const char *path) {
     typedef int (*fn_t)(const char *);
     RESOLVE(remove, fn_t)
     char buffer[PATH_MAX];
-    return real_remove(map_path(path, buffer, sizeof(buffer)));
+    const char *mapped = map_path(path, buffer, sizeof(buffer));
+    int hashed = socket_unlink_hashed(mapped);
+    int rc = real_remove(mapped);
+    if (rc != 0 && hashed) return 0;
+    return rc;
 }
 
 EXPORT int rename(const char *old_path, const char *new_path) {

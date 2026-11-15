@@ -28,14 +28,19 @@
 #include <ftw.h>
 #include <glob.h>
 #include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/vfs.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
@@ -315,6 +320,296 @@ static void test_exec_clean_env(void) {
     assert(WEXITSTATUS(status) == 0);
 }
 
+#define UNIX_SOCKET_PATH_MAX (sizeof(((struct sockaddr_un *)0)->sun_path))
+
+static uint64_t unix_hash(const char *text) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; p++) {
+        hash ^= *p;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static void unix_hashed_path(const char *mapped, char *out, size_t size) {
+    int n = snprintf(out, size, "%s/tmp/.oc_sock_%016llx", g_prefix,
+                     (unsigned long long)unix_hash(mapped));
+    assert(n > 0 && (size_t)n < size);
+}
+
+static socklen_t unix_address(struct sockaddr_un *addr, const char *path) {
+    memset(addr, 0, sizeof(*addr));
+    addr->sun_family = AF_UNIX;
+    size_t length = strlen(path);
+    assert(length < UNIX_SOCKET_PATH_MAX);
+    memcpy(addr->sun_path, path, length + 1);
+    return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + length + 1);
+}
+
+static void ensure_prefix_tmp(void) {
+    char dir[PATH_MAX];
+    join(dir, sizeof(dir), g_prefix, "/tmp");
+    mkdirs(dir);
+}
+
+/* A Termux spelling is mapped for bind/connect and unmapped for the names. */
+static void test_unix_stream_termux(void) {
+    ensure_prefix_tmp();
+    int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    struct sockaddr_un addr;
+    socklen_t addrlen = unix_address(&addr, TERMUX_PREFIX "/tmp/oc-sock-termux");
+    assert(bind(listener, (struct sockaddr *)&addr, addrlen) == 0);
+    assert(listen(listener, 4) == 0);
+
+    char physical[PATH_MAX];
+    join(physical, sizeof(physical), g_prefix, "/tmp/oc-sock-termux");
+    struct stat st;
+    assert(stat(physical, &st) == 0 && S_ISSOCK(st.st_mode));
+
+    struct sockaddr_un got;
+    socklen_t gotlen = sizeof(got);
+    assert(getsockname(listener, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(got.sun_family == AF_UNIX);
+    assert(strcmp(got.sun_path, addr.sun_path) == 0);
+
+    /* A duplicated descriptor has no record; the physical prefix is still
+     * unmapped before the caller sees the name. */
+    int duplicate = dup(listener);
+    assert(duplicate >= 0);
+    gotlen = sizeof(got);
+    assert(getsockname(duplicate, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, addr.sun_path) == 0);
+    assert(close(duplicate) == 0);
+
+    int client = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(client >= 0);
+    assert(connect(client, (struct sockaddr *)&addr, addrlen) == 0);
+    struct sockaddr_un peer;
+    socklen_t peerlen = sizeof(peer);
+    assert(getpeername(client, (struct sockaddr *)&peer, &peerlen) == 0);
+    assert(strcmp(peer.sun_path, addr.sun_path) == 0);
+
+    int accepted = accept(listener, NULL, NULL);
+    assert(accepted >= 0);
+    gotlen = sizeof(got);
+    assert(getsockname(accepted, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, addr.sun_path) == 0);
+    assert(close(accepted) == 0);
+    assert(close(client) == 0);
+    assert(close(listener) == 0);
+    assert(unlink(TERMUX_PREFIX "/tmp/oc-sock-termux") == 0);
+    assert(stat(physical, &st) == -1 && errno == ENOENT);
+}
+
+/* An FHS spelling keeps its original form, not the Termux spelling that the
+ * generic unmap would produce. */
+static void test_unix_stream_fhs(void) {
+    ensure_prefix_tmp();
+    int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    struct sockaddr_un addr;
+    socklen_t addrlen = unix_address(&addr, "/tmp/oc-sock-fhs");
+    assert(bind(listener, (struct sockaddr *)&addr, addrlen) == 0);
+    assert(listen(listener, 4) == 0);
+
+    char physical[PATH_MAX];
+    join(physical, sizeof(physical), g_prefix, "/tmp/oc-sock-fhs");
+    struct stat st;
+    assert(stat(physical, &st) == 0 && S_ISSOCK(st.st_mode));
+
+    struct sockaddr_un got;
+    socklen_t gotlen = sizeof(got);
+    assert(getsockname(listener, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, "/tmp/oc-sock-fhs") == 0);
+
+    int client = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(client >= 0);
+    assert(connect(client, (struct sockaddr *)&addr, addrlen) == 0);
+    struct sockaddr_un peer;
+    socklen_t peerlen = sizeof(peer);
+    assert(getpeername(client, (struct sockaddr *)&peer, &peerlen) == 0);
+    assert(strcmp(peer.sun_path, "/tmp/oc-sock-fhs") == 0);
+
+    int accepted = accept(listener, NULL, NULL);
+    assert(accepted >= 0);
+    gotlen = sizeof(got);
+    assert(getsockname(accepted, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, "/tmp/oc-sock-fhs") == 0);
+    assert(close(accepted) == 0);
+    assert(close(client) == 0);
+    assert(close(listener) == 0);
+    assert(unlink("/tmp/oc-sock-fhs") == 0);
+    assert(stat(physical, &st) == -1 && errno == ENOENT);
+}
+
+/* A mapped name that no longer fits is hashed under $PREFIX/tmp, and close()
+ * removes that short name. */
+static void test_unix_hashed_close(void) {
+    char original[UNIX_SOCKET_PATH_MAX];
+    int n = snprintf(original, sizeof(original), "/tmp/");
+    assert(n == 5);
+    memset(original + n, 'a', 100);
+    original[n + 100] = '\0';
+    assert(strlen(original) < UNIX_SOCKET_PATH_MAX);
+
+    char mapped[PATH_MAX];
+    join(mapped, sizeof(mapped), g_prefix, original);
+    char hashed[PATH_MAX];
+    unix_hashed_path(mapped, hashed, sizeof(hashed));
+
+    int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    struct sockaddr_un addr;
+    socklen_t addrlen = unix_address(&addr, original);
+    assert(bind(listener, (struct sockaddr *)&addr, addrlen) == 0);
+
+    struct stat st;
+    assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+    struct sockaddr_un got;
+    socklen_t gotlen = sizeof(got);
+    assert(getsockname(listener, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(strcmp(got.sun_path, original) == 0);
+
+    int client = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(client >= 0);
+    assert(connect(client, (struct sockaddr *)&addr, addrlen) == 0);
+    struct sockaddr_un peer;
+    socklen_t peerlen = sizeof(peer);
+    assert(getpeername(client, (struct sockaddr *)&peer, &peerlen) == 0);
+    assert(strcmp(peer.sun_path, original) == 0);
+    int accepted = accept(listener, NULL, NULL);
+    assert(accepted >= 0);
+    assert(close(accepted) == 0);
+    assert(close(client) == 0);
+
+    assert(close(listener) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+}
+
+/* A long spelling that maps past sun_path; every removal API must find the
+ * hashed name even though the kernel cannot unlink the original path. */
+static void fill_long_path(char *original, size_t size, char fill) {
+    int n = snprintf(original, size, "/tmp/");
+    assert(n == 5);
+    memset(original + n, fill, 100);
+    original[n + 100] = '\0';
+}
+
+static int bind_long_socket(const char *original, char *hashed, size_t size) {
+    char mapped[PATH_MAX];
+    join(mapped, sizeof(mapped), g_prefix, original);
+    unix_hashed_path(mapped, hashed, size);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(fd >= 0);
+    struct sockaddr_un addr;
+    socklen_t addrlen = unix_address(&addr, original);
+    assert(bind(fd, (struct sockaddr *)&addr, addrlen) == 0);
+    struct stat st;
+    assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+    return fd;
+}
+
+static void test_unix_hashed_unlink(void) {
+    char original[UNIX_SOCKET_PATH_MAX];
+    char hashed[PATH_MAX];
+    struct stat st;
+
+    fill_long_path(original, sizeof(original), 'b');
+    int listener = bind_long_socket(original, hashed, sizeof(hashed));
+    assert(unlink(original) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+    assert(close(listener) == 0);
+
+    fill_long_path(original, sizeof(original), 'c');
+    listener = bind_long_socket(original, hashed, sizeof(hashed));
+    assert(unlinkat(AT_FDCWD, original, 0) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+    assert(close(listener) == 0);
+
+    fill_long_path(original, sizeof(original), 'e');
+    listener = bind_long_socket(original, hashed, sizeof(hashed));
+    assert(remove(original) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+    assert(close(listener) == 0);
+}
+
+/* Datagram sockets reach the same hashed name through sendto() and sendmsg(). */
+static void test_unix_datagram(void) {
+    char original[UNIX_SOCKET_PATH_MAX];
+    int n = snprintf(original, sizeof(original), "/tmp/");
+    assert(n == 5);
+    memset(original + n, 'd', 90);
+    original[n + 90] = '\0';
+
+    char mapped[PATH_MAX];
+    join(mapped, sizeof(mapped), g_prefix, original);
+    char hashed[PATH_MAX];
+    unix_hashed_path(mapped, hashed, sizeof(hashed));
+
+    int server = socket(AF_UNIX, SOCK_DGRAM, 0);
+    assert(server >= 0);
+    struct sockaddr_un addr;
+    socklen_t addrlen = unix_address(&addr, original);
+    assert(bind(server, (struct sockaddr *)&addr, addrlen) == 0);
+    struct stat st;
+    assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
+
+    int client = socket(AF_UNIX, SOCK_DGRAM, 0);
+    assert(client >= 0);
+    char payload = 'd';
+    char received = 0;
+    assert(sendto(client, &payload, 1, 0, (struct sockaddr *)&addr, addrlen) == 1);
+    assert(recv(server, &received, 1, 0) == 1);
+    assert(received == payload);
+
+    struct iovec iov = {.iov_base = &payload, .iov_len = 1};
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = &addr;
+    msg.msg_namelen = addrlen;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    assert(sendmsg(client, &msg, 0) == 1);
+    received = 0;
+    assert(recv(server, &received, 1, 0) == 1);
+    assert(received == payload);
+
+    assert(close(client) == 0);
+    assert(close(server) == 0);
+    assert(stat(hashed, &st) == -1 && errno == ENOENT);
+}
+
+/* Abstract names have no file-system path and must pass through untouched. */
+static void test_unix_abstract(void) {
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(sock >= 0);
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    int n = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, "oc-abstract-%d",
+                     (int)getpid());
+    assert(n > 0 && n < (int)sizeof(addr.sun_path) - 1);
+    socklen_t addrlen = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
+    assert(bind(sock, (struct sockaddr *)&addr, addrlen) == 0);
+    struct sockaddr_un got;
+    socklen_t gotlen = sizeof(got);
+    assert(getsockname(sock, (struct sockaddr *)&got, &gotlen) == 0);
+    assert(got.sun_family == AF_UNIX);
+    assert(got.sun_path[0] == '\0');
+    assert(memcmp(got.sun_path + 1, addr.sun_path + 1, (size_t)n) == 0);
+    assert(close(sock) == 0);
+}
+
+static void test_unix_sockets(void) {
+    test_unix_stream_termux();
+    test_unix_stream_fhs();
+    test_unix_hashed_close();
+    test_unix_hashed_unlink();
+    test_unix_datagram();
+    test_unix_abstract();
+}
+
 int main(int argc, char **argv) {
     if (env_flag("OC_TEST_INTERP")) {
         /* Started as the interpreter of a script whose shebang names
@@ -398,6 +693,7 @@ int main(int argc, char **argv) {
     /* The distribution roots and the inotify directory creation. */
     test_fhs_mapping();
     test_inotify_autocreate();
+    test_unix_sockets();
 
     /* statfs / statvfs take a path too. */
     struct statfs sfs;
