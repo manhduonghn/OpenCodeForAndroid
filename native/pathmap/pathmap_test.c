@@ -463,6 +463,7 @@ static void test_unix_hashed_close(void) {
     struct sockaddr_un addr;
     socklen_t addrlen = unix_address(&addr, original);
     assert(bind(listener, (struct sockaddr *)&addr, addrlen) == 0);
+    assert(listen(listener, 4) == 0);
 
     struct stat st;
     assert(stat(hashed, &st) == 0 && S_ISSOCK(st.st_mode));
