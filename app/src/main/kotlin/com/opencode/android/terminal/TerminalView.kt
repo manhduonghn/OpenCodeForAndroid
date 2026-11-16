@@ -303,7 +303,11 @@ class TerminalView @JvmOverloads constructor(
             if (selection != null) {
                 val contentLine = history + line - scrollOffset
                 if (contentLine in selection.first.line..selection.last.line) {
-                    val from = if (contentLine == selection.first.line) selection.first.col else 0
+                    val from = if (contentLine == selection.first.line) {
+                        row.glyphStart(selection.first.col)
+                    } else {
+                        0
+                    }
                     val to = if (contentLine == selection.last.line) {
                         selection.last.col + 1
                     } else {
