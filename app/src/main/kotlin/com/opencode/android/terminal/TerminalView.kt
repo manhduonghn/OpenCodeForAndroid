@@ -104,6 +104,13 @@ class TerminalView @JvmOverloads constructor(
     var onPasteRequest: (() -> Unit)? = null
     var onCopyRequest: (() -> Unit)? = null
 
+    /**
+     * Long-press on the screen. It receives the text currently painted, including
+     * scrollback when the user scrolled up; the menu keeps the action that copies
+     * the whole transcript.
+     */
+    var onCopyScreenRequest: ((String) -> Unit)? = null
+
     private val density = resources.displayMetrics.density
     private val baseTypeface: Typeface = Typeface.MONOSPACE
     private val boldTypeface: Typeface = if (Build.VERSION.SDK_INT >= 28) {
@@ -498,7 +505,7 @@ class TerminalView @JvmOverloads constructor(
 
         override fun onLongPress(event: MotionEvent) {
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            onPasteRequest?.invoke()
+            onCopyScreenRequest?.invoke(visibleText())
         }
     })
 
@@ -604,6 +611,16 @@ class TerminalView @JvmOverloads constructor(
         requestFocus()
         val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         manager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    /**
+     * The text currently painted on the view: the live screen, or the part of the
+     * scrollback the user scrolled back to. Blank rows below the last line are
+     * dropped so an empty terminal does not fill the clipboard with newlines.
+     */
+    fun visibleText(): String {
+        val active = session ?: return ""
+        return synchronized(active.emulator) { active.emulator.visibleText(scrollOffset) }
     }
 
     fun hideKeyboard() {

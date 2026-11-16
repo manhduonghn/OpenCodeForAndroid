@@ -341,6 +341,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         applySystemBarAppearance()
         showBootStage(BootStage.ENVIRONMENT)
         updateStatusSubtitle(ConnectionState.STARTING)
+        // A day/night switch recreates the activity. Reopen the terminal that was on screen and
+        // let the new instance resolve its palette from the night (or light) resources.
+        if (viewModel.terminalVisible) terminalScreen.show()
 
         // The WebView belongs to the ViewModel, so after a rotation it is the same instance with
         // the same page: it only has to be moved from the view hierarchy of the previous activity
@@ -598,7 +601,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             this,
             object : TerminalScreen.Listener {
                 override fun onTerminalClosed() {
-                    // The shell stays alive in TerminalSessions; there is nothing to save here.
+                    // The shell stays alive in TerminalSessions; only the open panel is forgotten.
+                    viewModel.terminalVisible = false
                 }
             },
         )
@@ -780,6 +784,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     private fun showTerminal() {
+        viewModel.terminalVisible = true
         terminalScreen.show()
     }
 
@@ -868,6 +873,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         applyContentWidths()
         applyWebTheme()
         updateStatusSubtitle(connectionState, force = true)
+        if (::terminalScreen.isInitialized) terminalScreen.onConfigurationChanged()
         if (::githubScreen.isInitialized) githubScreen.onConfigurationChanged()
         ViewCompat.requestApplyInsets(root)
     }

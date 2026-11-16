@@ -107,6 +107,13 @@ class OpenCodeWebViewModel : ViewModel() {
     var pageLoaded = false
 
     /**
+     * True while the terminal panel is open. Keeping it here means a day/night switch, which
+     * recreates the activity, reopens the same terminal instead of dropping the user back into
+     * the chat, and the new palette is picked up by the fresh [TerminalScreen].
+     */
+    var terminalVisible = false
+
+    /**
      * Session that has to be opened after the start page finished loading. It lives here, not in
      * the activity, so a rotation during the load does not lose the session the user picked.
      */
