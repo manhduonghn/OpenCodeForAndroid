@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.view.MenuItem
@@ -151,6 +152,7 @@ class TerminalScreen(
         view.onModifiersUsed = { consumeModifiers() }
         view.onPasteRequest = { pasteClipboard() }
         view.onCopyRequest = { copyOutput() }
+        view.onCopyScreenRequest = { text -> copyScreen(text) }
         view.onFontSizeChange = { size ->
             OpenCodeSettings.setTerminalFontSize(activity, size)
         }
@@ -244,6 +246,7 @@ class TerminalScreen(
         OverlayMotion.reveal(panel)
         attach(TerminalSessions.session)
         view.fontSizeSp = OpenCodeSettings.terminalFontSize(activity)
+        view.colors = resolveColors()
         view.requestFocus()
         renderNotice()
         renderSubtitle()
@@ -272,9 +275,21 @@ class TerminalScreen(
     fun onActivityResumed() {
         if (isVisible) {
             attach(TerminalSessions.session)
+            view.colors = resolveColors()
             renderNotice()
             startIfNeeded()
         }
+    }
+
+    /**
+     * The activity handled a configuration change in place. Only the terminal palette and the
+     * modifier badges depend on the theme, so they are re-resolved here; the screen itself and
+     * the shell are left untouched. A day/night switch usually recreates the activity instead,
+     * and the palette is then resolved by [init].
+     */
+    fun onConfigurationChanged() {
+        view.colors = resolveColors()
+        renderModifiers()
     }
 
     fun release() {
@@ -589,8 +604,30 @@ class TerminalScreen(
             Latch.ONCE -> com.google.android.material.R.attr.colorOnPrimary
             Latch.LOCKED -> com.google.android.material.R.attr.colorOnTertiary
         }
-        val container = MaterialColors.getColor(key, containerAttr)
-        val content = MaterialColors.getColor(key, contentAttr)
+        val container = MaterialColors.getColor(
+            key.context,
+            containerAttr,
+            ContextCompat.getColor(
+                activity,
+                when (latch) {
+                    Latch.OFF -> R.color.oc_secondary_container
+                    Latch.ONCE -> R.color.oc_primary
+                    Latch.LOCKED -> R.color.oc_tertiary
+                },
+            ),
+        )
+        val content = MaterialColors.getColor(
+            key.context,
+            contentAttr,
+            ContextCompat.getColor(
+                activity,
+                when (latch) {
+                    Latch.OFF -> R.color.oc_on_secondary_container
+                    Latch.ONCE -> R.color.oc_on_primary
+                    Latch.LOCKED -> R.color.oc_on_tertiary
+                },
+            ),
+        )
         ViewCompat.setBackgroundTintList(key, ColorStateList.valueOf(container))
         key.setTextColor(content)
 
@@ -629,21 +666,48 @@ class TerminalScreen(
     }
 
     /** Material You colours: the terminal shares the palette of the native shell. */
-    private fun resolveColors(): TerminalColors {
+    private fun resolveColors(): TerminalColors = runCatching {
         fun color(attr: Int) = MaterialColors.getColor(panel, attr)
         val background = color(com.google.android.material.R.attr.colorSurfaceContainerLowest)
-        val dark = ColorUtils.calculateLuminance(background) < 0.5
-        val ansi = (if (dark) DARK_ANSI else LIGHT_ANSI)
-            .map { (0xFF shl 24) or it }
-            .toIntArray()
-        return TerminalColors(
+        val ansi = (if (isNightMode() || ColorUtils.calculateLuminance(background) < 0.5) {
+            DARK_ANSI
+        } else {
+            LIGHT_ANSI
+        }).map { (0xFF shl 24) or it }.toIntArray()
+        TerminalColors(
             background = background,
             foreground = color(com.google.android.material.R.attr.colorOnSurface),
             cursor = color(androidx.appcompat.R.attr.colorPrimary),
             cursorText = color(com.google.android.material.R.attr.colorOnPrimary),
             ansi = ansi,
         )
+    }.getOrElse {
+        // A theme without the Material 3 container roles must not take the terminal
+        // down. The resource colours are the same palette the theme was built from.
+        fallbackColors()
     }
+
+    /**
+     * Palette used when a theme attribute cannot be resolved, eg. a vendor theme that
+     * replaces Theme.OpenCode. It still follows the day/night configuration.
+     */
+    private fun fallbackColors(): TerminalColors {
+        fun color(id: Int) = ContextCompat.getColor(activity, id)
+        val ansi = (if (isNightMode()) DARK_ANSI else LIGHT_ANSI)
+            .map { (0xFF shl 24) or it }
+            .toIntArray()
+        return TerminalColors(
+            background = color(R.color.oc_surface_container_lowest),
+            foreground = color(R.color.oc_on_surface),
+            cursor = color(R.color.oc_primary),
+            cursorText = color(R.color.oc_on_primary),
+            ansi = ansi,
+        )
+    }
+
+    private fun isNightMode(): Boolean =
+        (activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
 
     private fun consumeModifiers() {
         if (ctrl == Latch.ONCE) ctrl = Latch.OFF
@@ -720,6 +784,7 @@ class TerminalScreen(
         return true
     }
 
+    /** Menu action: the whole scrollback and the visible screen. */
     private fun copyOutput() {
         val current = session ?: return
         val text = current.transcript()
@@ -727,13 +792,30 @@ class TerminalScreen(
             toast(R.string.opencode_terminal_empty)
             return
         }
+        copyToClipboard(text, R.string.opencode_terminal_copied)
+    }
+
+    /** Long-press on the terminal: only the output currently on screen. */
+    private fun copyScreen(text: String) {
+        if (text.isBlank()) {
+            toast(R.string.opencode_terminal_empty_screen)
+            return
+        }
+        copyToClipboard(text, R.string.opencode_terminal_copied_screen)
+    }
+
+    private fun copyToClipboard(text: String, copiedMessage: Int) {
         try {
             val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            clipboard?.setPrimaryClip(
+            if (clipboard == null) {
+                toast(R.string.opencode_terminal_copy_failed)
+                return
+            }
+            clipboard.setPrimaryClip(
                 ClipData.newPlainText(activity.getString(R.string.opencode_terminal_title), text),
             )
             // Android 13+ shows its own clipboard confirmation.
-            if (Build.VERSION.SDK_INT < 33) toast(R.string.opencode_terminal_copied)
+            if (Build.VERSION.SDK_INT < 33) toast(copiedMessage)
         } catch (e: Exception) {
             toast(R.string.opencode_terminal_copy_failed)
         }

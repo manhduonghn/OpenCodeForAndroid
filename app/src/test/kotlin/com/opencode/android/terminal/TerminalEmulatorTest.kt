@@ -558,6 +558,30 @@ class TerminalEmulatorTest {
     }
 
     @Test
+    fun visibleTextKeepsTheScreenAndDropsBlankRows() {
+        val (terminal, _) = emulator(rows = 5, cols = 10)
+        terminal.append("first\r\nsecond")
+        assertEquals("first\nsecond", terminal.visibleText())
+        terminal.append("$escape[2J")
+        assertEquals("", terminal.visibleText())
+    }
+
+    @Test
+    fun visibleTextFollowsTheScrollbackOffset() {
+        val (terminal, _) = emulator(rows = 2, cols = 10, history = 10)
+        terminal.append("one\r\ntwo\r\nthree")
+        assertEquals("two\nthree", terminal.visibleText())
+        assertEquals("one\ntwo", terminal.visibleText(1))
+    }
+
+    @Test
+    fun visibleTextJoinsRowsWrappedAtTheMargin() {
+        val (terminal, _) = emulator(rows = 3, cols = 4)
+        terminal.append("abcdefgh\r\nnext")
+        assertEquals("abcdefgh\nnext", terminal.visibleText())
+    }
+
+    @Test
     fun wcwidthClassifiesCommonCharacters() {
         assertEquals(1, WcWidth.of('a'.code))
         assertEquals(2, WcWidth.of('中'.code))

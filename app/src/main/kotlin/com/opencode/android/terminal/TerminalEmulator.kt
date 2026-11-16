@@ -155,6 +155,27 @@ class TerminalEmulator(
         }
     }
 
+    /**
+     * What the user can actually see: the visible rows without the blank rows
+     * below the last line. [scrollOffset] moves the window into scrollback, so a
+     * long-press copies exactly what is painted, not the live screen behind it.
+     * Rows that only wrapped at the margin are joined, like [transcriptText].
+     */
+    fun visibleText(scrollOffset: Int = 0): String {
+        val offset = scrollOffset.coerceIn(0, historySize)
+        return buildString {
+            var started = false
+            var previousWrapped = false
+            for (index in 0 until rows) {
+                val row = lineAt(index - offset) ?: continue
+                if (started && !previousWrapped) append('\n')
+                append(row.text())
+                previousWrapped = row.wrapped
+                started = true
+            }
+        }.trimEnd()
+    }
+
     /** Scrollback and visible screen, with soft-wrapped lines joined. */
     fun transcriptText(): String {
         val rowsToWrite = ArrayList<TerminalRow>(historySize + surface.lines.size)
