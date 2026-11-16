@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
@@ -27,6 +28,7 @@ import android.view.inputmethod.InputMethodManager
 import com.opencode.android.R
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.hypot
 
 /** Colours for one terminal theme, as ARGB ints. [ansi] holds the 16 base colours. */
 data class TerminalColors(
@@ -169,13 +171,16 @@ class TerminalView @JvmOverloads constructor(
     private var selectionStart: Cell? = null
     private var selectionEnd: Cell? = null
 
-    /** True between the long press that starts a selection and the finger lift. */
-    private var draggingSelection = false
-
     /** True while the tap that dismissed a selection is still down. */
     private var dismissingSelection = false
+
+    /** Which end of the selection the current drag moves. */
+    private enum class DragTarget { NONE, START, END }
+    private var dragTarget = DragTarget.NONE
     private var selectionMode: ActionMode? = null
     private val selectionPaint = Paint()
+    private val handleRadius = 9 * density
+    private val handleHitRadius = 24 * density
 
     /** True while this view is registered with [session]. */
     private var listening = false
@@ -317,6 +322,7 @@ class TerminalView @JvmOverloads constructor(
                 }
             }
         }
+        if (selection != null) drawHandles(canvas, emulator, selection)
         if (scrollOffset > 0) drawScrollIndicator(canvas, emulator)
     }
 
@@ -326,6 +332,20 @@ class TerminalView @JvmOverloads constructor(
         val left = padding + from * cellWidth
         val right = padding + to * cellWidth
         canvas.drawRect(left, top.toFloat(), right, (top + lineHeight).toFloat(), selectionPaint)
+    }
+
+    private fun drawHandles(canvas: Canvas, emulator: TerminalEmulator, selection: Selection) {
+        drawHandle(canvas, handleCenter(selection, true, emulator))
+        drawHandle(canvas, handleCenter(selection, false, emulator))
+    }
+
+    /** A round grab handle with a contrasting ring so it shows on any theme. */
+    private fun drawHandle(canvas: Canvas, center: PointF?) {
+        if (center == null) return
+        fillPaint.color = colors.background
+        canvas.drawCircle(center.x, center.y, handleRadius + 1.5f * density, fillPaint)
+        fillPaint.color = colors.cursor
+        canvas.drawCircle(center.x, center.y, handleRadius, fillPaint)
     }
 
     private fun resolveColor(index: Int, foreground: Boolean, inverse: Boolean): Int {
@@ -583,7 +603,7 @@ class TerminalView @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (draggingSelection || hasSelection || dismissingSelection) {
+        if (dragTarget != DragTarget.NONE || hasSelection || dismissingSelection) {
             handleSelectionTouch(event)
             return true
         }
@@ -693,15 +713,17 @@ class TerminalView @JvmOverloads constructor(
         }
         selectionStart = Cell(line, word.first)
         selectionEnd = Cell(line, word.last)
-        draggingSelection = true
+        dragTarget = DragTarget.END
         dismissingSelection = false
         invalidate()
         startSelectionActionMode()
         return true
     }
 
-    /** Drag after a long press: move the focus cell, scrolling at the edges. */
-    private fun extendSelection(event: MotionEvent) {
+    /** Drag a handle: move the chosen endpoint, scrolling at the view edges. */
+    private fun dragSelection(event: MotionEvent) {
+        val target = dragTarget
+        if (target == DragTarget.NONE) return
         val active = session ?: return
         val emulator = active.emulator
         val rawRow = floor((event.y - padding) / lineHeight).toInt()
@@ -714,32 +736,99 @@ class TerminalView @JvmOverloads constructor(
             val (column, row) = cellAt(event)
             Cell(emulator.historySize + row - scrollOffset, column)
         }
-        selectionEnd = selected
+        when (target) {
+            DragTarget.START -> {
+                selectionStart = selected
+                // Keep the grabbed handle under the finger when the ends cross.
+                if (selectionEnd?.let { compareCells(selected, it) > 0 } == true) {
+                    dragTarget = DragTarget.END
+                }
+            }
+            DragTarget.END -> {
+                selectionEnd = selected
+                if (selectionStart?.let { compareCells(selected, it) < 0 } == true) {
+                    dragTarget = DragTarget.START
+                }
+            }
+            DragTarget.NONE -> Unit
+        }
         invalidate()
     }
+
+    private fun compareCells(a: Cell, b: Cell): Int =
+        if (a.line != b.line) a.line.compareTo(b.line) else a.col.compareTo(b.col)
 
     private fun handleSelectionTouch(event: MotionEvent) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // Dragging from inside the highlight adjusts it; a tap anywhere
-                // else ends it instead of typing into the shell. The rest of a
+                // A handle always wins: it stays grabbable after the finger that
+                // made the selection was lifted. Dragging from inside the
+                // highlight moves the focus end, and a tap anywhere else ends
+                // the selection instead of typing into the shell. The rest of a
                 // dismissing gesture is swallowed so it cannot also click.
-                val selection = normalizedSelection()
-                val cell = selectionCellAt(event)
-                if (selection != null && cell != null && contains(selection, cell)) {
-                    draggingSelection = true
+                val handle = handleAt(event)
+                if (handle != DragTarget.NONE) {
+                    dragTarget = handle
                 } else {
-                    endSelection()
-                    dismissingSelection = true
+                    val selection = normalizedSelection()
+                    val cell = selectionCellAt(event)
+                    if (selection != null && cell != null && contains(selection, cell)) {
+                        dragTarget = DragTarget.END
+                    } else {
+                        endSelection()
+                        dismissingSelection = true
+                    }
                 }
             }
-            MotionEvent.ACTION_MOVE -> if (draggingSelection) extendSelection(event)
+            MotionEvent.ACTION_MOVE -> if (dragTarget != DragTarget.NONE) dragSelection(event)
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                draggingSelection = false
+                dragTarget = DragTarget.NONE
                 dismissingSelection = false
                 scrollRemainder = 0f
+                invalidate()
+                selectionMode?.invalidateContentRect()
             }
         }
+    }
+
+    /** Picks the endpoint handle under the finger, if any. */
+    private fun handleAt(event: MotionEvent): DragTarget {
+        val active = session ?: return DragTarget.NONE
+        val selection = normalizedSelection() ?: return DragTarget.NONE
+        val emulator = active.emulator
+        val (start, end) = synchronized(emulator) {
+            handleCenter(selection, true, emulator) to handleCenter(selection, false, emulator)
+        }
+        val startDistance = start?.let { hypot(event.x - it.x, event.y - it.y) } ?: Float.MAX_VALUE
+        val endDistance = end?.let { hypot(event.x - it.x, event.y - it.y) } ?: Float.MAX_VALUE
+        return when {
+            minOf(startDistance, endDistance) > handleHitRadius -> DragTarget.NONE
+            startDistance <= endDistance -> DragTarget.START
+            else -> DragTarget.END
+        }
+    }
+
+    /**
+     * Screen position of a selection handle: the bottom outer corner of the
+     * first or last selected cell. Null when that line is scrolled off screen.
+     */
+    private fun handleCenter(selection: Selection, start: Boolean, emulator: TerminalEmulator): PointF? {
+        val contentLine = if (start) selection.first.line else selection.last.line
+        val screenLine = contentLine - emulator.historySize + scrollOffset
+        if (screenLine !in 0 until emulator.rows) return null
+        val row = emulator.lineAt(screenLine - scrollOffset) ?: return null
+        val column = if (start) {
+            row.glyphStart(selection.first.col)
+        } else {
+            (selection.last.col + 1).coerceAtMost(row.size)
+        }
+        val maxX = (width - handleRadius).coerceAtLeast(handleRadius)
+        val maxY = (height - 2 * handleRadius).coerceAtLeast(2 * handleRadius)
+        return PointF(
+            (padding + column * cellWidth).coerceIn(handleRadius, maxX),
+            (padding + screenLine * lineHeight + lineHeight).toFloat()
+                .coerceIn(2 * handleRadius, maxY),
+        )
     }
 
     private fun selectionCellAt(event: MotionEvent): Cell? {
@@ -764,7 +853,7 @@ class TerminalView @JvmOverloads constructor(
 
     /** Ends the selection and closes the floating Copy action. */
     private fun endSelection() {
-        draggingSelection = false
+        dragTarget = DragTarget.NONE
         dismissingSelection = false
         selectionStart = null
         selectionEnd = null
@@ -807,7 +896,7 @@ class TerminalView @JvmOverloads constructor(
 
         override fun onDestroyActionMode(mode: ActionMode) {
             if (selectionMode === mode) selectionMode = null
-            draggingSelection = false
+            dragTarget = DragTarget.NONE
             selectionStart = null
             selectionEnd = null
             invalidate()
