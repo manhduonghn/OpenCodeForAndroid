@@ -108,6 +108,18 @@ class TerminalRow internal constructor(
     }
 
     /**
+     * Moves [column] to the leading cell when it points at the right half of a
+     * double-width glyph, so a selection that starts there still copies the
+     * whole character.
+     */
+    internal fun glyphStart(column: Int): Int =
+        if (column in 1 until glyphs.size && glyphs[column] == TerminalEmulator.WIDE_TAIL) {
+            column - 1
+        } else {
+            column
+        }
+
+    /**
      * Columns of the whitespace-delimited word that contains [column]. A blank
      * cell is its own one-cell word; a tap on the right half of a double-width
      * glyph selects the glyph. Used by the long-press selection.

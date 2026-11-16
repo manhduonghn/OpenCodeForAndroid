@@ -166,7 +166,7 @@ class TerminalEmulator(
         return buildString {
             for (line in firstLine..lastLine) {
                 val row = lineAt(line) ?: continue
-                val from = if (line == firstLine) firstCol else 0
+                val from = if (line == firstLine) row.glyphStart(firstCol) else 0
                 val to = if (line == lastLine) lastCol + 1 else row.size
                 val slice = row.text(from, to)
                 append(if (row.wrapped) slice else slice.trimEnd())

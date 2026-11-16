@@ -588,6 +588,9 @@ class TerminalEmulatorTest {
         terminal.append("\u4f60\u597d")
         assertEquals("你好", terminal.textInRange(0, 0, 0, 3))
         assertEquals("好", terminal.textInRange(0, 2, 0, 2))
+        // Starting on the right half of a glyph still copies the glyph itself.
+        assertEquals("你", terminal.textInRange(0, 1, 0, 1))
+        assertEquals("你好", terminal.textInRange(0, 1, 0, 3))
     }
 
     @Test
