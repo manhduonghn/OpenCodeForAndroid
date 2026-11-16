@@ -394,8 +394,10 @@ web UI or on the server being reachable. It is a pseudo-terminal in the app proc
   and drawn by `TerminalView`; soft-keyboard input goes through a raw
   `InputConnection`, hardware keys through `onKeyDown`. Pinch changes the font size,
   drag scrolls back, long-press selects the word under the finger and dragging
-  extends the selection (scrolling at the top and bottom edges); a floating Copy
-  action puts the selection on the clipboard. The menu copies the whole
+  extends the selection (scrolling at the top and bottom edges). After lifting
+  the finger, round handles at both ends of the selection stay grabbable so the
+  range can be widened or trimmed; a floating Copy action puts the selection on
+  the clipboard. The menu copies the whole
   transcript. The extra-keys row supplies Esc, Tab,
   sticky Ctrl/Alt, arrows, paging, `^C`, F1–F12 and common shell symbols. A
   modifier cycles off → next key → locked; the locked state uses the tertiary
