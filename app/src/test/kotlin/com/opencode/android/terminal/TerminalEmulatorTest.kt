@@ -575,6 +575,13 @@ class TerminalEmulatorTest {
     }
 
     @Test
+    fun visibleTextJoinsRowsWrappedAtTheMargin() {
+        val (terminal, _) = emulator(rows = 3, cols = 4)
+        terminal.append("abcdefgh\r\nnext")
+        assertEquals("abcdefgh\nnext", terminal.visibleText())
+    }
+
+    @Test
     fun wcwidthClassifiesCommonCharacters() {
         assertEquals(1, WcWidth.of('a'.code))
         assertEquals(2, WcWidth.of('中'.code))
