@@ -588,14 +588,15 @@
     <string name="opencode_terminal_restart_title">Khởi động lại shell?</string>
     <string name="opencode_terminal_restart_message">Mọi tiến trình đang chạy trong terminal sẽ bị dừng.</string>
     <string name="opencode_terminal_copy">Sao chép đầu ra</string>
+    <string name="opencode_terminal_copy_selection">Sao chép</string>
     <string name="opencode_terminal_paste">Dán</string>
     <string name="opencode_terminal_keyboard">Bàn phím</string>
     <string name="opencode_terminal_font_reset">Cỡ chữ mặc định</string>
     <string name="opencode_terminal_copied">Đã sao chép đầu ra terminal</string>
-    <string name="opencode_terminal_copied_screen">Đã sao chép nội dung trên màn hình</string>
+    <string name="opencode_terminal_copied_selection">Đã sao chép đoạn đã chọn</string>
     <string name="opencode_terminal_copy_failed">Không sao chép được.</string>
     <string name="opencode_terminal_empty">Terminal chưa có gì để sao chép.</string>
-    <string name="opencode_terminal_empty_screen">Màn hình terminal đang trống.</string>
+    <string name="opencode_terminal_selection_empty">Đoạn chọn đang trống.</string>
     <string name="opencode_terminal_clipboard_empty">Bộ nhớ tạm trống.</string>
     <string name="opencode_terminal_fallback_hint">Chưa có Linux runtime nên pkg chưa dùng được; đang dùng shell của Android. Nhấn “Thử lại” để tải lại.</string>
     <string name="opencode_terminal_key_esc">Esc</string>

@@ -558,27 +558,77 @@ class TerminalEmulatorTest {
     }
 
     @Test
-    fun visibleTextKeepsTheScreenAndDropsBlankRows() {
-        val (terminal, _) = emulator(rows = 5, cols = 10)
-        terminal.append("first\r\nsecond")
-        assertEquals("first\nsecond", terminal.visibleText())
-        terminal.append("$escape[2J")
-        assertEquals("", terminal.visibleText())
+    fun selectionExtractsCellsFromOneRow() {
+        val (terminal, _) = emulator(rows = 3, cols = 20)
+        terminal.append("hello world")
+        assertEquals("hello", terminal.textInRange(0, 0, 0, 4))
+        assertEquals("world", terminal.textInRange(0, 6, 0, 10))
+        assertEquals("", terminal.textInRange(0, 5, 0, 4))
     }
 
     @Test
-    fun visibleTextFollowsTheScrollbackOffset() {
+    fun selectionFollowsReadingOrderAcrossRows() {
+        val (terminal, _) = emulator(rows = 3, cols = 10)
+        terminal.append("alpha\r\nbeta\r\ngamma")
+        assertEquals("pha\nbeta\nga", terminal.textInRange(0, 2, 2, 1))
+        assertEquals("", terminal.textInRange(2, 0, 1, 0))
+    }
+
+    @Test
+    fun selectionReachesIntoScrollback() {
         val (terminal, _) = emulator(rows = 2, cols = 10, history = 10)
         terminal.append("one\r\ntwo\r\nthree")
-        assertEquals("two\nthree", terminal.visibleText())
-        assertEquals("one\ntwo", terminal.visibleText(1))
+        assertEquals("one", terminal.textInRange(-1, 0, -1, 2))
+        assertEquals("two\nthree", terminal.textInRange(0, 0, 1, 4))
     }
 
     @Test
-    fun visibleTextJoinsRowsWrappedAtTheMargin() {
+    fun selectionSkipsTheTailOfWideGlyphs() {
+        val (terminal, _) = emulator(rows = 2, cols = 10)
+        terminal.append("\u4f60\u597d")
+        assertEquals("你好", terminal.textInRange(0, 0, 0, 3))
+        assertEquals("好", terminal.textInRange(0, 2, 0, 2))
+    }
+
+    @Test
+    fun selectionJoinsRowsWrappedAtTheMargin() {
         val (terminal, _) = emulator(rows = 3, cols = 4)
         terminal.append("abcdefgh\r\nnext")
-        assertEquals("abcdefgh\nnext", terminal.visibleText())
+        assertEquals("abcdefgh", terminal.textInRange(0, 0, 1, 3))
+        assertEquals("cdefgh\nnext", terminal.textInRange(0, 2, 2, 3))
+    }
+
+    @Test
+    fun wordBoundsStopAtWhitespace() {
+        val (terminal, _) = emulator(rows = 2, cols = 20)
+        terminal.append("git status --short")
+        val row = terminal.lineAt(0)!!
+        assertEquals(0..2, row.wordBounds(1))
+        assertEquals(4..9, row.wordBounds(7))
+        assertEquals(11..17, row.wordBounds(15))
+        assertEquals(10..10, row.wordBounds(10))
+    }
+
+    @Test
+    fun wordBoundsIncludeBothCellsOfAWideGlyph() {
+        val (terminal, _) = emulator(rows = 2, cols = 10)
+        terminal.append("你 ok")
+        val row = terminal.lineAt(0)!!
+        assertEquals(0..1, row.wordBounds(0))
+        assertEquals(0..1, row.wordBounds(1))
+        assertEquals(3..4, row.wordBounds(4))
+    }
+
+    @Test
+    fun textBoundsCoverTheWrittenPartOfALine() {
+        val (terminal, _) = emulator(rows = 2, cols = 10)
+        terminal.append("  a b  ")
+        val row = terminal.lineAt(0)!!
+        assertEquals(0..4, row.textBounds())
+        assertTrue(row.hasTextAt(2))
+        assertFalse(row.hasTextAt(6))
+        terminal.append("$escape[2J")
+        assertNull(terminal.lineAt(0)!!.textBounds())
     }
 
     @Test

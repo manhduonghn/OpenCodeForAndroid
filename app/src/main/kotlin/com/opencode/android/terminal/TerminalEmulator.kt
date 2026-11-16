@@ -156,22 +156,21 @@ class TerminalEmulator(
     }
 
     /**
-     * What the user can actually see: the visible rows without the blank rows
-     * below the last line. [scrollOffset] moves the window into scrollback, so a
-     * long-press copies exactly what is painted, not the live screen behind it.
-     * Rows that only wrapped at the margin are joined, like [transcriptText].
+     * The text between two cells, in reading order, for the selection UI.
+     * [firstLine] and [lastLine] are [lineAt] indexes, so negative rows reach
+     * into scrollback. Rows that only wrapped at the margin are joined without
+     * a newline; trailing blanks of each hard line are dropped.
      */
-    fun visibleText(scrollOffset: Int = 0): String {
-        val offset = scrollOffset.coerceIn(0, historySize)
+    fun textInRange(firstLine: Int, firstCol: Int, lastLine: Int, lastCol: Int): String {
+        if (firstLine > lastLine || (firstLine == lastLine && firstCol > lastCol)) return ""
         return buildString {
-            var started = false
-            var previousWrapped = false
-            for (index in 0 until rows) {
-                val row = lineAt(index - offset) ?: continue
-                if (started && !previousWrapped) append('\n')
-                append(row.text())
-                previousWrapped = row.wrapped
-                started = true
+            for (line in firstLine..lastLine) {
+                val row = lineAt(line) ?: continue
+                val from = if (line == firstLine) firstCol else 0
+                val to = if (line == lastLine) lastCol + 1 else row.size
+                val slice = row.text(from, to)
+                append(if (row.wrapped) slice else slice.trimEnd())
+                if (!row.wrapped && line != lastLine) append('\n')
             }
         }.trimEnd()
     }

@@ -152,7 +152,7 @@ class TerminalScreen(
         view.onModifiersUsed = { consumeModifiers() }
         view.onPasteRequest = { pasteClipboard() }
         view.onCopyRequest = { copyOutput() }
-        view.onCopyScreenRequest = { text -> copyScreen(text) }
+        view.onCopySelection = { text -> copySelection(text) }
         view.onFontSizeChange = { size ->
             OpenCodeSettings.setTerminalFontSize(activity, size)
         }
@@ -257,6 +257,7 @@ class TerminalScreen(
         if (!isVisible) return
         stopRepeat()
         resetModifiers()
+        view.clearSelection()
         view.hideKeyboard()
         listener.onTerminalClosed()
         OverlayMotion.conceal(panel)
@@ -795,13 +796,13 @@ class TerminalScreen(
         copyToClipboard(text, R.string.opencode_terminal_copied)
     }
 
-    /** Long-press on the terminal: only the output currently on screen. */
-    private fun copyScreen(text: String) {
+    /** Copy action of the floating selection toolbar. */
+    private fun copySelection(text: String) {
         if (text.isBlank()) {
-            toast(R.string.opencode_terminal_empty_screen)
+            toast(R.string.opencode_terminal_selection_empty)
             return
         }
-        copyToClipboard(text, R.string.opencode_terminal_copied_screen)
+        copyToClipboard(text, R.string.opencode_terminal_copied_selection)
     }
 
     private fun copyToClipboard(text: String, copiedMessage: Int) {

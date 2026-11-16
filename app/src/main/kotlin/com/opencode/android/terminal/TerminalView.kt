@@ -4,15 +4,19 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
 import android.text.InputType
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.ActionMode
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -105,11 +109,11 @@ class TerminalView @JvmOverloads constructor(
     var onCopyRequest: (() -> Unit)? = null
 
     /**
-     * Long-press on the screen. It receives the text currently painted, including
-     * scrollback when the user scrolled up; the menu keeps the action that copies
-     * the whole transcript.
+     * Called with the text of the selection when the user taps Copy in the
+     * floating action mode. The view does not own the clipboard, so the screen
+     * that hosts it can show the usual toast and follow the platform rules.
      */
-    var onCopyScreenRequest: ((String) -> Unit)? = null
+    var onCopySelection: ((String) -> Unit)? = null
 
     private val density = resources.displayMetrics.density
     private val baseTypeface: Typeface = Typeface.MONOSPACE
@@ -154,6 +158,25 @@ class TerminalView @JvmOverloads constructor(
     private var seenHistoryPushes = 0L
     private var scrollRemainder = 0f
 
+    /**
+     * A cell of the terminal content. The line is a content index rather than a
+     * screen row: scrollback and the live screen share the numbering, so a
+     * selection stays on the same text while output scrolls below it.
+     */
+    private data class Cell(val line: Int, val col: Int)
+
+    /** Inclusive endpoints of the selection, in touch order. */
+    private var selectionStart: Cell? = null
+    private var selectionEnd: Cell? = null
+
+    /** True between the long press that starts a selection and the finger lift. */
+    private var draggingSelection = false
+
+    /** True while the tap that dismissed a selection is still down. */
+    private var dismissingSelection = false
+    private var selectionMode: ActionMode? = null
+    private val selectionPaint = Paint()
+
     /** True while this view is registered with [session]. */
     private var listening = false
 
@@ -168,6 +191,7 @@ class TerminalView @JvmOverloads constructor(
 
     fun attach(next: TerminalSession?) {
         if (session === next) return
+        endSelection()
         stopListening()
         session = next
         scrollOffset = 0
@@ -205,6 +229,7 @@ class TerminalView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        endSelection()
         stopListening()
         super.onDetachedFromWindow()
     }
@@ -268,13 +293,35 @@ class TerminalView @JvmOverloads constructor(
         scrollOffset = scrollOffset.coerceIn(0, emulator.historySize)
 
         val showCursor = scrollOffset == 0 && emulator.cursorVisible && active.running
+        val selection = normalizedSelection()
+        val history = emulator.historySize
         for (line in 0 until emulator.rows) {
             val row = emulator.lineAt(line - scrollOffset) ?: continue
             val top = padding + line * lineHeight
             val cursor = if (showCursor && line == emulator.cursorRow) emulator.cursorCol else NO_CURSOR
             drawLine(canvas, row, top, emulator.cols, inverse, cursor, emulator.cursorShape)
+            if (selection != null) {
+                val contentLine = history + line - scrollOffset
+                if (contentLine in selection.first.line..selection.last.line) {
+                    val from = if (contentLine == selection.first.line) selection.first.col else 0
+                    val to = if (contentLine == selection.last.line) {
+                        selection.last.col + 1
+                    } else {
+                        row.size
+                    }
+                    drawSelection(canvas, top, from, minOf(to, row.size))
+                }
+            }
         }
         if (scrollOffset > 0) drawScrollIndicator(canvas, emulator)
+    }
+
+    private fun drawSelection(canvas: Canvas, top: Int, from: Int, to: Int) {
+        if (to <= from) return
+        selectionPaint.color = (colors.cursor and 0x00FFFFFF) or (0x55 shl 24)
+        val left = padding + from * cellWidth
+        val right = padding + to * cellWidth
+        canvas.drawRect(left, top.toFloat(), right, (top + lineHeight).toFloat(), selectionPaint)
     }
 
     private fun resolveColor(index: Int, foreground: Boolean, inverse: Boolean): Int {
@@ -504,8 +551,7 @@ class TerminalView @JvmOverloads constructor(
         }
 
         override fun onLongPress(event: MotionEvent) {
-            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            onCopyScreenRequest?.invoke(visibleText())
+            if (selectWordAt(event)) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         }
     })
 
@@ -533,6 +579,10 @@ class TerminalView @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (draggingSelection || hasSelection || dismissingSelection) {
+            handleSelectionTouch(event)
+            return true
+        }
         scaleDetector.onTouchEvent(event)
         gestures.onTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
@@ -607,21 +657,193 @@ class TerminalView @JvmOverloads constructor(
         release?.let(active::write)
     }
 
+    // ------------------------------------------------------------ selection
+
+    private data class Selection(val first: Cell, val last: Cell)
+
+    private val hasSelection: Boolean get() = selectionStart != null
+
+    private fun normalizedSelection(): Selection? {
+        val start = selectionStart ?: return null
+        val end = selectionEnd ?: return null
+        return if (start.line < end.line || (start.line == end.line && start.col <= end.col)) {
+            Selection(start, end)
+        } else {
+            Selection(end, start)
+        }
+    }
+
+    /** Long press: select the word under the finger and start the drag. */
+    private fun selectWordAt(event: MotionEvent): Boolean {
+        val active = session ?: return false
+        val emulator = active.emulator
+        val (column, row) = cellAt(event)
+        val (line, word) = synchronized(emulator) {
+            val lineRow = emulator.lineAt(row - scrollOffset) ?: return false
+            val bounds = if (lineRow.hasTextAt(column)) {
+                lineRow.wordBounds(column)
+            } else {
+                lineRow.textBounds() ?: return false
+            }
+            (emulator.historySize + row - scrollOffset) to bounds
+        }
+        selectionStart = Cell(line, word.first)
+        selectionEnd = Cell(line, word.last)
+        draggingSelection = true
+        dismissingSelection = false
+        invalidate()
+        startSelectionActionMode()
+        return true
+    }
+
+    /** Drag after a long press: move the focus cell, scrolling at the edges. */
+    private fun extendSelection(event: MotionEvent) {
+        val active = session ?: return
+        val emulator = active.emulator
+        val rawRow = floor((event.y - padding) / lineHeight).toInt()
+        val selected = synchronized(emulator) {
+            val maximum = emulator.historySize
+            when {
+                rawRow < 0 -> scrollOffset = (scrollOffset + 1).coerceAtMost(maximum)
+                rawRow >= gridRows && scrollOffset > 0 -> scrollOffset--
+            }
+            val (column, row) = cellAt(event)
+            Cell(emulator.historySize + row - scrollOffset, column)
+        }
+        selectionEnd = selected
+        invalidate()
+    }
+
+    private fun handleSelectionTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                // Dragging from inside the highlight adjusts it; a tap anywhere
+                // else ends it instead of typing into the shell. The rest of a
+                // dismissing gesture is swallowed so it cannot also click.
+                val selection = normalizedSelection()
+                val cell = selectionCellAt(event)
+                if (selection != null && cell != null && contains(selection, cell)) {
+                    draggingSelection = true
+                } else {
+                    endSelection()
+                    dismissingSelection = true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (draggingSelection) extendSelection(event)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                draggingSelection = false
+                dismissingSelection = false
+                scrollRemainder = 0f
+            }
+        }
+    }
+
+    private fun selectionCellAt(event: MotionEvent): Cell? {
+        val active = session ?: return null
+        val (column, row) = cellAt(event)
+        return synchronized(active.emulator) {
+            Cell(active.emulator.historySize + row - scrollOffset, column)
+        }
+    }
+
+    private fun contains(selection: Selection, cell: Cell): Boolean {
+        if (cell.line < selection.first.line || cell.line > selection.last.line) return false
+        val from = if (cell.line == selection.first.line) selection.first.col else 0
+        val to = if (cell.line == selection.last.line) selection.last.col else Int.MAX_VALUE
+        return cell.col in from..to
+    }
+
+    private fun startSelectionActionMode() {
+        if (selectionMode != null) return
+        selectionMode = startActionMode(selectionActionMode, ActionMode.TYPE_FLOATING)
+    }
+
+    /** Ends the selection and closes the floating Copy action. */
+    private fun endSelection() {
+        draggingSelection = false
+        dismissingSelection = false
+        selectionStart = null
+        selectionEnd = null
+        val mode = selectionMode
+        selectionMode = null
+        mode?.finish()
+        invalidate()
+    }
+
+    private fun copySelectedText() {
+        val active = session ?: return
+        val selection = normalizedSelection() ?: return
+        val text = synchronized(active.emulator) {
+            val history = active.emulator.historySize
+            active.emulator.textInRange(
+                selection.first.line - history,
+                selection.first.col,
+                selection.last.line - history,
+                selection.last.col,
+            )
+        }
+        onCopySelection?.invoke(text)
+    }
+
+    private val selectionActionMode = object : ActionMode.Callback2() {
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            menu.add(Menu.NONE, COPY_ACTION, Menu.NONE, R.string.opencode_terminal_copy_selection)
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+            return true
+        }
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean = false
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            if (item.itemId != COPY_ACTION) return false
+            copySelectedText()
+            mode.finish()
+            return true
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) {
+            if (selectionMode === mode) selectionMode = null
+            draggingSelection = false
+            selectionStart = null
+            selectionEnd = null
+            invalidate()
+        }
+
+        /** Anchor the floating toolbar to the highlighted cells. */
+        override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+            val selection = normalizedSelection()
+            if (selection == null) {
+                outRect.set(0, 0, width, 0)
+                return
+            }
+            val active = session
+            val history = active?.let { synchronized(it.emulator) { it.emulator.historySize } } ?: 0
+            val lastRow = (gridRows - 1).coerceAtLeast(0)
+            val firstLine = (selection.first.line - history + scrollOffset).coerceIn(0, lastRow)
+            val lastLine = (selection.last.line - history + scrollOffset).coerceIn(0, lastRow)
+            val left = if (selection.first.line == selection.last.line) selection.first.col else 0
+            val right = if (selection.first.line == selection.last.line) {
+                selection.last.col + 1
+            } else {
+                gridCols
+            }
+            outRect.set(
+                (padding + left * cellWidth).toInt(),
+                padding + firstLine * lineHeight,
+                (padding + right * cellWidth).toInt(),
+                padding + (lastLine + 1) * lineHeight,
+            )
+        }
+    }
+
     fun showKeyboard() {
         requestFocus()
         val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         manager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
     }
 
-    /**
-     * The text currently painted on the view: the live screen, or the part of the
-     * scrollback the user scrolled back to. Blank rows below the last line are
-     * dropped so an empty terminal does not fill the clipboard with newlines.
-     */
-    fun visibleText(): String {
-        val active = session ?: return ""
-        return synchronized(active.emulator) { active.emulator.visibleText(scrollOffset) }
-    }
+    /** Ends any text selection; called when the panel is hidden. */
+    fun clearSelection() = endSelection()
 
     fun hideKeyboard() {
         val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -754,7 +976,7 @@ class TerminalView @JvmOverloads constructor(
                     return true
                 }
                 KeyEvent.KEYCODE_C -> {
-                    onCopyRequest?.invoke()
+                    if (hasSelection) copySelectedText() else onCopyRequest?.invoke()
                     return true
                 }
             }
@@ -811,5 +1033,6 @@ class TerminalView @JvmOverloads constructor(
         const val MIN_FONT_SP = 7f
         const val MAX_FONT_SP = 30f
         private const val NO_CURSOR = -1
+        private const val COPY_ACTION = 1
     }
 }
