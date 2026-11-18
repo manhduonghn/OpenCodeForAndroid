@@ -113,14 +113,11 @@ object OpenCodeBootstrap {
     /** Contains the version that is currently installed. */
     const val READY_MARKER_PATH = "$OC_HOME/.native-ready"
 
-    /**
-     * Fingerprint ("<size> <mtime>") of the installed binary whose ELF interpreter was pointed at
-     * the glibc loader. Present only when the binary really starts directly.
-     */
-    const val NATIVE_INTERP_MARKER_PATH = "$OC_HOME/.native-interp"
+    /** Fixed bionic launcher that runs the installed OpenCode build through the glibc loader. */
+    const val LAUNCHER_PATH = "$PREFIX/libexec/oc-launcher"
 
-    /** Remembers a failed attempt, so a 240 MB copy is not retried on every app start. */
-    private const val NATIVE_REPAIR_MARKER_PATH = "$OC_HOME/.native-repair-tried"
+    /** Records which app build extracted the current OpenCode launcher. */
+    private const val LAUNCHER_MARKER_PATH = "$OC_HOME/.oc-launcher"
 
     /**
      * The `opencode-pty` helper that the web terminal spawns. OpenCode normally extracts its own
@@ -303,8 +300,8 @@ object OpenCodeBootstrap {
     /** Bumped when the bridge binary has to be extracted again, even for the same app build. */
     private const val BRIDGE_VERSION = 1
 
-    /** Bumped when the native interpreter repair has to be retried for an installed binary. */
-    private const val NATIVE_REPAIR_VERSION = 11
+    /** Bumped when the OpenCode launcher has to be extracted again. */
+    private const val LAUNCHER_VERSION = 1
 
     /** First line of the profile this app writes, a profile without it is left alone. */
     private const val PROFILE_MARKER =
@@ -818,19 +815,19 @@ object OpenCodeBootstrap {
         if (!isPrefixReady()) problems.add("the Linux toolchain ($PREFIX/bin/bash)")
         if (!File("$PREFIX/bin/sh").exists()) problems.add("the shell link ($PREFIX/bin/sh)")
         if (!File(READY_MARKER_PATH).isFile) problems.add("the installed version marker ($READY_MARKER_PATH)")
-        if (!File(OPENCODE_BIN_PATH).exists()) problems.add("the opencode symlink ($OPENCODE_BIN_PATH)")
+        if (!File(LINK_PATH).exists()) problems.add("the opencode symlink ($LINK_PATH)")
+        if (!isExecutable(File(OPENCODE_BIN_PATH))) problems.add("the opencode command ($OPENCODE_BIN_PATH)")
         if (!isExecutable(File(BRIDGE_PATH))) problems.add("the CLI bridge ($BRIDGE_PATH)")
         if (!File(PKG_PATH).exists()) problems.add("the pkg symlink ($PKG_PATH)")
-        if (!File(LINK_PATH).exists()) problems.add("the opencode symlink ($LINK_PATH)")
         if (findGlibcLoader() == null) problems.add("the glibc loader ($GLIBC_LIB_DIR/ld-linux-*.so.*)")
-        if (!isExecutable(File("$PREFIX/bin/patchelf"))) problems.add("the patchelf tool ($PREFIX/bin/patchelf)")
 
         return problems
     }
 
     /** True for a problem that the maintenance pass repairs without downloading anything. */
     private fun isEntryPointProblem(problem: String): Boolean =
-        problem == "the opencode symlink ($OPENCODE_BIN_PATH)" ||
+        problem == "the opencode command ($OPENCODE_BIN_PATH)" ||
+            problem == "the opencode symlink ($LINK_PATH)" ||
             problem == "the CLI bridge ($BRIDGE_PATH)" ||
             problem == "the pkg symlink ($PKG_PATH)"
 
@@ -1473,20 +1470,14 @@ object OpenCodeBootstrap {
             ensureRuntimeDirectories()
             ensureResolvConf()
 
-            // 'patchelf' is needed to patch the OpenCode binary, it links against libc++_shared.so,
-            // an old libc++ makes it die with "cannot locate symbol __hash_memory". Verify it
-            // before downloading ~100 MB.
+            // The OpenCode binary is launched through the glibc loader of the prefix (no
+            // per-binary PT_INTERP patch). Patchelf is still part of the toolchain and is kept
+            // healthy for other uses, but a broken patchelf must not block the install.
             if (!patchelfWorks()) {
-                setStage(OpenCodeInstallState.STAGE_APT_INSTALL, "Repairing the patchelf tool...")
                 try {
                     installPackages(listOf("patchelf", "libc++"), "Could not reinstall patchelf")
                 } catch (e: Exception) {
                     Log.w(LOG_TAG, "Could not reinstall patchelf", e)
-                }
-                if (!patchelfWorks()) {
-                    throw InstallException(
-                        "The 'patchelf' tool cannot run on this device: ${tail(lastOutput, 400)}",
-                    )
                 }
             }
 
@@ -1495,6 +1486,11 @@ object OpenCodeBootstrap {
             // (eg. when the user runs them from a terminal).
             patchRpath(File("$PREFIX/bin/bash"), "$PREFIX/lib")
             patchRpath(File("$PREFIX/bin/patchelf"), "$PREFIX/lib")
+
+            // Relocate the glibc runtime up front so the loader and libc read paths of this
+            // sandbox; the OpenCode binary is verified through that loader below.
+            ensurePathAliases()
+            relocateGlibc(loader)
 
             // The login shell of the terminal and the glibc runtime both contain the com.termux
             // prefix in their read-only data. Move it to the sandbox root, which has the same
@@ -1523,7 +1519,7 @@ object OpenCodeBootstrap {
                 val installed = installBinary(binary, version, loader)
                 if (installed == null) {
                     // The new build does not run, keep the old one if there is one.
-                    if (!File(LINK_PATH).exists()) {
+                    if (!resolveLink(File(LINK_PATH)).isFile) {
                         throw InstallException("The downloaded OpenCode build does not run on this device.")
                     }
                     status("WARNING: the downloaded build does not run on this device, keeping the installed one.")
@@ -1535,8 +1531,8 @@ object OpenCodeBootstrap {
                         throw InstallException("Could not write the installation markers: ${e.message}")
                     }
                 }
-                // The web terminal needs the same interpreter patch as the CLI; prepare it before
-                // the shell profile is written so that it is exported there too.
+                // The web terminal helper is carved from the active CLI build; (re)build it so the
+                // terminal matches the version that is now installed.
                 if (ensureTerminalRuntime() == null) {
                     status("WARNING: the terminal helper could not be prepared, the terminal may not start.")
                 }
@@ -1583,8 +1579,6 @@ object OpenCodeBootstrap {
             // install that predates it without reinstalling a package first (the `pkg` wrapper).
             ensurePackageEnvironment(context)
             refreshResolvConf(context)
-            repairNativeInterp()
-            refreshNativeMarker()
             installEntrypoints()
         }
 
@@ -1634,8 +1628,6 @@ object OpenCodeBootstrap {
             ensurePackageEnvironment(context)
             refreshResolvConf(context)
             patchLoginShellPaths()
-            repairNativeInterp()
-            refreshNativeMarker()
             installEntrypoints()
         }
 
@@ -2055,7 +2047,11 @@ object OpenCodeBootstrap {
         }
 
         /**
-         * Patch, verify and install the binary.
+         * Install the downloaded OpenCode binary and verify that it runs in this environment.
+         *
+         * The binary is always started through the glibc loader of the prefix with
+         * liboc-pathmap.so preloaded (when available), so it does not need its PT_INTERP patched
+         * and an update or downgrade never depends on per-binary surgery.
          *
          * @return the installed binary, or null when the downloaded build does not run but an
          *     older version is already installed.
@@ -2080,67 +2076,27 @@ object OpenCodeBootstrap {
                 deleteQuietly(binary)
             }
 
-            setStage(OpenCodeInstallState.STAGE_PATCH, "Preparing the OpenCode binary...")
-            // Patch PT_INTERP so that the binary starts directly. This is not cosmetic: OpenCode
-            // spawns its own background server through /proc/self/exe, and with the explicit
-            // loader that path is ld-linux, so the child would run "ld-linux serve" and die with
-            // "serve: cannot open shared object file". When the patch cannot be applied the loader
-            // fallback still works for the foreground TUI, so it is not fatal.
-            ensurePathAliases()
-            var nativeInterp = false
-            if (relocateGlibc(loader)) {
-                status("Pointing the binary at the glibc runtime...")
-                val patch = run(
-                    listOf(
-                        "$PREFIX/bin/patchelf", "--set-interpreter", loader, staged.absolutePath,
-                    ),
-                    PATCH_TIMEOUT_MS,
-                    false,
-                )
-                nativeInterp = patch.exitCode == 0
-                if (!nativeInterp) {
-                    Log.w(
-                        LOG_TAG,
-                        "Could not set the interpreter of the OpenCode binary: ${tail(patch.output, 200)}",
-                    )
-                }
-            }
-
             try {
                 Os.chmod(staged.absolutePath, MODE_755)
             } catch (e: Exception) {
                 Log.w(LOG_TAG, "Could not make the OpenCode binary executable", e)
             }
 
+            setStage(OpenCodeInstallState.STAGE_PATCH, "Preparing the OpenCode runtime...")
+            // The loader and libc are used at run time, so they must read the paths of this
+            // sandbox (resolver, etc.). Aliases make the relocated strings resolvable.
+            ensurePathAliases()
+            relocateGlibc(loader)
+            // Make sure the path-map helper is available for the verification and for runtime.
+            installNativeTools()
+
             setStage(OpenCodeInstallState.STAGE_VERIFY, "Verifying the OpenCode binary...")
-            var verify: CmdResult
-            if (nativeInterp) {
-                // Same environment as the direct executable: no bionic LD_LIBRARY_PATH/LD_PRELOAD.
-                verify = runNative(listOf(staged.absolutePath, "--version"), VERIFY_TIMEOUT_MS)
-                if (!looksLikeAVersion(verify)) {
-                    // The interpreter patch alone is not enough on this build, keep the binary and
-                    // let the service use the explicit loader instead. The terminal entry point is
-                    // a direct symlink, so a build that cannot start directly only works through
-                    // the app until the next successful repair.
-                    status("WARNING: this build does not start directly, falling back to the glibc loader.")
-                    verify = run(
-                        listOf(loader, "--library-path", GLIBC_LIB_DIR, staged.absolutePath, "--version"),
-                        VERIFY_TIMEOUT_MS,
-                        false,
-                    )
-                    nativeInterp = false
-                }
-            } else {
-                verify = run(
-                    listOf(loader, "--library-path", GLIBC_LIB_DIR, staged.absolutePath, "--version"),
-                    VERIFY_TIMEOUT_MS,
-                    false,
-                )
-            }
+            val verify = runOpenCodeBinary(listOf(staged.absolutePath, "--version"), VERIFY_TIMEOUT_MS)
             if (!looksLikeAVersion(verify)) {
                 deleteQuietly(staged)
-                if (target.isFile) {
+                if (target.isFile || resolveLink(File(LINK_PATH)).isFile) {
                     status("WARNING: the downloaded build does not run, keeping the installed one.")
+                    Log.w(LOG_TAG, "New OpenCode build failed verification: ${tail(verify.output, 400)}")
                     return null
                 }
                 throw InstallException(
@@ -2165,8 +2121,6 @@ object OpenCodeBootstrap {
                 Log.w(LOG_TAG, "Could not make the OpenCode binary executable", e)
             }
 
-            writeNativeMarker(target, nativeInterp)
-
             // Every build is ~130 MB, keep only the one that is linked.
             pruneOldBuilds(target)
 
@@ -2174,88 +2128,37 @@ object OpenCodeBootstrap {
         }
 
         /**
-         * Record whether the installed binary can be started directly. The service compares the
-         * fingerprint before it skips the explicit loader.
+         * Run an OpenCode binary through the glibc loader with the path-map preload, the same way
+         * the fixed launcher does. This keeps the binary usable without patching its PT_INTERP.
          */
-        private fun writeNativeMarker(binary: File, nativeInterp: Boolean) {
-            val marker = File(NATIVE_INTERP_MARKER_PATH)
-            if (!nativeInterp) {
-                deleteQuietly(marker)
-                return
+        private fun runOpenCodeBinary(cmd: List<String>, timeoutMs: Long): CmdResult {
+            if (cmd.isEmpty()) return CmdResult(-1, "", "empty command")
+            val loader = findGlibcLoader() ?: return CmdResult(-1, "", "glibc loader is missing")
+            val binary = cmd[0]
+            val args = ArrayList<String>()
+            args.add(loader)
+            val pathmap = File(PATHMAP_PATH)
+            if (pathmap.isFile) {
+                args.add("--preload")
+                args.add(pathmap.absolutePath)
             }
+            args.add("--library-path")
+            args.add(GLIBC_LIB_DIR)
+            args.addAll(cmd)
+
+            // The loader must not pick up bionic libraries; OC_REAL_EXE lets the preload report the
+            // real program as /proc/self/exe.
+            val prevLib = env.remove("LD_LIBRARY_PATH")
+            val prevPreload = env.remove("LD_PRELOAD")
+            val prevReal = env["OC_REAL_EXE"]
+            env["OC_REAL_EXE"] = binary
             try {
-                writeTextFile(marker, binaryFingerprint(binary) + "\n")
-            } catch (e: IOException) {
-                Log.w(LOG_TAG, "Could not write $marker", e)
+                return run(args, timeoutMs, false)
+            } finally {
+                if (prevLib != null) env["LD_LIBRARY_PATH"] = prevLib else env.remove("LD_LIBRARY_PATH")
+                if (prevPreload != null) env["LD_PRELOAD"] = prevPreload else env.remove("LD_PRELOAD")
+                if (prevReal != null) env["OC_REAL_EXE"] = prevReal else env.remove("OC_REAL_EXE")
             }
-        }
-
-        /**
-         * Drop the marker when the binary behind the symlink changed (eg. the auto updater
-         * replaced it), so the service uses the explicit loader again.
-         */
-        private fun refreshNativeMarker() {
-            val marker = File(NATIVE_INTERP_MARKER_PATH)
-            val stamp = readTrimmed(marker)
-            if (stamp.isEmpty()) return
-            val binary = resolveLink(File(LINK_PATH))
-            if (!binary.isFile || stamp != binaryFingerprint(binary)) {
-                status("The OpenCode binary changed, using the glibc loader again.")
-                deleteQuietly(marker)
-            }
-        }
-
-        /**
-         * Patch the interpreter of an already installed binary (an installation from an older
-         * version of the app). The binary is copied first; the original is only replaced after the
-         * copy starts natively, so a failure can never break a working installation.
-         */
-        private fun repairNativeInterp() {
-            val binary = resolveLink(File(LINK_PATH))
-            if (!binary.isFile || isNativeBinary(binary)) return
-
-            val attempt = "$NATIVE_REPAIR_VERSION ${binaryFingerprint(binary)}"
-            val repairMarker = File(NATIVE_REPAIR_MARKER_PATH)
-            if (attempt == readTrimmed(repairMarker)) return
-
-            val loader = findGlibcLoader()
-            if (loader == null || !relocateGlibc(loader) || !patchelfWorks()) return
-
-            status("Preparing the installed OpenCode binary for a direct start...")
-            val temp = File(binary.absolutePath + ".native-new")
-            deleteQuietly(temp)
-            if (!copyFile(binary, temp)) {
-                Log.w(LOG_TAG, "Could not copy the OpenCode binary, keeping the glibc loader path.")
-                deleteQuietly(temp)
-                writeTextFileQuietly(repairMarker, attempt + "\n")
-                return
-            }
-            try {
-                Os.chmod(temp.absolutePath, MODE_755)
-            } catch (e: Exception) {
-                Log.w(LOG_TAG, "Could not make $temp executable", e)
-            }
-
-            val patch = run(
-                listOf("$PREFIX/bin/patchelf", "--set-interpreter", loader, temp.absolutePath),
-                PATCH_TIMEOUT_MS,
-                false,
-            )
-            val verify = if (patch.exitCode == 0) {
-                runNative(listOf(temp.absolutePath, "--version"), VERIFY_TIMEOUT_MS)
-            } else {
-                null
-            }
-
-            if (verify == null || !looksLikeAVersion(verify) || !temp.renameTo(binary)) {
-                Log.w(LOG_TAG, "Could not prepare the installed binary, keeping the glibc loader path.")
-                deleteQuietly(temp)
-                writeTextFileQuietly(repairMarker, attempt + "\n")
-                return
-            }
-
-            writeNativeMarker(binary, true)
-            deleteQuietly(repairMarker)
         }
 
         /** Delete the binaries of earlier versions, they waste a lot of app storage. */
@@ -2354,22 +2257,25 @@ object OpenCodeBootstrap {
         /* -------------------------------------------------------------- entry points */
 
         /**
-         * Install the terminal entry points: `opencode` is a symlink to the managed binary and
-         * `pkg` is a symlink to the Kotlin/Native [BRIDGE_PATH]. Files left behind by the old
-         * shell launchers are replaced in place, so an app update migrates a device without a
-         * reinstall.
+         * Install the terminal entry points.
+         *
+         * `$PREFIX/bin/opencode` is a fixed launcher that always runs the installed build through
+         * the glibc loader with liboc-pathmap.so preloaded when available. The downloaded binary
+         * itself stays unmodified, so updating or downgrading is only a matter of changing the
+         * symlink in [LINK_DIR]; `$PREFIX/bin/pkg` points at the Kotlin/Native bridge. Files left
+         * behind by older builds are replaced in place.
          */
         private fun installEntrypoints() {
             installNativeTools()
+            val launcher = installLauncher()
             val bridge = installBridge()
-            // The terminal entry point is a direct symlink, so it only works for a binary whose
-            // interpreter is the glibc loader. A build that failed the patch is still usable by the
-            // app through the explicit loader; keep the working launcher of an older build (if
-            // any) instead of replacing it with a symlink that cannot start. When nothing exists
-            // yet the symlink is created anyway, so runtimeProblems() does not trigger a full
-            // reinstall on every start.
-            if (isNativeBinary(resolveLink(File(LINK_PATH))) || !File(OPENCODE_BIN_PATH).isFile) {
-                replaceSymlink(File(OPENCODE_BIN_PATH), LINK_PATH)
+
+            // Replace a stale symlink (older builds pointed bin/opencode at the versioned build).
+            deleteIfSymlink(File(OPENCODE_BIN_PATH))
+            if (launcher || File(LINK_PATH).exists() || File(LAUNCHER_PATH).isFile) {
+                installLauncherScript(File(OPENCODE_BIN_PATH))
+            } else if (!File(OPENCODE_BIN_PATH).isFile) {
+                Log.w(LOG_TAG, "The opencode launcher is not available yet.")
             }
 
             if (bridge) {
@@ -2384,6 +2290,99 @@ object OpenCodeBootstrap {
             // settings now, so remove the stale symlink instead of leaving a command that starts
             // the activity with an intent the app no longer handles.
             deleteIfSymlink(File("$PREFIX/bin/oc-install"))
+        }
+
+        /**
+         * Write a bionic shell launcher for `opencode`. It prefers the fixed native launcher
+         * binary (extracted from the APK) and otherwise falls back to an inline shell
+         * implementation that runs the installed build through the glibc loader with path-map
+         * preload. In all cases the managed binary is resolved from [LINK_PATH] at run time, so it
+         * survives updates and downgrades without per-binary patching.
+         */
+        private fun installLauncherScript(file: File) {
+            val script = buildString {
+                append("#!/system/bin/sh\n")
+                append("# Managed by the OpenCode for Android app. Runs the installed OpenCode build\n")
+                append("# through the glibc loader with path translation; safe to update/downgrade.\n")
+                append("set -e\n")
+                append("LAUNCHER=\"").append(LAUNCHER_PATH).append("\"\n")
+                append("if [ -x \"$LAUNCHER\" ]; then exec \"$LAUNCHER\" \"$@\"; fi\n")
+                append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
+                append("HOME_DIR=\"\${HOME:-").append(HOME).append("}\"\n")
+                append("LINK=\"").append(LINK_PATH).append("\"\n")
+                append("LOADER=\"\"\n")
+                append("for f in \"$PREFIX\"/glibc/lib/ld-linux*.so.*; do if [ -x \"$f\" ]; then LOADER=\"$f\"; break; fi; done\n")
+                append("if [ -z \"$LOADER\" ]; then echo \"opencode: glibc loader not found in \$PREFIX/glibc/lib\" >&2; exit 127; fi\n")
+                append("REAL=\"\$(/system/bin/readlink -f \"$LINK\" 2>/dev/null || true)\"\n")
+                append("if [ -z \"$REAL\" ] || [ ! -f \"$REAL\" ]; then echo \"opencode: not installed (\$LINK missing). Open the app to install it.\" >&2; exit 127; fi\n")
+                append("export OC_REAL_EXE=\"$REAL\"\n")
+                append("export OC_PREFIX=\"\${OC_PREFIX:-\$PREFIX}\"\n")
+                append("export OC_USER_HOME=\"\${OC_USER_HOME:-\$HOME_DIR}\"\n")
+                append("if [ -f \"$PREFIX/lib/liboc-pathmap.so\" ]; then\n")
+                append("  exec \"$LOADER\" --preload \"$PREFIX/lib/liboc-pathmap.so\" --library-path \"$PREFIX/lib:$PREFIX/glibc/lib\" \"$REAL\" \"$@\"\n")
+                append("else\n")
+                append("  exec \"$LOADER\" --library-path \"$PREFIX/lib:$PREFIX/glibc/lib\" \"$REAL\" \"$@\"\n")
+                append("fi\n")
+            }
+            if (readTextFileQuietly(file) == script && file.canExecute()) return
+            // If it is currently a symlink, replace it atomically with a regular script.
+            deleteIfSymlink(file)
+            writeTextFileQuietly(file, script)
+            try {
+                Os.chmod(file.absolutePath, MODE_755)
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not make $file executable", e)
+            }
+        }
+
+        /**
+         * Extract the fixed OpenCode launcher of the current ABI from the APK. It is a bionic
+         * executable (not the downloaded glibc binary), so it keeps working across every
+         * update/downgrade of OpenCode.
+         */
+        private fun installLauncher(): Boolean {
+            val abi = when (getOpenCodeArch()) {
+                "arm64" -> "arm64-v8a"
+                "x64" -> "x86_64"
+                else -> return false
+            }
+            val target = File(LAUNCHER_PATH)
+            val marker = File(LAUNCHER_MARKER_PATH)
+            val stamp = "$LAUNCHER_VERSION ${BuildConfig.VERSION_CODE} $abi ${apkStamp()}"
+            if (readTrimmed(marker) == stamp && isExecutable(target)) return true
+
+            val assets = context?.assets ?: return false
+            val parent = target.parentFile
+            if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
+                Log.w(LOG_TAG, "Could not create the directory $parent")
+                return false
+            }
+
+            var temp: File? = null
+            try {
+                val created = File.createTempFile(target.name, ".tmp", parent)
+                temp = created
+                assets.open("native/$abi/oc-launcher").use { input ->
+                    created.outputStream().use { output -> input.copyTo(output) }
+                }
+                Os.chmod(created.absolutePath, MODE_700)
+
+                if (!created.renameTo(target)) {
+                    deleteQuietly(target)
+                    if (!created.renameTo(target)) {
+                        throw IOException("Could not replace $target")
+                    }
+                }
+                temp = null
+                writeTextFileQuietly(marker, stamp + "\n")
+                Log.i(LOG_TAG, "Installed the OpenCode launcher for $abi")
+                return true
+            } catch (e: Exception) {
+                Log.w(LOG_TAG, "Could not install the OpenCode launcher for $abi", e)
+                return isExecutable(target)
+            } finally {
+                temp?.let { deleteQuietly(it) }
+            }
         }
 
         /** Delete [file] when it is a symlink, so a stale entry point of an older build disappears. */
@@ -2972,15 +2971,12 @@ object OpenCodeBootstrap {
     }
 
     /**
-     * @return true when the binary itself is patched to be started directly, ie. its ELF
-     *     interpreter is the glibc loader. Only then the process that OpenCode spawns for the
-     *     background server sees the right `/proc/self/exe`.
+     * The OpenCode binary is always started through the glibc loader with path translation
+     * (fixed launcher / service exec), so it must not be treated as a self-contained native
+     * executable that can be run without the loader and preload environment.
      */
-    fun isNativeBinary(binary: File?): Boolean {
-        if (binary == null || !binary.isFile) return false
-        val stamp = readTrimmed(File(NATIVE_INTERP_MARKER_PATH))
-        return stamp.isNotEmpty() && stamp == binaryFingerprint(binary)
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun isNativeBinary(binary: File?): Boolean = false
 
     /* -------------------------------------------------------------- terminal helper */
 

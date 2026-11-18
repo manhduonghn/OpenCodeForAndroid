@@ -392,21 +392,14 @@ class OpenCodeService : Service() {
         // then exec()s the server: the pid stays valid for the server and survives app restarts
         // through the pid file. exec keeps a single process, no extra shell is left behind.
         //
-        // A binary whose PT_INTERP was patched is exec'ed directly: it needs no loader and no
-        // preload. The fallback below passes the loader explicitly and preloads the path map with
-        // the real binary in OC_REAL_EXE, so /proc/self/exe (and os.Executable(), which reads it)
-        // reports the binary instead of the loader. A child that then execs that path still needs
-        // the interpreter of the binary, which is why the patched path above is preferred.
-        val exec = if (OpenCodeBootstrap.isNativeBinary(binary)) {
-            "exec '${binary.absolutePath}' serve --hostname 127.0.0.1 --port $port"
-        } else {
-            // Preload the path map so that /proc/self/exe reports the binary below instead of
-            // the loader; OC_REAL_EXE (below) carries the real path for that.
-            val preload = File(OpenCodeBootstrap.PATHMAP_PATH).takeIf { it.isFile }
-                ?.let { " --preload '${it.absolutePath}'" } ?: ""
-            "exec '$loader'$preload --library-path '${OpenCodeBootstrap.GLIBC_LIB_DIR}'" +
-                " '${binary.absolutePath}' serve --hostname 127.0.0.1 --port $port"
-        }
+        // Always run the downloaded glibc binary through the glibc loader of this prefix with the
+        // path-map preload. This keeps /proc/self/exe and exec routing correct (opencode re-execs
+        // itself for "serve") without requiring PT_INTERP to be patched inside the binary, so an
+        // update or downgrade works as soon as the installed symlink points at the new build.
+        val preload = File(OpenCodeBootstrap.PATHMAP_PATH).takeIf { it.isFile }
+            ?.let { " --preload '${it.absolutePath}'" } ?: ""
+        val exec = "exec '$loader'$preload --library-path '${OpenCodeBootstrap.GLIBC_LIB_DIR}'" +
+            " '${binary.absolutePath}' serve --hostname 127.0.0.1 --port $port"
         val command = "echo $$ > '$PID_FILE'; $exec"
         clearPidFile()
         // The glibc runtime of the prefix resolves names itself and cannot use the resolver of
@@ -471,13 +464,10 @@ class OpenCodeService : Service() {
                 ?.let { put("BASH_ENV", it.absolutePath) }
             put("DEBIAN_FRONTEND", "noninteractive")
             put("OPENCODE_DISABLE_AUTOUPDATE", "1")
-            // The loader is reported as /proc/self/exe; the preload needs the real program so that
-            // OpenCode can re-exec itself. A patched PT_INTERP already reports the right path, and
-            // without the preload the variable would only leak into unrelated children.
-            val pathmap = File(OpenCodeBootstrap.PATHMAP_PATH)
-            if (!OpenCodeBootstrap.isNativeBinary(binary) && pathmap.isFile) {
-                put("OC_REAL_EXE", binary.absolutePath)
-            }
+            // The loader is reported as /proc/self/exe; the path-map preload needs the real
+            // program so that OpenCode can re-exec itself. Always set it so self-spawn works even
+            // after an in-place update/downgrade of the binary.
+            put("OC_REAL_EXE", binary.absolutePath)
             // The web terminal spawns `opencode-pty`. The copy that OpenCode extracts for itself
             // is a glibc binary whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on
             // Android, so `posix_spawn` fails with ENOENT; point it at the patched helper of the

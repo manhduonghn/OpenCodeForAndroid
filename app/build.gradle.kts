@@ -214,14 +214,14 @@ val checkNativeAssets = tasks.register("checkNativeAssets") {
     doLast {
         val incomplete = listOf("arm64-v8a", "x86_64").filter { abi ->
             val dir = nativeAssets.dir(abi).asFile
-            !dir.resolve("liboc-pathmap.so").isFile || !dir.resolve("oc-gopatch").isFile
+            !dir.resolve("liboc-pathmap.so").isFile || !dir.resolve("oc-gopatch").isFile || !dir.resolve("oc-launcher").isFile
         }
         if (incomplete.isNotEmpty()) {
             logger.warn(
-                "WARNING: app/src/main/assets/native is missing the helpers for " +
-                    "${incomplete.joinToString()}. The APK will start downloaded " +
-                    "programs unpatched. Run the Native helpers workflow and copy " +
-                    "its native-assets artifact into that directory."
+                "WARNING: app/src/main/assets/native is missing helpers for " +
+                    "${incomplete.joinToString()} (needs liboc-pathmap.so, oc-gopatch, oc-launcher). " +
+                    "OpenCode updates/downgrades may be fragile without them. Run the Native helpers " +
+                    "workflow and copy its native-assets artifact into that directory."
             )
         }
     }

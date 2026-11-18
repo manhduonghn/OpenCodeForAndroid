@@ -41,12 +41,23 @@ jobs:
           native/pathmap/run-test.sh x86_64
           native/pathmap/run-test.sh aarch64
 
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
       - name: Build the Go stub and the patcher
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           native/gosys/build.sh
           mkdir -p dist/native/arm64-v8a dist/native/x86_64
           native/pathmap/build.sh aarch64 dist/native/arm64-v8a/liboc-pathmap.so
           native/pathmap/build.sh x86_64 dist/native/x86_64/liboc-pathmap.so
+          native/oc-launcher/build.sh arm64-v8a dist/native/arm64-v8a/oc-launcher
+          native/oc-launcher/build.sh x86_64 dist/native/x86_64/oc-launcher
           (
             cd native/gopatch
             go vet ./...
