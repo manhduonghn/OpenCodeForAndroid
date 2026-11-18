@@ -1487,11 +1487,6 @@ object OpenCodeBootstrap {
             patchRpath(File("$PREFIX/bin/bash"), "$PREFIX/lib")
             patchRpath(File("$PREFIX/bin/patchelf"), "$PREFIX/lib")
 
-            // Relocate the glibc runtime up front so the loader and libc read paths of this
-            // sandbox; the OpenCode binary is verified through that loader below.
-            ensurePathAliases()
-            relocateGlibc(loader)
-
             // The login shell of the terminal and the glibc runtime both contain the com.termux
             // prefix in their read-only data. Move it to the sandbox root, which has the same
             // length, so no offset of any ELF moves.
@@ -1503,6 +1498,10 @@ object OpenCodeBootstrap {
                     "The glibc loader (ld-linux-*.so.*) was not found in $GLIBC_LIB_DIR." +
                         " Install the 'glibc-runner' package and try again.",
                 )
+
+            // Relocate the glibc runtime up front so the loader and libc read paths of this
+            // sandbox; the OpenCode binary is verified through that loader below.
+            relocateGlibc(loader)
 
             val arch = getOpenCodeArch()
                 ?: throw InstallException(
@@ -2306,22 +2305,22 @@ object OpenCodeBootstrap {
                 append("# through the glibc loader with path translation; safe to update/downgrade.\n")
                 append("set -e\n")
                 append("LAUNCHER=\"").append(LAUNCHER_PATH).append("\"\n")
-                append("if [ -x \"$LAUNCHER\" ]; then exec \"$LAUNCHER\" \"$@\"; fi\n")
+                append("if [ -x \"\$LAUNCHER\" ]; then exec \"\$LAUNCHER\" \"\$@\"; fi\n")
                 append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
                 append("HOME_DIR=\"\${HOME:-").append(HOME).append("}\"\n")
                 append("LINK=\"").append(LINK_PATH).append("\"\n")
                 append("LOADER=\"\"\n")
-                append("for f in \"$PREFIX\"/glibc/lib/ld-linux*.so.*; do if [ -x \"$f\" ]; then LOADER=\"$f\"; break; fi; done\n")
-                append("if [ -z \"$LOADER\" ]; then echo \"opencode: glibc loader not found in \$PREFIX/glibc/lib\" >&2; exit 127; fi\n")
-                append("REAL=\"\$(/system/bin/readlink -f \"$LINK\" 2>/dev/null || true)\"\n")
-                append("if [ -z \"$REAL\" ] || [ ! -f \"$REAL\" ]; then echo \"opencode: not installed (\$LINK missing). Open the app to install it.\" >&2; exit 127; fi\n")
-                append("export OC_REAL_EXE=\"$REAL\"\n")
+                append("for f in \"\$PREFIX\"/glibc/lib/ld-linux*.so.*; do if [ -x \"\$f\" ]; then LOADER=\"\$f\"; break; fi; done\n")
+                append("if [ -z \"\$LOADER\" ]; then echo \"opencode: glibc loader not found in \$PREFIX/glibc/lib\" >&2; exit 127; fi\n")
+                append("REAL=\"\$(/system/bin/readlink -f \"\$LINK\" 2>/dev/null || true)\"\n")
+                append("if [ -z \"\$REAL\" ] || [ ! -f \"\$REAL\" ]; then echo \"opencode: not installed (\$LINK missing). Open the app to install it.\" >&2; exit 127; fi\n")
+                append("export OC_REAL_EXE=\"\$REAL\"\n")
                 append("export OC_PREFIX=\"\${OC_PREFIX:-\$PREFIX}\"\n")
                 append("export OC_USER_HOME=\"\${OC_USER_HOME:-\$HOME_DIR}\"\n")
-                append("if [ -f \"$PREFIX/lib/liboc-pathmap.so\" ]; then\n")
-                append("  exec \"$LOADER\" --preload \"$PREFIX/lib/liboc-pathmap.so\" --library-path \"$PREFIX/lib:$PREFIX/glibc/lib\" \"$REAL\" \"$@\"\n")
+                append("if [ -f \"\$PREFIX/lib/liboc-pathmap.so\" ]; then\n")
+                append("  exec \"\$LOADER\" --preload \"\$PREFIX/lib/liboc-pathmap.so\" --library-path \"\$PREFIX/lib:\$PREFIX/glibc/lib\" \"\$REAL\" \"\$@\"\n")
                 append("else\n")
-                append("  exec \"$LOADER\" --library-path \"$PREFIX/lib:$PREFIX/glibc/lib\" \"$REAL\" \"$@\"\n")
+                append("  exec \"\$LOADER\" --library-path \"\$PREFIX/lib:\$PREFIX/glibc/lib\" \"\$REAL\" \"\$@\"\n")
                 append("fi\n")
             }
             if (readTextFileQuietly(file) == script && file.canExecute()) return
