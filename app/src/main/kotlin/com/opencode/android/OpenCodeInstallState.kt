@@ -115,7 +115,7 @@ class OpenCodeInstallState {
         const val STAGE_PREPARE = "prepare"
         /** Refreshing the package lists of apt. */
         const val STAGE_APT_UPDATE = "apt_update"
-        /** Installing the Linux toolchain packages (bash, glibc, patchelf, …). */
+        /** Installing the Linux toolchain packages (bash, glibc, …). */
         const val STAGE_APT_INSTALL = "apt_install"
         /** Downloading the OpenCode package. */
         const val STAGE_DOWNLOAD = "download"

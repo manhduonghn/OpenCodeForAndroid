@@ -43,16 +43,16 @@ import java.util.regex.Pattern
  * Bootstraps the official OpenCode CLI natively inside Android and keeps it runnable.
  *
  * The official OpenCode CLI is only published as a glibc ELF binary, while Android only ships
- * bionic. The binary therefore gets the glibc loader as its ELF interpreter and runs directly, the
- * way a normal Linux program does:
+ * bionic. The binary runs through the glibc loader with `liboc-pathmap.so` preloaded, which
+ * translates the missing FHS paths and makes `/proc/self/exe` resolve to the real binary, the way
+ * a normal Linux program does:
  *
  * ```
  * download the official npm tarball @opencode/cli-linux-<arch>
  *   -> unpack package/bin/opencode in Kotlin (no tar binary needed)
- *   -> relocate the glibc runtime and set the binary's PT_INTERP to its loader
- *   -> start the binary directly: /proc/self/exe is the binary, so OpenCode can spawn its own
- *      background `serve` process (that was broken with an explicit loader)
- *   -> fall back to "$PREFIX/glibc/lib/ld-linux-*.so.* --library-path" if the patch fails
+ *   -> relocate the glibc runtime and make the launcher run it through ld-linux + liboc-pathmap
+ *   -> start the binary through the loader: /proc/self/exe is the binary, so OpenCode can spawn
+ *      its own background `serve` process
  * ```
  *
  * Everything is done from this single object so that the installation keeps its progress,
@@ -122,10 +122,10 @@ object OpenCodeBootstrap {
     /**
      * The `opencode-pty` helper that the web terminal spawns. OpenCode normally extracts its own
      * copy into `~/.cache/opencode/bin`, but that build is a plain glibc executable whose
-     * interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android, so `posix_spawn`
-     * fails with `ENOENT`. The app extracts the same asset from the installed CLI, points it at
-     * the glibc loader and hands it to the server through `OPENCODE_PTY_BIN`, which makes
-     * OpenCode skip its own extraction.
+     * interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android. The app extracts the
+     * same asset from the installed CLI and hands it to the server through `OPENCODE_PTY_BIN`;
+     * the server runs with the path-map preload, so the helper is started through the glibc loader
+     * without patching its `PT_INTERP`.
      */
     const val PTY_BIN_PATH = "$OC_HOME/bin/opencode-pty"
 
@@ -144,10 +144,7 @@ object OpenCodeBootstrap {
     /** Path prefix that bun uses for the embedded `opencode-pty` asset. */
     private const val PTY_BUNFS_MARKER = "/\$bunfs/root/opencode-pty"
 
-    /** Timeout for the interpreter patch of the terminal helper. */
-    private const val PTY_PATCH_TIMEOUT_MS = 30_000L
-
-    /** Timeout for `opencode-pty --version`, also the sanity check of the patch. */
+    /** Timeout for `opencode-pty --version`, also the sanity check of the helper. */
     private const val PTY_VERIFY_TIMEOUT_MS = 20_000L
 
     /** Timeout for `rg --version` through the cache wrapper. */
@@ -316,7 +313,7 @@ object OpenCodeBootstrap {
     private const val HTTP_CONNECT_TIMEOUT_MS = 20_000L
     private const val HTTP_READ_TIMEOUT_MS = 60_000L
     private const val VERIFY_TIMEOUT_MS = 90_000L
-    private const val PATCH_TIMEOUT_MS = 300_000L
+
     private const val PROCESS_POLL_INTERVAL_MS = 100L
 
     /** Maximum number of characters of a single command output kept in memory. */
@@ -335,8 +332,7 @@ object OpenCodeBootstrap {
      * Termux packages that are extracted into the app-private prefix before OpenCode is
      * downloaded: a shell, the core utilities (they provide `bin/env`, which the `#!/…/bin/env`
      * launchers of npm and pip need), the OpenSSL libraries used by git/gh/libcurl, the
-     * certificate store, the glibc runtime (the loader that runs OpenCode) and patchelf (it
-     * rewrites the RUNPATH of the binaries).
+     * certificate store and the glibc runtime (the loader and libraries that run OpenCode).
      *
      * The GNU text tools and ripgrep are part of the base toolchain as well. Android only ships
      * toybox versions of grep/sed/find/awk: they reject common GNU syntax (`grep -P`, the BRE
@@ -350,7 +346,7 @@ object OpenCodeBootstrap {
      */
     private val CORE_PACKAGES =
         listOf(
-            "bash", "coreutils", "openssl", "ca-certificates", "patchelf", "glibc",
+            "bash", "coreutils", "openssl", "ca-certificates", "glibc",
             "grep", "sed", "gawk", "findutils", "diffutils", "ripgrep",
         )
 
@@ -1242,8 +1238,8 @@ object OpenCodeBootstrap {
         append("\" 2>/dev/null\n")
         append("  if [ -n \"\$OPENCODE_SERVER_PASSWORD\" ]; then export OPENCODE_SERVER_PASSWORD; fi\n")
         append("fi\n")
-        // The terminal helper is a glibc binary with a patched interpreter; without it OpenCode
-        // would extract a copy that cannot be spawned on Android.
+        // The terminal helper is a glibc binary embedded in the CLI. OpenCode's server runs it
+        // through the glibc loader with path translation, so the unmodified asset works on Android.
         terminalRuntimePath()?.let { pty ->
             append("OPENCODE_PTY_BIN=\"\${OPENCODE_PTY_BIN:-").append(pty).append("}\"; export OPENCODE_PTY_BIN\n")
         }
@@ -1470,22 +1466,8 @@ object OpenCodeBootstrap {
             ensureRuntimeDirectories()
             ensureResolvConf()
 
-            // The OpenCode binary is launched through the glibc loader of the prefix (no
-            // per-binary PT_INTERP patch). Patchelf is still part of the toolchain and is kept
-            // healthy for other uses, but a broken patchelf must not block the install.
-            if (!patchelfWorks()) {
-                try {
-                    installPackages(listOf("patchelf", "libc++"), "Could not reinstall patchelf")
-                } catch (e: Exception) {
-                    Log.w(LOG_TAG, "Could not reinstall patchelf", e)
-                }
-            }
-
-            // The packages are built for the com.termux prefix and carry its absolute RUNPATH.
-            // Repoint the tools the app itself spawns, so they also work without LD_LIBRARY_PATH
-            // (eg. when the user runs them from a terminal).
-            patchRpath(File("$PREFIX/bin/bash"), "$PREFIX/lib")
-            patchRpath(File("$PREFIX/bin/patchelf"), "$PREFIX/lib")
+            // The OpenCode binary and its helpers run through the glibc loader of the prefix with
+            // path translation (liboc-pathmap), so they do not need a patched PT_INTERP or RUNPATH.
 
             // The login shell of the terminal and the glibc runtime both contain the com.termux
             // prefix in their read-only data. Move it to the sandbox root, which has the same
@@ -1603,10 +1585,6 @@ object OpenCodeBootstrap {
                     val repair = (CORE_PACKAGES + broken).distinct()
                     Log.i(LOG_TAG, "Reinstalling broken packages: $repair")
                     installPackages(repair, "Could not repair the Linux toolchain")
-                    // A reinstalled bash/patchelf carries the com.termux RUNPATH again; the tools
-                    // the app spawns directly must start without LD_LIBRARY_PATH.
-                    patchRpath(File("$PREFIX/bin/bash"), "$PREFIX/lib")
-                    patchRpath(File("$PREFIX/bin/patchelf"), "$PREFIX/lib")
                 }
             } catch (e: Exception) {
                 // Offline is not a reason to fail the maintenance of an otherwise ready runtime.
@@ -2171,25 +2149,6 @@ object OpenCodeBootstrap {
             }
         }
 
-        /** Point the RUNPATH of a Termux ELF at the libraries of the app-private prefix. */
-        private fun patchRpath(file: File, rpath: String) {
-            if (!file.isFile) return
-            val result = run(
-                listOf("$PREFIX/bin/patchelf", "--set-rpath", rpath, file.absolutePath),
-                PATCH_TIMEOUT_MS,
-                false,
-            )
-            if (result.exitCode != 0) {
-                Log.w(LOG_TAG, "Could not set the RUNPATH of $file: ${tail(result.output, 200)}")
-            }
-        }
-
-        private fun patchelfWorks(): Boolean = run(
-            listOf("$PREFIX/bin/patchelf", "--version"),
-            VERIFY_TIMEOUT_MS,
-            false,
-        ).exitCode == 0
-
         /**
          * Move the compiled-in login paths of bash to the sandbox root. Without this a login shell
          * (OpenCode starts the terminal as `bash -l`) tries to read
@@ -2225,17 +2184,7 @@ object OpenCodeBootstrap {
             }
         }
 
-        /** Run a byte-patched binary without the bionic library paths, exactly like the terminal. */
-        private fun runNative(cmd: List<String>, timeoutMs: Long): CmdResult {
-            val libraryPath = env.remove("LD_LIBRARY_PATH")
-            val preload = env.remove("LD_PRELOAD")
-            try {
-                return run(cmd, timeoutMs, false)
-            } finally {
-                if (libraryPath != null) env["LD_LIBRARY_PATH"] = libraryPath
-                if (preload != null) env["LD_PRELOAD"] = preload
-            }
-        }
+
 
         private fun looksLikeAVersion(result: CmdResult): Boolean =
             result.exitCode == 0 && VERSION_OUTPUT_PATTERN.matcher(result.output).matches()
@@ -2993,14 +2942,14 @@ object OpenCodeBootstrap {
      * The OpenCode CLI embeds `@opencode/pty-linux-*` and writes it to
      * `~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty` the first time a terminal
      * is opened. That file is a glibc executable whose `PT_INTERP` is
-     * `/lib/ld-linux-aarch64.so.1`, a path that does not exist on Android, so `posix_spawn` fails
-     * with `ENOENT: no such file or directory` and the web UI reports "Couldn't create a
-     * terminal". Patching the cached file does not stick either: every new server process
-     * validates it against the embedded sha256 and rewrites it.
+     * `/lib/ld-linux-aarch64.so.1`, a path that does not exist on Android. Patching the cached
+     * copy does not stick either: every new server process validates it against the embedded
+     * sha256 and rewrites it.
      *
-     * The asset is therefore copied out of the installed CLI once, pointed at the glibc loader
-     * (exactly like the CLI itself) and exported as `OPENCODE_PTY_BIN`, which makes OpenCode use
-     * it instead of extracting its own copy.
+     * The asset is therefore copied out of the installed CLI once and exported as
+     * `OPENCODE_PTY_BIN`. The OpenCode server runs with `liboc-pathmap.so` preloaded, which routes
+     * glibc programs whose interpreter is missing through the glibc loader of the prefix, so the
+     * helper works without patching its `PT_INTERP`.
      *
      * @return the absolute path of the helper, or null when it could not be prepared.
      */
@@ -3030,10 +2979,11 @@ object OpenCodeBootstrap {
             return installed
         }
 
+        // liboc-pathmap.so lets the helper run through the glibc loader without a patched PT_INTERP.
+        installNativeTools()
         val loader = findGlibcLoader()
-        val patchelf = File("$PREFIX/bin/patchelf")
-        if (loader == null || !isExecutable(patchelf)) {
-            Log.w(LOG_TAG, "Cannot prepare the terminal helper: glibc or patchelf is missing.")
+        if (loader == null) {
+            Log.w(LOG_TAG, "Cannot prepare the terminal helper: the glibc loader is missing.")
             return installed
         }
 
@@ -3058,31 +3008,9 @@ object OpenCodeBootstrap {
                 Log.w(LOG_TAG, "Could not make the terminal helper executable", e)
             }
 
-            val patch = runCommand(
-                listOf(patchelf.absolutePath, "--set-interpreter", loader, staged.absolutePath),
-                PTY_PATCH_TIMEOUT_MS,
-                // patchelf is a bionic binary that links against libc++_shared.so from the
-                // prefix. It only starts when that directory is on its library path; the
-                // staged opencode-pty itself must keep the clean environment (it runs on glibc).
-                libraryPath = "$PREFIX/lib",
-            )
-            if (patch.first != 0) {
-                Log.w(
-                    LOG_TAG,
-                    "Could not point opencode-pty at the glibc loader: ${patch.second.takeLast(300)}",
-                )
-                return installed
-            }
-            // patchelf rewrites the file, which can drop the execute bit of the staging copy.
-            try {
-                Os.chmod(staged.absolutePath, MODE_755)
-            } catch (e: Exception) {
-                Log.w(LOG_TAG, "Could not make the patched terminal helper executable", e)
-            }
-
-            val verify = runCommand(listOf(staged.absolutePath, "--version"), PTY_VERIFY_TIMEOUT_MS)
+            val verify = runGlibcBinary(staged.absolutePath, listOf("--version"), PTY_VERIFY_TIMEOUT_MS)
             if (verify.first != 0 || !verify.second.contains("opencode-pty")) {
-                Log.w(LOG_TAG, "The patched opencode-pty does not start: ${verify.second.takeLast(300)}")
+                Log.w(LOG_TAG, "The opencode-pty helper does not start: ${verify.second.takeLast(300)}")
                 return installed
             }
 
@@ -3381,15 +3309,9 @@ object OpenCodeBootstrap {
      * Run a short command with a timeout and return its exit code and combined output.
      *
      * The environment is minimal on purpose: the glibc tools must not inherit the bionic
-     * `LD_LIBRARY_PATH` of the OpenCode server. A bionic helper that links against the libraries
-     * of the prefix (eg. `patchelf`, which needs `libc++_shared.so`) gets the path through
-     * [libraryPath] instead.
+     * `LD_LIBRARY_PATH` of the OpenCode server.
      */
-    private fun runCommand(
-        cmd: List<String>,
-        timeoutMs: Long,
-        libraryPath: String? = null,
-    ): Pair<Int, String> {
+    private fun runCommand(cmd: List<String>, timeoutMs: Long): Pair<Int, String> {
         val output = StringBuilder()
         var process: Process? = null
         try {
@@ -3401,7 +3323,6 @@ object OpenCodeBootstrap {
                 put("HOME", HOME)
                 put("PATH", "$PREFIX/bin:/system/bin")
                 put("TMPDIR", TMP_DIR)
-                if (libraryPath != null) put("LD_LIBRARY_PATH", libraryPath)
             }
             val started = builder.start()
             process = started
@@ -3442,6 +3363,86 @@ object OpenCodeBootstrap {
             }
         } catch (e: Exception) {
             Log.w(LOG_TAG, "Could not run $cmd", e)
+            return Pair(-1, synchronized(output) { output.toString() })
+        } finally {
+            process?.let { if (it.isAlive) it.destroy() }
+        }
+    }
+
+    /**
+     * Run a glibc binary through the glibc loader with path translation, the same way the fixed
+     * launcher does. This works even when the binary's `PT_INTERP` is not patched.
+     */
+    private fun runGlibcBinary(binary: String, args: List<String>, timeoutMs: Long): Pair<Int, String> {
+        val loader = findGlibcLoader()
+            ?: return Pair(-1, "the glibc loader is missing")
+        val cmd = ArrayList<String>(4 + args.size)
+        cmd.add(loader)
+        val pathmap = File(PATHMAP_PATH)
+        if (pathmap.isFile) {
+            cmd.add("--preload")
+            cmd.add(pathmap.absolutePath)
+        }
+        cmd.add("--library-path")
+        cmd.add(GLIBC_LIB_DIR)
+        cmd.add(binary)
+        cmd.addAll(args)
+
+        val output = StringBuilder()
+        var process: Process? = null
+        try {
+            val builder = ProcessBuilder(cmd)
+            builder.directory(File(HOME))
+            builder.redirectErrorStream(true)
+            builder.environment().apply {
+                clear()
+                put("HOME", HOME)
+                put("PREFIX", PREFIX)
+                put("PATH", "$PREFIX/bin:/system/bin")
+                put("TMPDIR", TMP_DIR)
+                put("OC_REAL_EXE", binary)
+                put("OC_PREFIX", PREFIX)
+                put("OC_USER_HOME", HOME)
+            }
+            val started = builder.start()
+            process = started
+            val reader = Thread({
+                try {
+                    BufferedReader(InputStreamReader(started.inputStream)).use { input ->
+                        while (true) {
+                            val line = input.readLine() ?: break
+                            synchronized(output) {
+                                if (output.length < MAX_OUTPUT_CHARS) output.append(line).append('\n')
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // The process was killed, ignore.
+                }
+            }, "opencode-glibc-command")
+            reader.isDaemon = true
+            reader.start()
+
+            val deadline = SystemClock.uptimeMillis() + timeoutMs
+            while (true) {
+                try {
+                    val exit = started.exitValue()
+                    return Pair(exit, synchronized(output) { output.toString() })
+                } catch (e: IllegalThreadStateException) {
+                    if (SystemClock.uptimeMillis() > deadline) {
+                        started.destroy()
+                        return Pair(-1, synchronized(output) { output.toString() })
+                    }
+                    try {
+                        Thread.sleep(PROCESS_POLL_INTERVAL_MS)
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return Pair(-1, synchronized(output) { output.toString() })
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not run glibc binary $binary", e)
             return Pair(-1, synchronized(output) { output.toString() })
         } finally {
             process?.let { if (it.isAlive) it.destroy() }

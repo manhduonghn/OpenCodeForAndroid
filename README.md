@@ -112,7 +112,6 @@ Only the minimum the runtime needs (≈27 MB of packages):
 | `ripgrep` | bionic search backend for the built-in `grep`/`glob` tools |
 | `openssl` (+ `zlib`) | `libcrypto`/`libssl` for git, gh and libcurl |
 | `glibc` (+ `linux-api-headers-glibc`) | glibc loader and libraries for the OpenCode binary |
-| `patchelf` (+ `libc++`) | rewrites the RUNPATH of `bash`/`patchelf` themselves |
 | `ca-certificates` | HTTPS trust store (`SSL_CERT_FILE`) |
 
 `termux-tools` is deliberately skipped: it is a set of wrappers around the
@@ -217,13 +216,8 @@ libraries of the prefix) is used normally.
 `pkg remove` is not implemented: packages are extracted without a dpkg
 database, so there is nothing to remove from. Clearing the app data is the
 supported way to start over. Reinstalling a core package (`bash`, `coreutils`,
-`glibc`, `patchelf`, `ca-certificates`) is refused as well: the app patches
-their binaries (the login profile path, the relocated glibc loader), so they are
-updated from the app's Updates section.
-
-`bash` and `patchelf` — the two tools the app itself spawns — get their RUNPATH
-rewritten once at install time (`patchelf --set-rpath $PREFIX/lib`), so they
-start even from a terminal without `LD_LIBRARY_PATH`.
+`glibc`, `ca-certificates`) is refused as well: the app manages parts of the
+relocated runtime, so they are updated from the app's Updates section.
 
 Termux's `libcurl` was built with `/data/data/com.termux/files/usr/etc/tls/cert.pem`
 as its default CA file, a path that belongs to the Termux app and does not exist
@@ -261,16 +255,15 @@ same server.
 The terminal panel of the web UI does not use the `opencode-pty` copy that OpenCode extracts for
 itself. OpenCode writes that helper to
 `~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty`, but the file is a plain glibc
-executable whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android; the
-`posix_spawn` then fails with `ENOENT` and the panel reports "Couldn't create a terminal".
-Patching the cached file does not stick, because every new server process checks it against the
+executable whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android. Patching
+the cached copy does not stick either, because every new server process checks it against the
 embedded sha256 and rewrites it.
 
 The app therefore carves the same asset out of the installed CLI once (Bun keeps it uncompressed
-in the snapshot), verifies it against the sha256 that is stored next to the asset, points its
-`PT_INTERP` at the glibc loader of the prefix with `patchelf` and installs it as
-`$HOME/.opencode/bin/opencode-pty`. The server is started with `OPENCODE_PTY_BIN` pointing at that
-file (the shell profile exports it as well), which makes OpenCode skip both the extraction and the
+in the snapshot), verifies it can run through the glibc loader with `liboc-pathmap.so`, and
+installs it as `$HOME/.opencode/bin/opencode-pty` without modifying its `PT_INTERP`. The server
+runs with path translation preloaded and is started with `OPENCODE_PTY_BIN` pointing at that file
+(the shell profile exports it as well), which makes OpenCode skip both the extraction and the
 checksum validation of its cache copy. `$HOME/.opencode/.terminal-runtime` records the fingerprint
 of the CLI, so the helper is rebuilt only when the binary changes.
 

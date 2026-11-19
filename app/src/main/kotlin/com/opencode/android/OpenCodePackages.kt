@@ -98,7 +98,6 @@ object OpenCodePackages {
         "coreutils" to listOf("bin/coreutils", "bin/env"),
         "busybox" to listOf("bin/busybox"),
         "ca-certificates" to listOf("etc/tls/cert.pem"),
-        "patchelf" to listOf("bin/patchelf"),
         "git" to listOf("bin/git"),
         "gh" to listOf("bin/gh"),
         // Termux splits the package: 'openssl' ships the libraries, 'openssl-tool' the command.

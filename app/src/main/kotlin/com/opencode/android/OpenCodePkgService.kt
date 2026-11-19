@@ -303,11 +303,11 @@ class OpenCodePkgService : Service() {
 
         /**
          * Packages that belong to the runtime itself. Reinstalling them with pkg would replace the
-         * patched binaries (the interpreter of bash, the relocated glibc loader) and break the
-         * terminal, so they are updated through the app instead.
+         * relocated glibc runtime or other files the app manages, so they are updated through the app
+         * instead.
          */
         private val RUNTIME_PACKAGES = setOf(
-            "bash", "coreutils", "glibc", "glibc-runner", "patchelf", "ca-certificates",
+            "bash", "coreutils", "glibc", "glibc-runner", "ca-certificates",
             "termux-tools", "termux-am", "termux-am-socket", "termux-core", "termux-exec",
         )
 

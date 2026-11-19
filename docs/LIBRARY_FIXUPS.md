@@ -18,7 +18,7 @@ Các cơ chế đã có trong repo (đánh dấu để tham chiếu, không cầ
 | Relocation cùng độ dài `com.termux/files/usr` (31) → `DATA_DIR` (31) trong rodata của ELF | `OpenCodeBootstrap.relocateLoader` / `relocateGlibc`, `ElfStrings` |
 | Patch PT_INTERP về loader glibc của prefix + fallback `ld-linux --library-path` | `installBinary`, `repairNativeInterp` |
 | Alias cấp 1: mọi thư mục top-level của prefix được symlink vào `DATA_DIR` vì không đủ độ dài cho 1 alias duy nhất | `ensurePathAliases` |
-| RUNPATH patch bằng `patchelf` cho bash/patchelf/opencode/JDK | `patchRpath` |
+| Exec/path translation qua loader glibc + `liboc-pathmap.so` cho OpenCode và helper glibc | `runOpenCodeBinary`, `runGlibcBinary`, `OpenCodeService`, `oc-launcher` |
 | Symlink tuyệt đối của Termux → tương đối; shebang → `$PREFIX`; ELF của git mang `SHELL_PATH` được vá | `OpenCodePackages` (extractor + `repair`) |
 | Self-heal: `BINARY_PROOF` + reinstall gói hỏng, glibc loader, cert.pem ngắn | `OpenCodePackages.brokenPackages`, `doMaintenance` |
 | Cache ripgrep của OpenCode: wrapper `$HOME/.cache/opencode/bin/rg` → `$PREFIX/bin/rg` (bionic), vì bản tải về là ELF glibc | `OpenCodeBootstrap.ensureRipgrepRuntime`, `CORE_PACKAGES` |
@@ -555,7 +555,7 @@ Ngoài ra, ngay cả hàm **đã hook** vẫn có thể không chạy trên Andr
   `/bin/sh` cố ý không map để script Android giữ shell bionic (system/popen chỉ dùng shell
   glibc trong prefix khi có, xem dưới);
 - exec routing chỉ áp dụng cho ELF có `PT_INTERP` là loader glibc **không tồn tại**. Binary đã
-  được `patchelf` trỏ vào loader của prefix, binary bionic và binary tĩnh chạy đúng như cũ.
+  có interpreter trỏ sẵn vào loader của prefix, binary bionic và binary tĩnh chạy đúng như cũ.
   `execveat`/`fexecve` chỉ map path, không route (route cần tên file để đọc ELF);
 - script không có shebang, shebang trỏ tới interpreter không resolve được, hoặc vượt quá
   `PATH_MAX` vẫn để kernel xử lý và có thể trả `ENOEXEC`;

@@ -75,7 +75,7 @@ dpkg and the Termux app are not needed. 'openjdk' is the same package as
 repository)."""
 
 private const val BUNDLE_DEV =
-    "clang make cmake ninja pkg-config autoconf automake libtool patchelf git gh " +
+    "clang make cmake ninja pkg-config autoconf automake libtool git gh " +
         "ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk " +
         "grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop " +
         "procps lsof ncurses-utils bash-completion sqlite"

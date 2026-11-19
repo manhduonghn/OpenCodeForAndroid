@@ -286,12 +286,13 @@ Luồng chuẩn:
     (31 ký tự). 31 byte đã dùng hết cho gốc sandbox nên không thể có một symlink cho cả prefix:
     mỗi thư mục cấp 1 của `$PREFIX` được symlink vào `<dataDir>` (`glibc`, `etc`, `bin`, `lib`,
     `share`, …). Nhờ vậy loader và `libc.so.6` tìm đúng `resolv.conf`, CA, v.v. mà không cần
-    patchelf vào rodata. Chuỗi thay thế được phép **ngắn hơn** (phần đuôi của chuỗi cũ được
-    NUL hoá), nên git `SHELL_PATH` dùng chung một bộ vá (`ElfStrings`); chuỗi dài hơn bị từ chối
-    vì không được đổi offset của ELF. `app/build.gradle.kts` chặn build nếu `applicationId` (hoặc
-    `applicationIdSuffix` của một build type) làm đường dẫn sandbox khác 31 ký tự.
-  - patch `PT_INTERP` của binary OpenCode để nó tự chạy trực tiếp (quan trọng cho
-    `opencode serve` self-spawn qua `/proc/self/exe`);
+    vá chuỗi ở nhiều offset khác nhau. Chuỗi thay thế được phép **ngắn hơn** (phần đuôi của
+    chuỗi cũ được NUL hoá), nên git `SHELL_PATH` dùng chung một bộ vá (`ElfStrings`); chuỗi dài
+    hơn bị từ chối vì không được đổi offset của ELF. `app/build.gradle.kts` chặn build nếu
+    `applicationId` (hoặc `applicationIdSuffix` của một build type) làm đường dẫn sandbox khác
+    31 ký tự.
+  - OpenCode và helper glibc chạy qua loader glibc của prefix với `liboc-pathmap.so` (không cần
+    `patchelf`), quan trọng cho `opencode serve` self-spawn qua `/proc/self/exe`;
   - `targetSdk 28` nên **không cần** termux-exec/linker shim.
 - Hạn chế: không có `apt`/`dpkg` (không chạy `postinst`), không remove package,
   package nào hardcode path trong rodata (khác độ dài) sẽ cần xử lý riêng.
@@ -392,7 +393,7 @@ và không có cơ chế remove. Thay vào đó là các nhóm chọn lọc:
 
 | Nhóm | Nội dung chính |
 | --- | --- |
-| `pkg bundle dev` | `clang make cmake ninja pkg-config autoconf automake libtool patchelf git gh ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop procps lsof ncurses-utils bash-completion sqlite` |
+| `pkg bundle dev` | `clang make cmake ninja pkg-config autoconf automake libtool git gh ripgrep fd jq yq tree file less nano vim bat diffutils findutils sed gawk grep tar xz-utils zstd 7zip unzip zip curl wget openssh rsync tmux htop procps lsof ncurses-utils bash-completion sqlite` |
 | `pkg bundle python` | `python python-pip python-numpy python-pillow` |
 | `pkg bundle node` | `nodejs npm yarn pnpm` |
 | `pkg bundle java` | `openjdk-17 aapt2 ca-certificates-java` |
@@ -536,23 +537,20 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 
 **Helper `opencode-pty` cho terminal trên web:** OpenCode tự extract helper vào
 `~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty`, nhưng file đó là ELF glibc với
-`PT_INTERP=/lib/ld-linux-aarch64.so.1` — đường dẫn không tồn tại trên Android — nên `posix_spawn`
-trả `ENOENT` và panel terminal báo "Couldn't create a terminal". Sửa file trong cache không có tác
-dụng: mỗi lần server khởi động lại so checksum với sha256 nhúng sẵn rồi ghi đè. App cắt chính asset
-đó từ CLI đã cài (Bun giữ nguyên, không nén), đối chiếu sha256 ghi cạnh asset,
-`patchelf --set-interpreter` trỏ về loader glibc của prefix, cài vào
+`PT_INTERP=/lib/ld-linux-aarch64.so.1` — đường dẫn không tồn tại trên Android. Sửa file trong cache
+không có tác dụng: mỗi lần server khởi động lại so checksum với sha256 nhúng sẵn rồi ghi đè. App cắt
+chính asset đó từ CLI đã cài (Bun giữ nguyên, không nén), đối chiếu sha256 ghi cạnh asset, cài vào
 `$HOME/.opencode/bin/opencode-pty` và export `OPENCODE_PTY_BIN` cho server (đồng thời ghi vào
-`etc/opencode-env.sh` cho terminal). Bước `patchelf` chạy với `LD_LIBRARY_PATH=$PREFIX/lib` vì nó
-là binary bionic cần `libc++_shared.so` của prefix; nếu RUNPATH của nó vẫn còn trỏ
-`/data/data/com.termux/files/usr/lib` (sau khi `pkg install patchelf`), thiếu biến này thì helper
-không được tạo và terminal vẫn báo lỗi. OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước
-validate cache. `$HOME/.opencode/.terminal-runtime` lưu fingerprint của CLI + version + sha256, nên
-helper chỉ được build lại khi binary đổi. Riêng trên Android chỉ có vậy vẫn chưa đủ: daemon bind
-unix socket dưới `${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, mà `/tmp` không tồn tại nên nó chết
-với `EACCES` (panel báo `ENOENT ... service.json`). Vì vậy server export thêm
-`OPENCODE_PTY_SOCKET_DIR=$PREFIX/run` và thư mục này được tạo lại mỗi lần khởi động. Đường dẫn phải
-ngắn: unix socket giới hạn 107 byte, daemon cộng thêm `/opencode-pty-<uid>/<32 hex>.sock` (57 byte),
-nên không dùng được `$HOME/.opencode/tmp`.
+`etc/opencode-env.sh` cho terminal) mà **không** vá `PT_INTERP`. Server OpenCode chạy với
+`liboc-pathmap.so` preloaded, nên helper glibc có interpreter không tồn tại vẫn được route qua loader
+glibc của prefix. OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước validate cache.
+`$HOME/.opencode/.terminal-runtime` lưu fingerprint của CLI + version + sha256, nên helper chỉ được
+build lại khi binary đổi. Riêng trên Android chỉ có vậy vẫn chưa đủ: daemon bind unix socket dưới
+`${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, mà `/tmp` không tồn tại nên nó chết với `EACCES`
+(panel báo `ENOENT ... service.json`). Vì vậy server export thêm `OPENCODE_PTY_SOCKET_DIR=$PREFIX/run`
+và thư mục này được tạo lại mỗi lần khởi động. Đường dẫn phải ngắn: unix socket giới hạn 107 byte,
+daemon cộng thêm `/opencode-pty-<uid>/<32 hex>.sock` (57 byte), nên không dùng được
+`$HOME/.opencode/tmp`.
 
 **Công cụ đọc code (`grep`, `sed`, `awk`, `find`, `ripgrep`):** `CORE_PACKAGES` của app cài sẵn
 bản GNU/bionic (`grep sed gawk findutils diffutils ripgrep`) ngay từ lần cài đầu. `$PREFIX/bin`
