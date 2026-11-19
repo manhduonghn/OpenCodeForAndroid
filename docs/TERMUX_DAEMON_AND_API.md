@@ -560,6 +560,11 @@ các biến runtime an toàn của chính server (`LD_LIBRARY_PATH`, `BASH_ENV`,
 rồi mới áp `TERM`/`COLORTERM` của terminal. Login profile trong prefix tiếp tục thiết lập phần còn
 lại sau khi bash đã khởi động được.
 
+Web socket giữ kết nối `subscribe` dài hạn, nhưng mỗi khung `control`/`input` được server gửi lại bằng
+một kết nối một lần. Daemon vì thế ủy quyền theo `attachment_id` đã đăng ký trên terminal (tra cứu
+trong tất cả client đang sống), không phải theo client đang xử lý request; nếu không, mọi lần gõ phím
+bị từ chối là `attachment is not subscribed to this terminal` và terminal không nhận được chữ.
+
 **Công cụ đọc code (`grep`, `sed`, `awk`, `find`, `ripgrep`):** `CORE_PACKAGES` của app cài sẵn
 bản GNU/bionic (`grep sed gawk findutils diffutils ripgrep`) ngay từ lần cài đầu. `$PREFIX/bin`
 đứng trước `/system/bin`, nên shell dùng GNU grep/sed/awk/find thay vì toybox; nhờ vậy

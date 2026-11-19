@@ -1025,16 +1025,35 @@ static int terminal_allows_controller(Terminal *t, const char *attachment) {
     return attachment && !strcmp(attachment, t->controller);
 }
 
-/* Returns 1 when the active controller (and generation) actually changed. */
-static int terminal_set_controller(Terminal *t, const char *attachment) {
-    if (t->controller && !strcmp(t->controller, attachment)) return 0;
+/*
+ * `subscribe` keeps one long-lived connection, but `control` and `input` arrive on
+ * one-shot connections. Authorization therefore has to look up the attachment id
+ * across all live clients, not on the connection that sent the current request.
+ */
+static int terminal_has_subscriber(Terminal *t, const char *attachment) {
+    if (!attachment || !*attachment) return 0;
     for (size_t i = 0; i < g_client_count; i++) {
         Client *c = g_clients[i];
-        if (c->subscribed && c->terminal_id == t->id && c->role == 1 &&
-            !strcmp(c->attachment, t->controller ? t->controller : "")) {
-            c->role = 0;
+        if (c->subscribed && c->terminal_id == t->id &&
+            !strcmp(c->attachment, attachment)) {
+            return 1;
         }
     }
+    return 0;
+}
+
+/* Returns 1 when the active controller (and generation) actually changed. */
+static int terminal_set_controller(Terminal *t, const char *attachment) {
+    for (size_t i = 0; i < g_client_count; i++) {
+        Client *c = g_clients[i];
+        if (!c->subscribed || c->terminal_id != t->id) continue;
+        if (c->role == 1 && t->controller &&
+            !strcmp(c->attachment, t->controller)) {
+            c->role = 0;
+        }
+        if (!strcmp(c->attachment, attachment)) c->role = 1;
+    }
+    if (t->controller && !strcmp(t->controller, attachment)) return 0;
     free(t->controller);
     t->controller = xstrdup(attachment);
     t->controller_generation++;
@@ -1262,13 +1281,11 @@ static void handle_request(Client *c, Json *request) {
         } else if (!strcmp(op, "resize") || !strcmp(op, "control")) {
             const char *attachment = json_string(request, "attachment_id", NULL);
             if (!strcmp(op, "control")) {
-                if (!attachment || !c->subscribed || c->terminal_id != t->id ||
-                    strcmp(c->attachment, attachment)) {
+                if (!attachment || !terminal_has_subscriber(t, attachment)) {
                     resp_error(c, "attachment is not subscribed to this terminal");
                     return;
                 }
                 int changed = terminal_set_controller(t, attachment);
-                c->role = 1;
                 if (changed) broadcast_controller(t);
             } else if (!terminal_allows_controller(t, attachment)) {
                 resp_error(c, "terminal input requires the active controller attachment");
@@ -1290,9 +1307,8 @@ static void handle_request(Client *c, Json *request) {
             if (changed) broadcast_resized(t, cols, rows);
         } else if (!strcmp(op, "input")) {
             const char *attachment = json_string(request, "attachment_id", "");
-            if (!*attachment || !c->subscribed || c->terminal_id != t->id ||
-                strcmp(c->attachment, attachment) || !terminal_allows_controller(t, attachment)) {
-                resp_error(c, "terminal input requires the active controller attachment");
+            if (!terminal_has_subscriber(t, attachment)) {
+                resp_error(c, "attachment is not subscribed to this terminal");
                 return;
             }
             if (t->pty.exited || t->pty.master < 0) {
@@ -1300,7 +1316,6 @@ static void handle_request(Client *c, Json *request) {
                 return;
             }
             int controller_changed = terminal_set_controller(t, attachment);
-            c->role = 1;
             if (controller_changed) broadcast_controller(t);
             int cols = (int)json_number(request, "cols", 0);
             int rows = (int)json_number(request, "rows", 0);
