@@ -412,6 +412,9 @@ object OpenCodeBootstrap {
     /** Cached server password, see [getServerPassword]. */
     private var sServerPassword: String? = null
 
+    /** Last application context, used for best-effort native helper extraction. */
+    @Volatile private var appContext: Context? = null
+
     /** The handler of the UI thread, used to notify the listeners. */
     private val sMainHandler = Handler(Looper.getMainLooper())
 
@@ -428,6 +431,7 @@ object OpenCodeBootstrap {
     @JvmOverloads
     fun setupIfNeeded(context: Context?, onReady: (() -> Unit)? = null) {
         if (context == null) return
+        appContext = context.applicationContext
 
         // Nothing has to be downloaded. Refresh the CLI entry points in the background without
         // showing any progress UI, otherwise the installation dialog would flash on every cold
@@ -473,6 +477,7 @@ object OpenCodeBootstrap {
      */
     fun requestUpdate(context: Context?) {
         if (context == null) return
+        appContext = context.applicationContext
 
         if (!isPrefixReady()) {
             Log.w(LOG_TAG, "The Linux toolchain prefix is not ready yet, cannot update OpenCode.")
@@ -505,6 +510,7 @@ object OpenCodeBootstrap {
      */
     fun checkRuntime(context: Context?) {
         if (context == null) return
+        appContext = context.applicationContext
         if (!isPrefixReady()) return
 
         val problems = runtimeProblems()
@@ -2409,89 +2415,10 @@ object OpenCodeBootstrap {
          * programs. Both are optional: an APK built without the native job keeps starting
          * downloaded programs unmodified, and a helper of an older APK stays in place.
          */
-        private fun installNativeTools(): Boolean {
-            installOcRun()
-            val abi = when (getOpenCodeArch()) {
-                "arm64" -> "arm64-v8a"
-                "x64" -> "x86_64"
-                else -> return false
-            }
-            val gopatch = File(GOPATCH_PATH)
-            val pathmap = File(PATHMAP_PATH)
-            val installed = isExecutable(gopatch) && pathmap.isFile
-            val stamp = "1 ${BuildConfig.VERSION_CODE} $abi ${apkStamp()}"
-            val state = if (installed) "ok" else "absent"
-            val marker = File(NATIVE_TOOLS_MARKER_PATH)
-            if (readTrimmed(marker) == "$stamp $state") return installed
-
-            val assets = context?.assets ?: return false
-            try {
-                extractAsset(assets, "native/$abi/oc-gopatch", gopatch, MODE_700)
-                extractAsset(assets, "native/$abi/liboc-pathmap.so", pathmap, MODE_600)
-                if (!isExecutable(gopatch)) throw IOException("Could not make $gopatch executable")
-            } catch (e: Exception) {
-                Log.i(LOG_TAG, "This APK has no native helpers for $abi; oc-run starts programs unpatched", e)
-            }
-            val nowInstalled = isExecutable(gopatch) && pathmap.isFile
-            writeTextFileQuietly(marker, "$stamp ${if (nowInstalled) "ok" else "absent"}\n")
-            return nowInstalled
-        }
-
-        /** Replace [target] with the asset [name], atomically and with the given mode. */
-        private fun extractAsset(assets: android.content.res.AssetManager, name: String, target: File, mode: Int) {
-            val parent = target.parentFile ?: throw IOException("No parent directory for $target")
-            if (!parent.isDirectory && !parent.mkdirs()) throw IOException("Could not create $parent")
-            val temp = File.createTempFile(".${target.name}", ".tmp", parent)
-            try {
-                assets.open(name).use { input ->
-                    temp.outputStream().use { output -> input.copyTo(output) }
-                }
-                Os.chmod(temp.absolutePath, mode)
-                if (!temp.renameTo(target)) {
-                    deleteQuietly(target)
-                    if (!temp.renameTo(target)) throw IOException("Could not replace $target")
-                }
-            } finally {
-                deleteQuietly(temp)
-            }
-        }
-
-        /**
-         * Install `oc-run`, the entry point for programs that were downloaded later. It uses the
-         * patcher when this APK shipped one and starts the command unchanged otherwise.
-         */
-        private fun installOcRun() {
-            val script = buildString {
-                append("#!/system/bin/sh\n")
-                append("# Managed by the OpenCode for Android app.\n")
-                append("# Start a downloaded program with the private prefix of this app.\n")
-                append("prefix=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
-                append("helper=\"\$prefix/libexec/oc-gopatch\"\n")
-                append("if [ -x \"\$helper\" ]; then\n")
-                append("  OC_PREFIX=\"\$prefix\" OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"")
-                append(" exec \"\$helper\" run -- \"\$@\"\n")
-                append("fi\n")
-                append("exec \"\$@\"\n")
-            }
-            val file = File(OCRUN_PATH)
-            if (readTextFileQuietly(file) == script && file.canExecute()) return
-            writeTextFileQuietly(file, script)
-            try {
-                Os.chmod(file.absolutePath, MODE_700)
-            } catch (e: Exception) {
-                Log.w(LOG_TAG, "Could not make $OCRUN_PATH executable", e)
-            }
-        }
+        private fun installNativeTools(): Boolean = OpenCodeBootstrap.installNativeTools(context)
 
         /** Stamp of the installed APK, it changes on every update even with the same version code. */
-        private fun apkStamp(): String {
-            val apk = try {
-                context?.applicationInfo?.sourceDir?.let { File(it) }
-            } catch (e: Exception) {
-                null
-            }
-            return if (apk != null && apk.isFile) "${apk.length()}-${apk.lastModified()}" else ""
-        }
+        private fun apkStamp(): String = OpenCodeBootstrap.apkStamp(context)
 
         /**
          * Replace [link] with a symlink to [target]. `rename` is atomic on the app file system, a
@@ -2925,6 +2852,98 @@ object OpenCodeBootstrap {
      */
     @Suppress("UNUSED_PARAMETER")
     fun isNativeBinary(binary: File?): Boolean = false
+
+    /* -------------------------------------------------------------- native helpers */
+
+    /** Replace [target] with the asset [name], atomically and with the given mode. */
+    private fun extractAsset(assets: android.content.res.AssetManager, name: String, target: File, mode: Int) {
+        val parent = target.parentFile ?: throw IOException("No parent directory for $target")
+        if (!parent.isDirectory && !parent.mkdirs()) throw IOException("Could not create $parent")
+        val temp = File.createTempFile(".${target.name}", ".tmp", parent)
+        try {
+            assets.open(name).use { input ->
+                temp.outputStream().use { output -> input.copyTo(output) }
+            }
+            Os.chmod(temp.absolutePath, mode)
+            if (!temp.renameTo(target)) {
+                deleteQuietly(target)
+                if (!temp.renameTo(target)) throw IOException("Could not replace $target")
+            }
+        } finally {
+            deleteQuietly(temp)
+        }
+    }
+
+    /**
+     * Install `oc-run`, the entry point for programs that were downloaded later. It uses the
+     * patcher when this APK shipped one and starts the command unchanged otherwise.
+     */
+    private fun installOcRun() {
+        val script = buildString {
+            append("#!/system/bin/sh\n")
+            append("# Managed by the OpenCode for Android app.\n")
+            append("# Start a downloaded program with the private prefix of this app.\n")
+            append("prefix=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
+            append("helper=\"\$prefix/libexec/oc-gopatch\"\n")
+            append("if [ -x \"\$helper\" ]; then\n")
+            append("  OC_PREFIX=\"\$prefix\" OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"")
+            append(" exec \"\$helper\" run -- \"\$@\"\n")
+            append("fi\n")
+            append("exec \"\$@\"\n")
+        }
+        val file = File(OCRUN_PATH)
+        if (readTextFileQuietly(file) == script && file.canExecute()) return
+        writeTextFileQuietly(file, script)
+        try {
+            Os.chmod(file.absolutePath, MODE_700)
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not make $OCRUN_PATH executable", e)
+        }
+    }
+
+    /** Stamp of the installed APK, it changes on every update even with the same version code. */
+    private fun apkStamp(context: Context?): String {
+        val apk = try {
+            (context ?: appContext)?.applicationInfo?.sourceDir?.let { File(it) }
+        } catch (e: Exception) {
+            null
+        }
+        return if (apk != null && apk.isFile) "${apk.length()}-${apk.lastModified()}" else ""
+    }
+
+    /**
+     * Extract the native helpers of the current ABI: `liboc-pathmap.so`, which translates the
+     * Termux roots for glibc programs, and `oc-gopatch`, which does the same for static Go
+     * programs. Both are optional: an APK built without the native job keeps starting downloaded
+     * programs unmodified, and a helper of an older APK stays in place.
+     */
+    fun installNativeTools(context: Context? = appContext): Boolean {
+        installOcRun()
+        val abi = when (getOpenCodeArch()) {
+            "arm64" -> "arm64-v8a"
+            "x64" -> "x86_64"
+            else -> return false
+        }
+        val gopatch = File(GOPATCH_PATH)
+        val pathmap = File(PATHMAP_PATH)
+        val installed = isExecutable(gopatch) && pathmap.isFile
+        val stamp = "1 ${BuildConfig.VERSION_CODE} $abi ${apkStamp(context)}"
+        val state = if (installed) "ok" else "absent"
+        val marker = File(NATIVE_TOOLS_MARKER_PATH)
+        if (readTrimmed(marker) == "$stamp $state") return installed
+
+        val assets = (context ?: appContext)?.assets ?: return false
+        try {
+            extractAsset(assets, "native/$abi/oc-gopatch", gopatch, MODE_700)
+            extractAsset(assets, "native/$abi/liboc-pathmap.so", pathmap, MODE_600)
+            if (!isExecutable(gopatch)) throw IOException("Could not make $gopatch executable")
+        } catch (e: Exception) {
+            Log.i(LOG_TAG, "This APK has no native helpers for $abi; oc-run starts programs unpatched", e)
+        }
+        val nowInstalled = isExecutable(gopatch) && pathmap.isFile
+        writeTextFileQuietly(marker, "$stamp ${if (nowInstalled) "ok" else "absent"}\n")
+        return nowInstalled
+    }
 
     /* -------------------------------------------------------------- terminal helper */
 
