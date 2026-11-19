@@ -115,10 +115,11 @@ class RuntimeStateMachine(initial: RuntimeState = RuntimeState()) {
                 else -> current
             }
 
-            RuntimeEvent.RESTART_REQUESTED -> if (current.phase == RuntimePhase.STOPPED) {
-                current
-            } else {
-                RuntimeState(
+            // A restart already in flight must not mint a second generation: every credential
+            // of the new server is keyed by this number.
+            RuntimeEvent.RESTART_REQUESTED -> when (current.phase) {
+                RuntimePhase.STOPPED, RuntimePhase.RESTARTING -> current
+                else -> RuntimeState(
                     RuntimePhase.RESTARTING,
                     current.generation + 1,
                     "restart",

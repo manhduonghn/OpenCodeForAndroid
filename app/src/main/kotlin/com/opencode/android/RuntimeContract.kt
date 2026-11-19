@@ -33,7 +33,7 @@ data class RuntimeInputs(
     val javaToolOptions: String,
     val gradleUserHome: String,
     val androidUserHome: String,
-    val androidSdkHome: String?,
+    val androidSdkHome: File?,
     val bashPath: String?,
     val envScriptPath: String,
     val caBundlePath: String?,
