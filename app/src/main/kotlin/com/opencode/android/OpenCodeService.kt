@@ -468,10 +468,9 @@ class OpenCodeService : Service() {
             // program so that OpenCode can re-exec itself. Always set it so self-spawn works even
             // after an in-place update/downgrade of the binary.
             put("OC_REAL_EXE", binary.absolutePath)
-            // The web terminal spawns `opencode-pty`. The copy that OpenCode extracts for itself
-            // is a glibc binary whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on
-            // Android, so `posix_spawn` fails with ENOENT; point it at the patched helper of the
-            // app instead, which also saves the extraction on every server start.
+            // The web terminal spawns `opencode-pty`. OpenCode's own copy is a glibc binary that
+            // cannot be started directly on Android; point it at the app's pure-C bionic daemon,
+            // extracted from native/<abi>/opencode-pty. The variable itself stays unchanged.
             OpenCodeBootstrap.ensureTerminalRuntime()?.let { put("OPENCODE_PTY_BIN", it) }
             // The daemon creates its unix socket below this directory and dies with EACCES when it
             // is missing, because its default `/tmp` does not exist on Android. It is recreated on

@@ -253,19 +253,17 @@ same server.
 ### Web terminal helper
 
 The terminal panel of the web UI does not use the `opencode-pty` copy that OpenCode extracts for
-itself. OpenCode writes that helper to
-`~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty`, but the file is a plain glibc
-executable whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not exist on Android. Patching
-the cached copy does not stick either, because every new server process checks it against the
-embedded sha256 and rewrites it.
+itself. That copy is a glibc executable whose interpreter (`/lib/ld-linux-aarch64.so.1`) does not
+exist on Android, and OpenCode rewrites and revalidates its cache on every server start.
 
-The app therefore carves the same asset out of the installed CLI once (Bun keeps it uncompressed
-in the snapshot), verifies it can run through the glibc loader with `liboc-pathmap.so`, and
-installs it as `$HOME/.opencode/bin/opencode-pty` without modifying its `PT_INTERP`. The server
-runs with path translation preloaded and is started with `OPENCODE_PTY_BIN` pointing at that file
-(the shell profile exports it as well), which makes OpenCode skip both the extraction and the
-checksum validation of its cache copy. `$HOME/.opencode/.terminal-runtime` records the fingerprint
-of the CLI, so the helper is rebuilt only when the binary changes.
+The app therefore ships its own pure-C implementation in `native/pty-c`. It is built for each ABI
+by the `Native helpers` workflow, packaged as `assets/native/<abi>/opencode-pty`, and extracted by
+`OpenCodeBootstrap.ensureTerminalRuntime()` to `$HOME/.opencode/bin/opencode-pty`. The helper is a
+normal bionic executable: no glibc loader, path-map preload, ELF patching or per-version asset
+carving is involved. It speaks the same framed protocol as OpenCode's daemon, so the server is
+still started with `OPENCODE_PTY_BIN` pointing at it (and the shell profile exports the variable as
+well). `$HOME/.opencode/.terminal-runtime-c` records the APK build, so the helper is only
+reinstalled when the app itself changes.
 
 That is not enough on Android: `opencode-pty` binds its unix socket below
 `${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, and `/tmp` does not exist on Android, so the daemon
@@ -401,10 +399,11 @@ web UI or on the server being reachable. It is a pseudo-terminal in the app proc
   job it started alive. The panel reattaches to the same scrollback and cursor; only
   the Restart action (or process death) replaces the shell.
 
-The native part is built only when NDK `27.2.12479018` and CMake `3.22.1` are
-installed in the Android SDK. Without them Gradle skips the native block, the APK
-still builds, and the Terminal reports that PTY support is missing. The CI workflows
-install both packages before building.
+The native part of the in-app terminal is built only when NDK `27.2.12479018` and
+CMake `3.22.1` are installed in the Android SDK. Without them Gradle skips that block,
+the APK still builds, and the in-app Terminal reports that PTY support is missing.
+The web terminal uses a separate pure-C `opencode-pty` asset built by `native/pty-c/build.sh`
+in the `Native helpers` workflow; CI packages it under `assets/native/<abi>/`.
 
 The PTY bridge, xterm emulator and terminal view are an original implementation.
 The terminal core follows the behaviour described by xterm's control-sequence
@@ -530,13 +529,24 @@ downloads its own Android toolchain and sysroot (see `konan.properties`), so no
 separate Android NDK is needed for the bridge; the binaries are packaged under
 `assets/cli/<abi>/oc-bridge` and extracted by the app.
 
-The app itself has one small native module, the PTY of the native terminal. It
-needs Android NDK `27.2.12479018` and CMake `3.22.1`; a checkout without them
-still builds, just without terminal support. Install them once with:
+The app has one Gradle/NDK module (the PTY bridge of the in-app terminal) and one
+CI-built C executable (`native/pty-c`, the web terminal daemon). The former needs
+Android NDK `27.2.12479018` and CMake `3.22.1`; a checkout without them still builds,
+just without the in-app terminal. The latter is built by the `Native helpers` workflow.
+Install the NDK/CMake once with:
 
 ```sh
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
   "ndk;27.2.12479018" "cmake;3.22.1"
+```
+
+To build the web terminal helper locally, point `NDK` at an Android NDK and run:
+
+```sh
+NDK="$ANDROID_HOME/ndk/27.2.12479018" \
+  native/pty-c/build.sh arm64-v8a app/src/main/assets/native/arm64-v8a/opencode-pty
+NDK="$ANDROID_HOME/ndk/27.2.12479018" \
+  native/pty-c/build.sh x86_64 app/src/main/assets/native/x86_64/opencode-pty
 ```
 
 Debug builds are signed with the committed `keystore/debug.keystore` (password

@@ -1,8 +1,9 @@
 name: Native helpers
 
-# Builds and tests the two native helpers of the app:
+# Builds and tests the native assets of the app:
 #   - liboc-pathmap.so (glibc preload, per ABI),
-#   - oc-gopatch and the oc-gosys blob (static Go, per ABI).
+#   - oc-gopatch and the oc-gosys blob (static Go, per ABI),
+#   - opencode-pty (pure C web-terminal daemon, per ABI).
 # The debug and release workflows call this workflow and copy the artifact into
 # app/src/main/assets/native before Gradle packages the APK.
 
@@ -48,12 +49,14 @@ jobs:
           ndk-version: r27c
           add-to-path: false
 
-      - name: Build the Go stub and the patcher
+      - name: Build the native helpers and the terminal daemon
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           native/gosys/build.sh
           mkdir -p dist/native/arm64-v8a dist/native/x86_64
+          native/pty-c/build.sh arm64-v8a dist/native/arm64-v8a/opencode-pty
+          native/pty-c/build.sh x86_64 dist/native/x86_64/opencode-pty
           native/pathmap/build.sh aarch64 dist/native/arm64-v8a/liboc-pathmap.so
           native/pathmap/build.sh x86_64 dist/native/x86_64/liboc-pathmap.so
           native/oc-launcher/build.sh arm64-v8a dist/native/arm64-v8a/oc-launcher

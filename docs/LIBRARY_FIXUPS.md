@@ -18,7 +18,7 @@ Các cơ chế đã có trong repo (đánh dấu để tham chiếu, không cầ
 | Relocation cùng độ dài `com.termux/files/usr` (31) → `DATA_DIR` (31) trong rodata của ELF | `OpenCodeBootstrap.relocateLoader` / `relocateGlibc`, `ElfStrings` |
 | Patch PT_INTERP về loader glibc của prefix + fallback `ld-linux --library-path` | `installBinary`, `repairNativeInterp` |
 | Alias cấp 1: mọi thư mục top-level của prefix được symlink vào `DATA_DIR` vì không đủ độ dài cho 1 alias duy nhất | `ensurePathAliases` |
-| Exec/path translation qua loader glibc + `liboc-pathmap.so` cho OpenCode và helper glibc | `runOpenCodeBinary`, `runGlibcBinary`, `OpenCodeService`, `oc-launcher` |
+| Exec/path translation qua loader glibc + `liboc-pathmap.so` cho OpenCode | `runOpenCodeBinary`, `OpenCodeService`, `oc-launcher` |
 | Symlink tuyệt đối của Termux → tương đối; shebang → `$PREFIX`; ELF của git mang `SHELL_PATH` được vá | `OpenCodePackages` (extractor + `repair`) |
 | Self-heal: `BINARY_PROOF` + reinstall gói hỏng, glibc loader, cert.pem ngắn | `OpenCodePackages.brokenPackages`, `doMaintenance` |
 | Cache ripgrep của OpenCode: wrapper `$HOME/.cache/opencode/bin/rg` → `$PREFIX/bin/rg` (bionic), vì bản tải về là ELF glibc | `OpenCodeBootstrap.ensureRipgrepRuntime`, `CORE_PACKAGES` |
@@ -243,10 +243,11 @@ Môi trường hiện tại không có JDK/SDK để build, vì vậy các bư�
 
 ## 6. Trạng thái triển khai
 
-Các mục 4.1, 4.2 và 4.3 đã được triển khai. Hai helper native của 4.3 được build trong CI
-(workflow `native.yml`) và nhúng vào APK dưới `assets/native/<abi>/`; app trích xuất chúng
-khi cài đặt/bảo trì. Một APK build cục bộ không có asset native vẫn chạy bình thường: `oc-run`
-rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path cũ.
+Các mục 4.1, 4.2 và 4.3 đã được triển khai. Các helper native của 4.3 và daemon terminal C được
+build trong CI (workflow `native.yml`) và nhúng vào APK dưới `assets/native/<abi>/`; app trích xuất
+chúng khi cài đặt/bảo trì. Một APK build cục bộ không có asset native vẫn chạy được shell: `oc-run`
+rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path cũ, nhưng panel Terminal trên web cần
+riêng `opencode-pty` để mở shell.
 
 | Mục | Trạng thái | Vị trí |
 | --- | --- | --- |
@@ -264,6 +265,7 @@ rót lệnh trực tiếp và các binary tải thêm chỉ chạy với path c�
 | 4.3 #11 preload path translation | ✅ | `native/pathmap`, `OpenCodeBootstrap.installNativeTools`, `oc-gopatch run` |
 | 4.3 #12 Go static patch | ✅ (AArch64) | `native/gosys`, `native/gopatch`, `oc-run` |
 | P2 C tĩnh `svc #0` | ✅ (AArch64) | `native/gopatch/patchc.go`, `native/gosys/cstub.S`, `OC_STATIC_PATCH` |
+| Web terminal: daemon C/bionic thay helper glibc theo phiên bản | ✅ | `native/pty-c`, `OpenCodeBootstrap.ensureTerminalRuntime`, `OPENCODE_PTY_BIN` |
 
 Ghi chú cho #7: asset được kiểm tra SHA-256 trước khi ghi, ghi nguyên tử vào
 `etc/tls/cert.pem`, và **không** ghi đè một bundle hợp lệ đã có. Như vậy bundle mới hơn
@@ -299,13 +301,21 @@ Go tĩnh lẫn C tĩnh); chỉ `LD_PRELOAD` không can thiệp được syscall 
 
 ## 8. Helper native của 4.3 (cách dùng và giới hạn)
 
-APK có thêm ba thứ, được cài bởi `OpenCodeBootstrap.installNativeTools()`:
+APK có thêm bốn file native. Ba file đầu được cài bởi `OpenCodeBootstrap.installNativeTools()`;
+`opencode-pty` được cài riêng bởi `ensureTerminalRuntime()` vì nó phục vụ server web chứ không phải
+lệnh `oc-run`:
 
 | File | Vai trò |
 | --- | --- |
 | `$PREFIX/lib/liboc-pathmap.so` | thư viện glibc `LD_PRELOAD`, map hai root Termux sang prefix của app |
 | `$PREFIX/libexec/oc-gopatch` | binary Go tĩnh: phân loại ELF, chạy glibc qua loader + preload, vá Go tĩnh và C tĩnh rồi chạy |
 | `$PREFIX/bin/oc-run` | vỏ `#!/system/bin/sh` gọi `oc-gopatch run -- "$@"`, fallback chạy trực tiếp |
+| `$HOME/.opencode/bin/opencode-pty` | daemon C/bionic của panel Terminal trên web, nói giao thức protocol 9 với server OpenCode |
+
+`opencode-pty` được build từ `native/pty-c` bằng NDK clang, đóng gói tại
+`assets/native/<abi>/opencode-pty` và chạy trực tiếp như một ELF bionic. Nó giữ nguyên
+`OPENCODE_PTY_BIN`/`OPENCODE_PTY_SOCKET_DIR` và giao thức protocol 9 của OpenCode; đây là lý do
+panel Terminal trên web không còn phụ thuộc vào asset glibc nhúng trong từng phiên bản CLI.
 
 Người dùng gọi binary tải thêm qua `oc-run`, ví dụ:
 

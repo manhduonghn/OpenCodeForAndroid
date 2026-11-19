@@ -291,8 +291,9 @@ Luồng chuẩn:
     hơn bị từ chối vì không được đổi offset của ELF. `app/build.gradle.kts` chặn build nếu
     `applicationId` (hoặc `applicationIdSuffix` của một build type) làm đường dẫn sandbox khác
     31 ký tự.
-  - OpenCode và helper glibc chạy qua loader glibc của prefix với `liboc-pathmap.so` (không cần
-    `patchelf`), quan trọng cho `opencode serve` self-spawn qua `/proc/self/exe`;
+  - OpenCode chạy qua loader glibc của prefix với `liboc-pathmap.so` (không cần `patchelf`), quan
+    trọng cho `opencode serve` self-spawn qua `/proc/self/exe`. Helper terminal trên web là C/bionic
+    nên chạy trực tiếp, không đi qua loader này;
   - `targetSdk 28` nên **không cần** termux-exec/linker shim.
 - Hạn chế: không có `apt`/`dpkg` (không chạy `postinst`), không remove package,
   package nào hardcode path trong rodata (khác độ dài) sẽ cần xử lý riêng.
@@ -537,15 +538,15 @@ phiên đang chat trong WebUI được mở lại khi quay lại app.
 
 **Helper `opencode-pty` cho terminal trên web:** OpenCode tự extract helper vào
 `~/.cache/opencode/bin/opencode-pty/<version>-<hash>/opencode-pty`, nhưng file đó là ELF glibc với
-`PT_INTERP=/lib/ld-linux-aarch64.so.1` — đường dẫn không tồn tại trên Android. Sửa file trong cache
-không có tác dụng: mỗi lần server khởi động lại so checksum với sha256 nhúng sẵn rồi ghi đè. App cắt
-chính asset đó từ CLI đã cài (Bun giữ nguyên, không nén), đối chiếu sha256 ghi cạnh asset, cài vào
-`$HOME/.opencode/bin/opencode-pty` và export `OPENCODE_PTY_BIN` cho server (đồng thời ghi vào
-`etc/opencode-env.sh` cho terminal) mà **không** vá `PT_INTERP`. Server OpenCode chạy với
-`liboc-pathmap.so` preloaded, nên helper glibc có interpreter không tồn tại vẫn được route qua loader
-glibc của prefix. OpenCode thấy biến này thì bỏ qua cả bước extract lẫn bước validate cache.
-`$HOME/.opencode/.terminal-runtime` lưu fingerprint của CLI + version + sha256, nên helper chỉ được
-build lại khi binary đổi. Riêng trên Android chỉ có vậy vẫn chưa đủ: daemon bind unix socket dưới
+`PT_INTERP=/lib/ld-linux-aarch64.so.1` — đường dẫn không tồn tại trên Android, và server ghi đè/toàn
+vẹn lại cache mỗi lần chạy. Thay vì cắt asset theo từng phiên bản CLI, app tự build một daemon C thuần
+bionic từ `native/pty-c` cho từng ABI. Workflow `native.yml` đóng gói nó thành
+`assets/native/<abi>/opencode-pty`; `OpenCodeBootstrap.ensureTerminalRuntime()` trích xuất ra
+`$HOME/.opencode/bin/opencode-pty`, kiểm tra bằng `--version` và export `OPENCODE_PTY_BIN` cho server
+(đồng thời ghi vào `etc/opencode-env.sh` cho terminal). Helper nói cùng giao thức framed với daemon
+của OpenCode, nên không cần glibc loader, `liboc-pathmap.so`, vá `PT_INTERP` hay fingerprint của CLI.
+`$HOME/.opencode/.terminal-runtime-c` chỉ lưu stamp của APK để biết khi nào cần cài lại. Riêng trên
+Android chỉ có vậy vẫn chưa đủ: daemon bind unix socket dưới
 `${XDG_RUNTIME_DIR:-/tmp}/opencode-pty-<uid>`, mà `/tmp` không tồn tại nên nó chết với `EACCES`
 (panel báo `ENOENT ... service.json`). Vì vậy server export thêm `OPENCODE_PTY_SOCKET_DIR=$PREFIX/run`
 và thư mục này được tạo lại mỗi lần khởi động. Đường dẫn phải ngắn: unix socket giới hạn 107 byte,

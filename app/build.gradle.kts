@@ -207,21 +207,26 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.con
 
 // The native helpers are built by the CI "native" job and copied into
 // app/src/main/assets/native before Gradle runs. A local build without them still
-// works (oc-run then starts downloaded programs unpatched), but it is easy to
-// publish such an APK by accident, so warn loudly instead of staying silent.
+// works for the app shell (oc-run then starts downloaded programs unpatched), but the
+// web terminal needs the app-built opencode-pty, so warn loudly instead of staying silent.
 val checkNativeAssets = tasks.register("checkNativeAssets") {
     val nativeAssets = layout.projectDirectory.dir("src/main/assets/native")
     doLast {
         val incomplete = listOf("arm64-v8a", "x86_64").filter { abi ->
             val dir = nativeAssets.dir(abi).asFile
-            !dir.resolve("liboc-pathmap.so").isFile || !dir.resolve("oc-gopatch").isFile || !dir.resolve("oc-launcher").isFile
+            !dir.resolve("liboc-pathmap.so").isFile ||
+                !dir.resolve("oc-gopatch").isFile ||
+                !dir.resolve("oc-launcher").isFile ||
+                !dir.resolve("opencode-pty").isFile
         }
         if (incomplete.isNotEmpty()) {
             logger.warn(
                 "WARNING: app/src/main/assets/native is missing helpers for " +
-                    "${incomplete.joinToString()} (needs liboc-pathmap.so, oc-gopatch, oc-launcher). " +
-                    "OpenCode updates/downgrades may be fragile without them. Run the Native helpers " +
-                    "workflow and copy its native-assets artifact into that directory."
+                    "${incomplete.joinToString()} " +
+                    "(needs liboc-pathmap.so, oc-gopatch, oc-launcher, opencode-pty). " +
+                    "OpenCode updates/downgrades may be fragile and the web terminal will not start " +
+                    "without them. Run the Native helpers workflow and copy its native-assets " +
+                    "artifact into that directory."
             )
         }
     }

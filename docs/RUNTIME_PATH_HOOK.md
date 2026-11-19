@@ -28,6 +28,7 @@ ptrace, không chroot, không sửa uid.
 | `native/pathmap/pathmap.c` | Preload library: dịch path, định tuyến exec, xử lý socket/port, policy SIGSYS |
 | `native/gopatch/` | Chọn cách chạy một file: glibc qua loader, script qua interpreter, Go/C tĩnh qua bản vá |
 | `native/gosys/` | Blob và stub cho chương trình tĩnh/Go không dùng libc |
+| `native/pty-c/` | Daemon `opencode-pty` C/bionic của web terminal (không đi qua preload glibc) |
 | `OpenCodeBootstrap.kt` | Relocate chuỗi Termux trong ELF, patch `PT_INTERP`/RUNPATH, alias thư mục, self-heal |
 
 Hai lớp bổ trợ nhau:
@@ -295,6 +296,7 @@ tĩnh thì trampoline mỗi call site (`patchc.go`). `OC_STATIC_PATCH=0` tắt b
 - `native/pathmap/pathmap_test.c`, `native/pathmap/route_child.c` — host test và fixture.
 - `native/gopatch/run.go` (`startGlibc`, `startScript`), `classify.go`, `patch.go`/`patchc.go`.
 - `native/gosys/gosys.c`, `native/gosys/cstub.S`.
+- `native/pty-c/opencode-pty.c` (protocol 9), `pty_core.c`, `screen.c`, `util.c`.
 - `OpenCodeBootstrap.kt` (`PATHMAP_PATH`, `GLIBC_LIB_DIR`, `RESOLV_CONF_PATH`,
   `ensurePathAliases`, `relocateLoader`), `OpenCodePackages.kt` (`repair`, shebang).
 - [`LIBRARY_FIXUPS.md`](LIBRARY_FIXUPS.md) — bảng vá thư viện và các giới hạn cố ý.
