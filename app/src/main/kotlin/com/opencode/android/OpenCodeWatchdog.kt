@@ -149,11 +149,12 @@ class OpenCodeWatchdogJobService : JobService() {
         }
         val thread = Thread({
             val port = OpenCodeService.DEFAULT_PORT
-            val running = OpenCodeWatchdog.isPortOpen(port)
-            if (running) {
-                Log.i(TAG, "The OpenCode server is still listening on $port.")
+            // Readiness, not a socket: a server can keep the port open while /api/info is hung.
+            val healthy = OpenCodeService.ensureHealthy(app)
+            if (healthy) {
+                Log.i(TAG, "The OpenCode server is still healthy on $port.")
             } else {
-                Log.i(TAG, "The OpenCode server is gone, starting the service again.")
+                Log.i(TAG, "The OpenCode server is not healthy on $port, starting the service again.")
                 OpenCodeWatchdog.startService(app)
             }
             jobFinished(params, false)

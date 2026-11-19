@@ -23,7 +23,6 @@ import android.text.SpannableString
 import android.text.SpannableStringBuilder
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
-import android.util.Base64
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -57,11 +56,7 @@ import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.snackbar.Snackbar
-import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 
 /**
@@ -89,6 +84,30 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     OpenCodeWebViewModel.Ui {
 
     private val viewModel: OpenCodeWebViewModel by viewModels()
+
+    /** Single owner of pairing, cookies and the session identity. */
+    private lateinit var gateway: SessionGateway
+
+    /** Observes supervisor transitions instead of polling a server generation on a timer. */
+    private val runtimeStateListener: (RuntimeState) -> Unit = { state ->
+        handler.post {
+            if (destroyed) return@post
+            when (state.phase) {
+                RuntimePhase.RESTARTING -> reconnectToRestartedServer()
+                RuntimePhase.STOPPED -> updateProgress()
+                RuntimePhase.DEGRADED -> {
+                    statusPanel.visibility = View.VISIBLE
+                    webView.visibility = View.INVISIBLE
+                    showBootPanel(
+                        getString(R.string.opencode_status_starting),
+                        getString(R.string.opencode_reconnecting_detail),
+                    )
+                }
+                RuntimePhase.HEALTHY -> gateway.onGenerationChanged(state.generation)
+                else -> Unit
+            }
+        }
+    }
 
     private lateinit var root: View
     private lateinit var toolbar: MaterialToolbar
@@ -225,28 +244,28 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             if (destroyed || probeInFlight || probeExecutor.isShutdown) return
             probeInFlight = true
             probeExecutor.execute {
-                val reachable = serverReachable()
-                val sessionToken = if (reachable) requestSessionToken() else null
+                // Readiness is a contract with the supervisor, not an open TCP socket. The state
+                // can only be HEALTHY after an authenticated GET /api/info answered 200.
+                val state = RuntimeStateHolder.state
+                val ready = state.phase == RuntimePhase.HEALTHY && gateway.healthy()
+                val credential = if (ready) gateway.attach(state.generation) else null
                 handler.post {
                     probeInFlight = false
                     if (destroyed) return@post
-                    if (reachable) {
+                    if (ready && credential != null) {
                         probeFailures = 0
-                        if (sessionToken == null && pairAttempts < 6) {
-                            // The server accepted the connection but not the pairing request yet,
-                            // retry briefly before falling back to the bare web app.
-                            pairAttempts++
-                            handler.postDelayed(poll, 500)
-                            return@post
-                        }
-                        loadUi(sessionToken)
+                        loadUi(credential)
+                        return@post
+                    }
+                    if (ready && pairAttempts < 6) {
+                        // The server answers health but not the pairing request yet (it is still
+                        // loading the location). The gateway never hands an unverified token over.
+                        pairAttempts++
+                        handler.postDelayed(poll, 500)
                         return@post
                     }
                     updateProgress()
                     if (OpenCodeBootstrap.getInstallState().failed) return@post
-                    // A cold start opens the port within ~0.5 s: retry fast for the first three
-                    // seconds, then fall back to the slow interval so a long installation does
-                    // not wake the app every 150 ms.
                     val delay = if (probeFailures < 20) {
                         probeFailures++
                         150L
@@ -308,28 +327,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
     }
 
-    /**
-     * Keep the page paired with the server while the activity is visible.
-     *
-     * The server can be replaced behind the back of the UI at any time: the heartbeat or the
-     * notification's Restart action, a crash, the phantom process killer. The page then holds the
-     * cookie and the pairing token of the old server and only receives 401s, so it has to be
-     * paired again instead of showing a dead chat until the next manual reload.
-     */
-    private val generationWatch: Runnable = object : Runnable {
-        override fun run() {
-            if (destroyed) return
-            if (pageLoaded && !OpenCodeSettings.stoppedByUser(this@OpenCodeWebActivity)) {
-                val generation = OpenCodeService.serverGeneration()
-                if (generation != 0 && generation != viewModel.pairedServerGeneration) {
-                    Log.i(TAG, "The server was replaced while the UI was open, pairing again")
-                    reconnectToRestartedServer()
-                }
-            }
-            handler.postDelayed(this, GENERATION_CHECK_MS)
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -361,10 +358,16 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         configureWebView()
         applyWebTheme()
 
+        // One owner for pairing, cookies and the session identity. Attaching the tracker here
+        // also fixes the old gap where the notification could not see the last active chat.
+        gateway = SessionGateway(this, OpenCodeBootstrap.getServerPassword(this))
+        OpenCodeSessionTracker.attach(this)
+        RuntimeStateHolder.addListener(runtimeStateListener)
+
         // Pre-populate the credentials of the realm the server announces
         // (WWW-Authenticate: Basic realm="Secure Area"), so the WebView answers the very first
         // challenge of the page and of its fetch/XHR calls without a system dialog.
-        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        serverPassword = gateway.password
         try {
             @Suppress("DEPRECATION")
             WebViewDatabase.getInstance(this).setHttpAuthUsernamePassword(
@@ -1385,9 +1388,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         if (::editorScreen.isInitialized) editorScreen.onBackground()
         if (::terminalScreen.isInitialized) terminalScreen.onBackground()
         viewModel.ui = null
-        // While the activity is gone the notification keeps the server alive; the page is checked
-        // and woken up again in onResume, so the periodic check is not needed here.
-        handler.removeCallbacks(generationWatch)
+        // While the activity is gone the notification keeps the server alive. Supervisor changes
+        // are observed through [runtimeStateListener], which stays registered for the lifetime of
+        // the activity, so no polling timer is needed here.
         super.onStop()
     }
 
@@ -1417,10 +1420,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         // activity comes back instead of leaving the code screen waiting for the next poll.
         if (::githubScreen.isInitialized) githubScreen.onActivityResumed()
         // A server that was replaced while the app was in the background invalidated the cookie
-        // and the pairing token of the page. Pair again instead of showing a page that only gets
-        // 401s from the API.
-        val generation = OpenCodeService.serverGeneration()
-        if (pageLoaded && generation != 0 && generation != viewModel.pairedServerGeneration) {
+        // and the pairing token of the page. The supervisor is the authority: compare the page's
+        // generation with the published state instead of a service-owned counter.
+        val state = RuntimeStateHolder.state
+        if (pageLoaded && state.generation != 0 &&
+            state.generation != viewModel.pairedServerGeneration
+        ) {
             reconnectToRestartedServer()
         } else if (pageLoaded) {
             if (!viewModel.webReady) {
@@ -1434,8 +1439,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             // own reconnect path and fetch what it missed.
             viewModel.nudgeWebApp()
         }
-        handler.removeCallbacks(generationWatch)
-        handler.postDelayed(generationWatch, GENERATION_CHECK_MS)
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             renderBatteryOptimization()
         }
@@ -1489,19 +1492,19 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
             ?: OpenCodeSettings.lastSessionId(this)
         pageLoaded = false
         viewModel.webReady = false
+        viewModel.routeReported = false
         pairAttempts = 0
         loadFailures = 0
         pendingSessionId = sessionId
-        serverPassword = OpenCodeBootstrap.getServerPassword(this)
-        try {
-            CookieManager.getInstance().apply {
-                removeAllCookies(null)
-                flush()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not drop the cookies of the previous server", e)
-        }
-        webView.visibility = View.GONE
+        // The gateway owns the credential and the cookie: rebind the session to the new server,
+        // keeping the chat id but dropping the token/cookie of the previous generation.
+        gateway.refreshPassword(OpenCodeBootstrap.getServerPassword(this))
+        gateway.remember(sessionId)
+        gateway.onGenerationChanged(RuntimeStateHolder.state.generation)
+        gateway.clearCookies()
+        gateway.clearHttpAuth()
+        serverPassword = gateway.password
+        webView.visibility = View.INVISIBLE
         statusPanel.visibility = View.VISIBLE
         showBootStage(BootStage.UI)
         showBootPanel(
@@ -2028,14 +2031,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
 
         showSnack(getString(R.string.opencode_webui_refreshing), Snackbar.LENGTH_SHORT)
 
-        try {
-            val cookieManager = CookieManager.getInstance()
-            cookieManager.removeAllCookies(null)
-            cookieManager.flush()
-            WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword()
-        } catch (e: Exception) {
-            Log.w(TAG, "hardRefreshWebUi: failed to clear cookies/auth", e)
-        }
+        gateway.clearCookies()
+        gateway.clearHttpAuth()
 
         try {
             webView.stopLoading()
@@ -2050,10 +2047,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         pageLoaded = false
         viewModel.webReady = false
         viewModel.transportDown = false
+        viewModel.routeReported = false
         pairAttempts = 0
         pendingSessionId = null
         loadFailures = 0
-        serverPassword = OpenCodeBootstrap.getServerPassword(this)
+        gateway.refreshPassword(OpenCodeBootstrap.getServerPassword(this))
+        serverPassword = gateway.password
         bootFailure = null
 
         handler.removeCallbacks(bootTimeout)
@@ -2073,17 +2072,19 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         handler.post(poll)
     }
 
-    /** The server accepts connections, load the paired web UI behind the native boot screen. */
-    private fun loadUi(sessionToken: String?) {
+    /** The supervisor is healthy and the gateway has a verified credential: load the page. */
+    private fun loadUi(credential: SessionGateway.Credential) {
         if (pageLoaded) return
         pageLoaded = true
         viewModel.webReady = false
         viewModel.transportDown = false
-        viewModel.pairedServerGeneration = OpenCodeService.serverGeneration()
+        viewModel.routeReported = false
+        viewModel.pairedServerGeneration = credential.generation
+        gateway.onGenerationChanged(credential.generation)
         waitingForInstall = false
-        // Do not reveal the WebView yet. The web app fetches its session list immediately after
-        // mounting; if that request fails it paints its own "Transport: Failed to fetch" error.
-        // The boot bridge hides this panel only after the first successful API call.
+        // Do not reveal the WebView yet. The native panel stays opaque until the shell reports a
+        // successful API call, the current generation and the route. This is the reveal barrier
+        // that keeps the SolidJS error boundary invisible.
         showBootPanel(
             getString(R.string.opencode_loading_ui),
             getString(R.string.opencode_loading_ui_detail),
@@ -2091,54 +2092,18 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         showBootStage(BootStage.UI)
         updateStatusSubtitle(ConnectionState.RECONNECTING)
         statusRetry.visibility = View.GONE
-        // Keep the view in the hierarchy and laid out; the opaque boot panel covers it.
         webView.visibility = View.INVISIBLE
         handler.removeCallbacks(bootTimeout)
         handler.postDelayed(bootTimeout, BOOT_TIMEOUT_MS)
 
-        var target = "$baseUrl/"
-        // Prefer the session token of the pairing code. The real password is an acceptable
-        // fallback, it is the same credential 'opencode pair' puts into its links.
-        val paired = !sessionToken.isNullOrEmpty()
-        val secret = if (paired) sessionToken else serverPassword
-        if (!secret.isNullOrEmpty()) {
-            // 'opencode pair' prints links of the form /?auth_token=<base64(user:password)>,
-            // the web app reads it, strips it from the address bar and authenticates its API
-            // calls with it.
-            //
-            // The web app decodes the parameter with a base64url decoder (it replaces '-' and
-            // '_' back to '+' and '/'), so the URL-safe alphabet is the format it expects. A
-            // standard '+' would additionally be turned into a space by URLSearchParams.
-            val credentials = Base64.encodeToString(
-                "${OpenCodeBootstrap.SERVER_USER}:$secret".toByteArray(StandardCharsets.UTF_8),
-                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
-            )
-            target += "?auth_token=$credentials"
-
-            // The session token is also the value of the session cookie, so a reload of the
-            // WebView keeps working after the app removed the token from the URL.
-            try {
-                CookieManager.getInstance().apply {
-                    setAcceptCookie(true)
-                    setCookie(
-                        "http://127.0.0.1:$PORT",
-                        if (paired) {
-                            "opencode_session_$PORT=$secret; Path=/; Max-Age=2592000"
-                        } else {
-                            // A token of an earlier server must not survive: the API calls of the
-                            // UI would carry a cookie that the current server rejects with 401.
-                            "opencode_session_$PORT=; Path=/; Max-Age=0"
-                        },
-                    )
-                    flush()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not store the session cookie", e)
-            }
-        }
+        // One gateway call writes both the `auth_token` link and the session cookie.
+        gateway.applyCookie(credential.secret, credential.token.isNotEmpty())
+        viewModel.configureShell(
+            generation = credential.generation,
+            allowRetry = RuntimeStateHolder.state.phase == RuntimePhase.STARTING,
+        )
         Log.i(TAG, "Loading the paired OpenCode web UI")
-        webView.loadUrl(target)
-        // The page routes to the session in onPageFinished, once the start page is ready.
+        webView.loadUrl(gateway.authorizedUrl(credential.secret))
     }
 
     /**
@@ -2169,9 +2134,22 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         }
     }
 
-    /** Reveal the web UI after its first successful API call, retiring the native boot screen. */
+    /**
+     * The reveal barrier. The native boot card is the authority and stays on top until every
+     * condition holds at once: the supervisor is HEALTHY, the credential belongs to that exact
+     * generation, the page completed a 200 API call and reported its route. Hiding the panel early
+     * is what used to expose the SolidJS `ClientError: Transport: Failed to fetch` stack.
+     */
+    private fun revealAllowed(): Boolean {
+        val state = RuntimeStateHolder.state
+        return state.phase == RuntimePhase.HEALTHY &&
+            gateway.current().generation == state.generation &&
+            viewModel.pairedServerGeneration == state.generation &&
+            viewModel.webReady && viewModel.routeReported
+    }
+
     private fun showWebUi() {
-        if (destroyed || !pageLoaded) return
+        if (destroyed || !pageLoaded || !revealAllowed()) return
         handler.removeCallbacks(bootTimeout)
         handler.removeCallbacks(transportWatchdog)
         handler.removeCallbacks(readinessFallback)
@@ -2183,12 +2161,18 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     /**
-     * Called by the injected transport guard once the web app has completed an API call. This is
-     * the moment the SolidJS UI is actually usable, not the `load` event of the page.
+     * Called by the injected shell once the web app has completed an API call. This is the moment
+     * the SolidJS UI is actually usable, not the `load` event of the page.
      */
     override fun onWebBootReady() {
         if (destroyed || !pageLoaded) return
-        Log.i(TAG, "The web UI completed its first API call, showing it")
+        Log.i(TAG, "The web UI completed its first API call")
+        showWebUi()
+    }
+
+    /** The shell reported the chat route, the final reveal barrier. */
+    override fun onWebRouteReported() {
+        if (destroyed || !pageLoaded) return
         showWebUi()
     }
 
@@ -2199,6 +2183,9 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     override fun onWebTransportLost(detail: String) {
         if (destroyed || !pageLoaded) return
         Log.w(TAG, "The web UI lost the server transport: $detail")
+        // Hide the failed page immediately: leaving it visible is what let the error boundary
+        // paint the transport stack over the reconnect screen.
+        webView.visibility = View.INVISIBLE
         showBootPanel(
             getString(R.string.opencode_status_starting),
             getString(R.string.opencode_reconnecting_detail),
@@ -2227,108 +2214,8 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         handler.postDelayed(transportWatchdog, AUTH_RECOVERY_MS)
     }
 
-    /**
-     * Mint a single-use pairing code and redeem it for a session token. The web app cannot use
-     * the Basic auth of the API directly, it needs the token in its `auth_token` link.
-     */
-    private fun requestSessionToken(): String? {
-        val code = requestPairCode() ?: return null
-        val body = try {
-            request("$baseUrl$PAIR_PATH$code", "application/json")
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not redeem the pairing code", e)
-            return null
-        } ?: return null
-
-        val token = JSONObject(body).optString("token", "")
-        if (token.isEmpty()) return null
-        // Make sure the token is actually accepted before the UI starts with it. A token of a
-        // server that has been replaced in the meantime only produces 401s and the UI then shows
-        // its "server unreachable" panel.
-        if (!serverAccepts(token)) {
-            Log.w(TAG, "The server rejected the freshly minted pairing token, using the password.")
-            return null
-        }
-        return token
-    }
-
-    /** A short-lived pairing code, or null when the server does not answer. */
-    private fun requestPairCode(): String? {
-        val body = try {
-            request("$baseUrl/api/pair", accept = null, post = true)
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not create a pairing code", e)
-            return null
-        } ?: return null
-
-        val code = JSONObject(body).optString("code", "")
-        return code.ifEmpty { null }
-    }
-
-    /**
-     * A small GET/POST helper for the loopback API. Returns the body of a 200 answer and null
-     * otherwise, the callers only need the JSON document.
-     */
-    private fun request(
-        url: String,
-        accept: String?,
-        post: Boolean = false,
-        secret: String = serverPassword,
-    ): String? {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 2000
-            connection.readTimeout = 3000
-            connection.useCaches = false
-            if (post) {
-                connection.requestMethod = "POST"
-                connection.doOutput = true
-                connection.setFixedLengthStreamingMode(0)
-                connection.setRequestProperty(
-                    "Authorization",
-                    OpenCodeHttp.basicAuth(secret),
-                )
-            }
-            if (accept != null) connection.setRequestProperty("Accept", accept)
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "The server answered ${connection.responseCode} for $url")
-                return null
-            }
-            return connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun serverReachable(): Boolean = OpenCodeHttp.isPortOpen(PORT, 1000)
-
-    /**
-     * Check that the server answers `/api/info` with the given secret (a session token or the
-     * server password) as HTTP Basic credentials, exactly like the web UI does.
-     */
-    private fun serverAccepts(secret: String): Boolean {
-        if (secret.isEmpty()) return false
-        val connection = try {
-            URL("$baseUrl/api/info").openConnection() as HttpURLConnection
-        } catch (e: Exception) {
-            return false
-        }
-        try {
-            connection.connectTimeout = 2000
-            connection.readTimeout = 3000
-            connection.useCaches = false
-            connection.setRequestProperty(
-                "Authorization",
-                OpenCodeHttp.basicAuth(secret),
-            )
-            return connection.responseCode == HttpURLConnection.HTTP_OK
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not verify the server credentials", e)
-            return false
-        } finally {
-            connection.disconnect()
-        }
-    }
+    // Pairing, credential verification and cookie handling live in SessionGateway now. The
+    // Activity only renders the state and loads the URL the gateway hands it.
 
     override fun onDestroy() {
         destroyed = true
@@ -2342,6 +2229,7 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
         backgroundExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)
         OpenCodeBootstrap.removeInstallListener(this)
+        RuntimeStateHolder.removeListener(runtimeStateListener)
         viewModel.ui = null
         // The WebView is owned by the ViewModel: here it is only detached from the hierarchy of
         // this activity, and only when it is really attached to it (a configuration change can
@@ -2390,12 +2278,6 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
          * content intent, so tapping the notification continues exactly the chat it reports.
          */
         const val EXTRA_SESSION_ID = "session_id"
-
-        /** Endpoint that redeems a pairing code for a session token. */
-        private const val PAIR_PATH = "/auth/connect/"
-
-        /** How often the activity checks that the page is paired with the current server. */
-        private const val GENERATION_CHECK_MS = 3000L
 
         /** How long the web app may take to complete its first API call before the boot retries. */
         private const val BOOT_TIMEOUT_MS = 15_000L

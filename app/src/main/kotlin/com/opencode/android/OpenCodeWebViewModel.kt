@@ -72,6 +72,13 @@ class OpenCodeWebViewModel : ViewModel() {
         fun onWebAuthFailed()
 
         /**
+         * The page reported its `/session/<id>` route. This is the last barrier of the reveal
+         * rule: the native boot panel stays up until health, generation, credential, a successful
+         * API call and a reported route all agree.
+         */
+        fun onWebRouteReported()
+
+        /**
          * The page asked for a second window (`target="_blank"` or `window.open`). The shell has
          * only one window: the activity resolves the popup URL and opens it outside the WebView.
          */
@@ -103,6 +110,14 @@ class OpenCodeWebViewModel : ViewModel() {
     @Volatile
     var bootGuardInstalled = false
 
+    /**
+     * True once the page reported its `/session/<id>` route. Part of the reveal barrier: the
+     * native boot panel stays up until health, generation, credential, first API call and route
+     * all agree, so a SolidJS error boundary never gets an unguarded frame.
+     */
+    @Volatile
+    var routeReported = false
+
     /** True once the web UI of the server was loaded, it survives a configuration change. */
     var pageLoaded = false
 
@@ -128,6 +143,17 @@ class OpenCodeWebViewModel : ViewModel() {
      * token and the cookie of the old pairing are stale and the page has to be paired again.
      */
     var pairedServerGeneration = 0
+
+    /**
+     * Contract of the shell that the document-start script reads synchronously from the bridge.
+     * A global set with `evaluateJavascript` would be wiped by the next navigation, so native keeps
+     * these values here and [HostBridge.contract] hands them to every new document.
+     */
+    @Volatile
+    private var shellGeneration = 0
+
+    @Volatile
+    private var shellAllowRetry = false
 
     /** The activity of the moment, used for the JavaScript dialogs and the file picker only. */
     var ui: Ui? = null
@@ -213,11 +239,10 @@ class OpenCodeWebViewModel : ViewModel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             view.isForceDarkAllowed = false
         }
-        // The page is served by our own loopback server. The bridges only report the route and
-        // the state of the web app's first API calls.
-        view.addJavascriptInterface(SessionBridge(), "OpenCodeAndroidSession")
-        view.addJavascriptInterface(BootBridge(), "OpenCodeAndroidBoot")
-        view.addJavascriptInterface(LinksBridge(), "OpenCodeAndroidLinks")
+        // One versioned bridge for the whole shell: boot state, route, local links and fatal
+        // errors. The old three interfaces are gone, so there is no longer a document that only
+        // some of the guards can report from.
+        view.addJavascriptInterface(HostBridge(), HOST_BRIDGE)
         // The default handler needs a window of an activity, which an application context cannot
         // provide, so the dialogs of the web app are shown by the activity that is on screen.
         view.webChromeClient = object : WebChromeClient() {
@@ -287,8 +312,9 @@ class OpenCodeWebViewModel : ViewModel() {
         }
 
         webViewInstance = view
-        installBootGuard(view)
-        installLinkGuard(view)
+        installWebShell(view)
+        // Fallback for WebViews without document-start support: re-evaluate the idempotent
+        // combined script on the live document later (see installSessionWatcher).
         return view
     }
 
@@ -310,40 +336,40 @@ class OpenCodeWebViewModel : ViewModel() {
     }
 
     /**
-     * Install the transport guard before the web app bundle runs.
+     * Install the single document-start shell before the web app bundle runs.
      *
-     * The guard wraps `fetch`, retries short GET/HEAD transport failures (a server restart, a
-     * cold start) and reports a successful first API call through [BootBridge]. The activity keeps
-     * its native boot screen on top until that callback arrives, so the SolidJS error boundary
-     * never gets a chance to paint "Transport: Failed to fetch" over the launcher.
+     * The script wraps `fetch` with at most one cold-start retry, reports its state to [HostBridge],
+     * watches the `/session/<id>` route and intercepts local file paths. Error events are reported
+     * and neutralised: a failed infrastructure request must never reach the SolidJS error boundary.
      */
-    private fun installBootGuard(view: WebView) {
+    private fun installWebShell(view: WebView) {
         bootGuardInstalled = false
+        routeReported = false
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         bootHandler = try {
-            WebViewCompat.addDocumentStartJavaScript(view, BOOT_SCRIPT, setOf("*")).also {
+            WebViewCompat.addDocumentStartJavaScript(view, WEB_SHELL_SCRIPT, setOf("*")).also {
                 bootGuardInstalled = true
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not install the boot guard", e)
+            Log.w(TAG, "Could not install the web shell", e)
             null
         }
     }
 
     /**
-     * Hand absolute file paths of the chat to the native file manager.
-     *
-     * The web UI renders a local path as `a[data-local-link]` (without an `href`) or as an inline
-     * code path, and its own handler opens a review panel inside the page. A capture-phase script
-     * intercepts those taps before that handler: an absolute path is reported to [LinksBridge], a
-     * relative one is left to the web UI, which resolves it against the project root.
+     * Give the injected shell the current supervisor generation and whether a cold-start retry is
+     * allowed. Native, not JavaScript, decides when retrying still makes sense.
      */
-    private fun installLinkGuard(view: WebView) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+    fun configureShell(generation: Int, allowRetry: Boolean) {
+        shellGeneration = generation
+        shellAllowRetry = allowRetry
+        // If a document is already live, tell it to re-read the contract; the next navigation gets
+        // it from HostBridge.contract() at document-start, so no global has to survive a reload.
+        val view = webViewInstance ?: return
         try {
-            WebViewCompat.addDocumentStartJavaScript(view, LINK_SCRIPT, setOf("*"))
+            view.evaluateJavascript("window.__ocAndroidShell && window.__ocAndroidShell.rebind();", null)
         } catch (e: Exception) {
-            Log.w(TAG, "Could not install the link guard", e)
+            // The view is being replaced; the next document start reads the fields above.
         }
     }
 
@@ -391,15 +417,16 @@ class OpenCodeWebViewModel : ViewModel() {
     }
 
     /**
-     * Install the route watcher of the single page app. Safe to call after every page load: the
-     * script guards itself against double installation.
+     * Re-evaluate the idempotent combined shell on the live document. Needed for WebViews without
+     * document-start support and after a rotation that kept the page alive.
      */
     fun installSessionWatcher() {
         val view = webViewInstance ?: return
-        view.evaluateJavascript(WATCHER_SCRIPT, null)
-        // Fallback for a WebView that does not support document-start scripts: the guard is
-        // idempotent, so evaluating it again is a no-op.
-        view.evaluateJavascript(LINK_SCRIPT, null)
+        try {
+            view.evaluateJavascript(WEB_SHELL_SCRIPT, null)
+        } catch (e: Exception) {
+            // The view is being replaced; nothing to install.
+        }
     }
 
     /**
@@ -439,32 +466,21 @@ class OpenCodeWebViewModel : ViewModel() {
         OpenCodeSessionTracker.setActiveSession(sessionIdOf(url))
     }
 
-    private class SessionBridge {
-        @JavascriptInterface
-        fun setSession(id: String?) {
-            OpenCodeSessionTracker.setActiveSession(id)
-        }
-    }
-
     /**
-     * Receives the absolute file paths the link guard of the page intercepted. The method runs on
-     * the WebView's JavaScript thread, so the UI callback is posted to the main thread.
+     * The single versioned bridge of the shell. All methods run on the WebView's JavaScript
+     * thread: fields are volatile and every UI callback is posted to the main thread.
      */
-    private inner class LinksBridge {
+    private inner class HostBridge {
+        /**
+         * Synchronous contract read at document-start. A `@JavascriptInterface` call can return a
+         * value, so the shell never depends on a global that a navigation would erase.
+         */
         @JavascriptInterface
-        fun openLocalFile(path: String?) {
-            val value = path?.trim().orEmpty()
-            if (value.isEmpty()) return
-            mainHandler.post { ui?.onOpenLocalFile(value) }
-        }
-    }
+        fun contract(): String = org.json.JSONObject()
+            .put("generation", shellGeneration)
+            .put("allowRetry", shellAllowRetry)
+            .toString()
 
-    /**
-     * Receives the state of the injected [BOOT_SCRIPT]. The methods are called on the WebView's
-     * JavaScript thread, so the fields are volatile and every UI callback is posted to the main
-     * thread.
-     */
-    private inner class BootBridge {
         @JavascriptInterface
         fun ready(source: String?) {
             webReady = true
@@ -488,6 +504,27 @@ class OpenCodeWebViewModel : ViewModel() {
         fun authFailed(value: String?) {
             mainHandler.post { ui?.onWebAuthFailed() }
         }
+
+        @JavascriptInterface
+        fun setSession(id: String?) {
+            val firstReport = !routeReported
+            routeReported = true
+            OpenCodeSessionTracker.setActiveSession(id)
+            if (firstReport) mainHandler.post { ui?.onWebRouteReported() }
+        }
+
+        @JavascriptInterface
+        fun openLocalFile(path: String?) {
+            val value = path?.trim().orEmpty()
+            if (value.isEmpty()) return
+            mainHandler.post { ui?.onOpenLocalFile(value) }
+        }
+
+        @JavascriptInterface
+        fun reportFatal(kind: String?) {
+            transportDown = true
+            mainHandler.post { ui?.onWebTransportLost("fatal:${kind.orEmpty()}") }
+        }
     }
 
     override fun onCleared() {
@@ -495,6 +532,7 @@ class OpenCodeWebViewModel : ViewModel() {
         webReady = false
         transportDown = false
         bootGuardInstalled = false
+        routeReported = false
         cancelFileChooser()
         OpenCodeSessionTracker.setActiveSession(null)
         val view = webViewInstance
@@ -509,6 +547,8 @@ class OpenCodeWebViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "OpenCodeWebViewModel"
+        /** The single versioned bridge. Dots are not valid JS property names, hence "V1". */
+        private const val HOST_BRIDGE = "OpenCodeHostV1"
 
         /** Extract `ses_…` from a URL such as `http://127.0.0.1:49374/session/ses_abc`. */
         fun sessionIdOf(url: String?): String? {
@@ -523,26 +563,45 @@ class OpenCodeWebViewModel : ViewModel() {
         }
 
         /**
-         * Transport/boot guard, evaluated before any bundle of the web app.
+         * The one document-start script of the shell, versioned through [HOST_BRIDGE].
          *
-         * The web UI fetches its session list immediately after mounting. A server that has just
-         * been restarted, or a cold start that has not finished opening its database, makes that
-         * fetch reject with `TypeError: Failed to fetch`; the SolidJS error boundary then paints
-         * the long `ClientError: Transport: Failed to fetch` stack over the launcher. Instead of
-         * showing that, this script retries the short GET/HEAD calls for a few seconds and tells
-         * the native side when the first call succeeds. The activity keeps its boot screen on top
-         * until then, and replaces a page that still loses the transport with the reconnect screen.
+         * It replaces the old BOOT_SCRIPT + WATCHER_SCRIPT + LINK_SCRIPT trio. JavaScript no
+         * longer decides when to stop retrying: native passes a generation and a cold-start
+         * deadline, the script performs at most one short retry, reports failures to the bridge
+         * and leaves a pending promise instead of throwing. That is what removes the SolidJS
+         * `ClientError: Transport: Failed to fetch` stack: the app never receives a rejection it
+         * could render, and the native boot panel covers the page until every barrier is met.
          */
-        private val BOOT_SCRIPT = """
+        private val WEB_SHELL_SCRIPT = """
             (function () {
-              if (window.__ocAndroidBoot) return;
-              var bridge = window.OpenCodeAndroidBoot;
-              var state = window.__ocAndroidBoot = {
+              if (window.__ocAndroidShell) { window.__ocAndroidShell.rebind(); return; }
+              var bridge = window.OpenCodeHostV1;
+              // The native bridge is installed once per WebView and survives navigation, unlike a
+              // global set by evaluateJavascript before loadUrl(). Read the contract at document
+              // start so the very first API call is guarded with the current generation.
+              function readContract() {
+                try {
+                  var raw = bridge && typeof bridge.contract === 'function' ? bridge.contract() : '{}';
+                  return JSON.parse(raw) || {};
+                } catch (e) {
+                  return {};
+                }
+              }
+              var contract = readContract();
+              var state = window.__ocAndroidShell = {
                 ready: false,
                 failed: false,
                 lost: false,
                 authFailed: false,
-                pending: 0
+                pending: 0,
+                generation: contract.generation || 0,
+                allowRetry: contract.allowRetry === true,
+                rebind: function () {
+                  var next = readContract();
+                  state.generation = next.generation || 0;
+                  state.allowRetry = next.allowRetry === true;
+                  reportRoute();
+                }
               };
               function call(name, value) {
                 try {
@@ -575,6 +634,12 @@ class OpenCodeWebViewModel : ViewModel() {
               function delay(ms) {
                 return new Promise(function (resolve) { setTimeout(resolve, ms); });
               }
+              // Never settle: the native shell is already showing the reconnect screen and will
+              // reload the page with a fresh credential. A rejection here is what reaches the
+              // SolidJS error boundary and paints the stack trace.
+              function suspended() {
+                return new Promise(function () {});
+              }
               function markReady() {
                 if (state.ready) return;
                 state.ready = true;
@@ -583,19 +648,27 @@ class OpenCodeWebViewModel : ViewModel() {
               function finish() {
                 state.pending = Math.max(0, state.pending - 1);
               }
+              function fail(error, path) {
+                if (!state.ready) state.failed = true;
+                if (path && !state.lost) {
+                  state.lost = true;
+                  call('transportLost',
+                    String((error && error.message) || error || 'Failed to fetch'));
+                }
+                return suspended();
+              }
               function fetchWithRetry(input, init, attempt) {
                 return nativeFetch.call(window, input, init).then(function (response) {
                   var path = apiPath(input);
-                  var method = methodOf(input, init);
                   if (path && response && response.status >= 500 &&
-                      retryable(method) && attempt < 6) {
+                      retryable(methodOf(input, init)) && state.allowRetry && attempt < 1) {
                     try {
                       if (response.body && response.body.cancel) {
                         var discarded = response.body.cancel();
                         if (discarded && discarded.catch) discarded.catch(function () {});
                       }
                     } catch (e) {}
-                    return delay(Math.min(200 * Math.pow(2, attempt), 3000)).then(function () {
+                    return delay(200).then(function () {
                       return fetchWithRetry(input, init, attempt + 1);
                     });
                   }
@@ -605,7 +678,9 @@ class OpenCodeWebViewModel : ViewModel() {
                         state.authFailed = true;
                         call('authFailed', String(response.status));
                       }
-                    } else if (response && response.ok) {
+                      return suspended();
+                    }
+                    if (response && response.ok) {
                       markReady();
                       if (state.lost) {
                         state.lost = false;
@@ -626,23 +701,12 @@ class OpenCodeWebViewModel : ViewModel() {
                       (error && (error.name === 'AbortError' || error.name === 'TimeoutError'))) {
                     throw error;
                   }
-                  var method = methodOf(input, init);
-                  if (retryable(method) && attempt < 6) {
-                    return delay(Math.min(200 * Math.pow(2, attempt), 3000)).then(function () {
+                  if (retryable(methodOf(input, init)) && state.allowRetry && attempt < 1) {
+                    return delay(200).then(function () {
                       return fetchWithRetry(input, init, attempt + 1);
                     });
                   }
-                  if (!state.ready) {
-                    // The first sync never completed. The native boot timeout decides when to
-                    // give up, the error boundary of the web app must stay behind the boot screen.
-                    state.failed = true;
-                  }
-                  if (!state.lost) {
-                    state.lost = true;
-                  }
-                  call('transportLost',
-                    String((error && error.message) || error || 'Failed to fetch'));
-                  throw error;
+                  return fail(error, path);
                 });
               }
               var nativeFetch = window.fetch;
@@ -655,6 +719,7 @@ class OpenCodeWebViewModel : ViewModel() {
                   request = fetchWithRetry(input, init, 0);
                 } catch (error) {
                   if (path) finish();
+                  if (path) return fail(error, path);
                   throw error;
                 }
                 if (path) request.then(finish, finish);
@@ -668,78 +733,56 @@ class OpenCodeWebViewModel : ViewModel() {
                   if (window.fetch[key] === undefined) window.fetch[key] = nativeFetch[key];
                 });
               } catch (e) {}
-              // A page that mounts without touching the API (for example a cached empty install)
-              // still has to leave the boot screen after it has settled.
-              window.addEventListener('load', function () {
-                setTimeout(function () {
-                  if (state.ready || state.failed || state.pending > 0) return;
-                  markReady();
-                }, 1500);
+              // Chunk loads, event streams and PTY sockets do not go through window.fetch. Report
+              // them so native can hide the page instead of letting the error boundary paint.
+              window.addEventListener('error', function (event) {
+                var src = String((event && (event.filename ||
+                  (event.target && (event.target.src || event.target.href)))) || '');
+                if (!src || apiPath(src) || /\.js($|\?)/.test(src)) {
+                  call('reportFatal', 'error');
+                }
+              }, true);
+              window.addEventListener('unhandledrejection', function (event) {
+                var reason = event && event.reason;
+                var text = String((reason && (reason.message || reason)) || '');
+                if (text.indexOf('fetch') >= 0 || text.indexOf('Transport') >= 0) {
+                  call('reportFatal', 'rejection');
+                }
               });
-            })();
-        """.trimIndent()
-
-        /**
-         * Watches the history API of the single page app and reports `/session/<id>` whenever the
-         * route changes: a session is opened, a new one is created, the user goes back or the
-         * web app replaces the address without a full page load.
-         */
-        private val WATCHER_SCRIPT = """
-            (function () {
-              if (window.__ocAndroidSessionWatcher) { window.__ocAndroidSessionWatcher(); return; }
-              function report() {
+              // Single page app route: one bridge method, no second watcher script.
+              function reportRoute() {
                 try {
                   var match = location.pathname.match(/\/session\/([^\/?#]+)/);
                   var id = match ? decodeURIComponent(match[1]) : '';
-                  if (window.OpenCodeAndroidSession && window.OpenCodeAndroidSession.setSession) {
-                    window.OpenCodeAndroidSession.setSession(id);
-                  }
+                  if (bridge && typeof bridge.setSession === 'function') bridge.setSession(id);
                 } catch (e) {}
               }
-              window.__ocAndroidSessionWatcher = report;
               try {
                 var push = history.pushState;
                 history.pushState = function () {
                   var result = push.apply(this, arguments);
-                  setTimeout(report, 0);
+                  setTimeout(reportRoute, 0);
                   return result;
                 };
                 var replace = history.replaceState;
                 history.replaceState = function () {
                   var result = replace.apply(this, arguments);
-                  setTimeout(report, 0);
+                  setTimeout(reportRoute, 0);
                   return result;
                 };
               } catch (e) {}
-              window.addEventListener('popstate', report);
-              window.addEventListener('hashchange', report);
-              document.addEventListener('click', function () { setTimeout(report, 40); }, true);
-              setInterval(report, 2500);
-              report();
-            })();
-        """.trimIndent()
-
-        /**
-         * Intercepts a tap on a local file path of the chat before the web UI handles it.
-         *
-         * The web UI renders such a path as `a[data-local-link]` (the sanitizer removes its
-         * `href`) or as an inline `code[data-inline-code-kind="path"]`, and its own bubble-phase
-         * handler opens the review panel. A capture-phase listener on `document` sees the tap
-         * first: an absolute path is reported to the app, a relative one is left alone so the web
-         * UI keeps resolving it against the project root. The script guards itself against double
-         * installation.
-         */
-        private val LINK_SCRIPT = """
-            (function () {
-              if (window.__ocAndroidLinkGuard) { window.__ocAndroidLinkGuard(); return; }
+              window.addEventListener('popstate', reportRoute);
+              window.addEventListener('hashchange', reportRoute);
+              document.addEventListener('click', function () { setTimeout(reportRoute, 40); }, true);
+              setInterval(reportRoute, 2500);
+              reportRoute();
+              // Absolute local paths of the chat go to the native file manager.
               function localPath(target) {
                 try {
                   if (!(target instanceof Element)) return '';
                   var link = target.closest('a[data-local-link]');
                   if (link) {
                     var href = (link.dataset.localLink || '').trim();
-                    // Only an absolute path of this device is handed to the app; `//host` is a
-                    // protocol-relative URL, not a file.
                     return href.charAt(0) === '/' && href.charAt(1) !== '/' ? href : '';
                   }
                   var code = target.closest(':not(pre) > code[data-inline-code-kind="path"]');
@@ -750,31 +793,34 @@ class OpenCodeWebViewModel : ViewModel() {
                 } catch (e) {}
                 return '';
               }
-              function open(event, target) {
+              function openLocal(event, target) {
+                if (event.defaultPrevented) return;
                 var path = localPath(target);
                 if (!path) return;
-                var bridge = window.OpenCodeAndroidLinks;
-                if (!bridge || !bridge.openLocalFile) return;
+                if (!bridge || typeof bridge.openLocalFile !== 'function') return;
                 try {
                   bridge.openLocalFile(path);
                 } catch (e) {
-                  // The bridge is not available: let the web UI handle the tap.
                   return;
                 }
                 event.preventDefault();
                 event.stopPropagation();
               }
-              function onClick(event) {
-                if (event.defaultPrevented || event.button !== 0) return;
-                open(event, event.target);
-              }
-              function onKeyDown(event) {
-                if (event.key !== 'Enter' || event.defaultPrevented) return;
-                open(event, event.target);
-              }
-              window.__ocAndroidLinkGuard = function () {};
-              document.addEventListener('click', onClick, true);
-              document.addEventListener('keydown', onKeyDown, true);
+              document.addEventListener('click', function (event) {
+                if (event.button !== 0) return;
+                openLocal(event, event.target);
+              }, true);
+              document.addEventListener('keydown', function (event) {
+                if (event.key !== 'Enter') return;
+                openLocal(event, event.target);
+              }, true);
+              // A cached page that never touches the API still has to leave the boot screen.
+              window.addEventListener('load', function () {
+                setTimeout(function () {
+                  if (state.ready || state.failed || state.pending > 0) return;
+                  markReady();
+                }, 1500);
+              });
             })();
         """.trimIndent()
 

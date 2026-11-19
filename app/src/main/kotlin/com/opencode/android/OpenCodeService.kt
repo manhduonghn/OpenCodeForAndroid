@@ -63,6 +63,14 @@ class OpenCodeService : Service() {
     @Volatile
     private var runningBinaryPath: String? = null
 
+    /** The resolved contract of this build. Rebuilt when the runtime self-heals or updates. */
+    @Volatile
+    private var runtimeContract: RuntimeContract? = null
+
+    /** Consecutive heartbeats where the port answered but `/api/info` did not. */
+    @Volatile
+    private var healthFailures = 0
+
     /** Pid of the running server, also when this process inherited it from an older app run. */
     @Volatile
     private var serverPid = -1
@@ -210,13 +218,16 @@ class OpenCodeService : Service() {
         // server. The callback runs on the UI thread, the installation itself runs in the
         // background thread of the bootstrap.
         bootstrapReady = false
+        RuntimeStateHolder.transition(RuntimeEvent.BOOTSTRAP_STARTED)
         OpenCodeBootstrap.setupIfNeeded(this) {
             bootstrapReady = OpenCodeBootstrap.isRuntimeComplete()
             if (!bootstrapReady) {
                 Log.e(TAG, "The OpenCode runtime is still incomplete: ${OpenCodeBootstrap.runtimeProblems()}")
+                publishState(RuntimePhase.PREPARING, "incomplete")
                 updateNotification("The installation did not finish, open the app for details.")
                 return@setupIfNeeded
             }
+            RuntimeStateHolder.transition(RuntimeEvent.RUNTIME_READY)
             startServer()
         }
     }
@@ -229,10 +240,12 @@ class OpenCodeService : Service() {
             Log.i(TAG, "The service was restarted without an intent, resuming the server.")
             if (OpenCodeSettings.stoppedByUser(this)) {
                 // A Stop that raced with the process death must win.
+                RuntimeStateHolder.transition(RuntimeEvent.STOP_REQUESTED)
                 stopSelf()
                 return START_NOT_STICKY
             }
             OpenCodeWatchdog.ensureScheduled(this)
+            RuntimeStateHolder.transition(RuntimeEvent.START_REQUESTED)
             // onCreate may still be installing the runtime; its callback starts the server then.
             if (bootstrapReady) startServer()
             return START_STICKY
@@ -244,6 +257,7 @@ class OpenCodeService : Service() {
             // few minutes later and the Stop action would look broken.
             OpenCodeSettings.setStoppedByUser(this, true)
             OpenCodeWatchdog.cancel(this)
+            RuntimeStateHolder.transition(RuntimeEvent.STOP_REQUESTED)
             // stopServer() kills the child first and calls stopSelf() when it is gone, so the
             // server cannot survive as an orphan of a service that was destroyed immediately.
             stopServer()
@@ -253,6 +267,7 @@ class OpenCodeService : Service() {
         // Any real start (app, notification, watchdog, boot) overrides an earlier Stop.
         OpenCodeSettings.setStoppedByUser(this, false)
         OpenCodeWatchdog.ensureScheduled(this)
+        RuntimeStateHolder.transition(RuntimeEvent.START_REQUESTED)
 
         if (action == ACTION_RESTART) {
             restartAttempts = 0
@@ -333,6 +348,12 @@ class OpenCodeService : Service() {
                 return
             }
 
+            // One environment contract for this build. The manifest is published before any
+            // adopt/spawn decision; the supervisor state moves to STARTING until /api/info answers.
+            val contract = buildContract()
+            writeRuntimeContract(contract)
+            publishState(RuntimePhase.STARTING, "starting")
+
             // A server started by an earlier app process can still own the port: Android does not
             // kill the children of a dead app process. Reuse it when it runs the current binary,
             // stop it when it is an older version, so 'serve' never fails with EADDRINUSE.
@@ -355,7 +376,6 @@ class OpenCodeService : Service() {
                     recoveredFromBusyPort = false
                     runningBinaryPath = binary.absolutePath
                     writePidFile(inherited)
-                    writeServerEnvironmentStamp()
                     markServerRunning()
                     return
                 }
@@ -382,12 +402,12 @@ class OpenCodeService : Service() {
                 Log.w(TAG, "The port $port is used by a process that is not ours.")
             }
 
-            startProcess(loader, binary)
+            startProcess(binary)
         }
     }
 
     /** Spawn the server, the caller holds [SERVER_LOCK]. */
-    private fun startProcess(loader: String, binary: File) {
+    private fun startProcess(binary: File) {
         // Android's java.lang.Process has no pid(), so /system/bin/sh records its own pid and
         // then exec()s the server: the pid stays valid for the server and survives app restarts
         // through the pid file. exec keeps a single process, no extra shell is left behind.
@@ -396,11 +416,10 @@ class OpenCodeService : Service() {
         // path-map preload. This keeps /proc/self/exe and exec routing correct (opencode re-execs
         // itself for "serve") without requiring PT_INTERP to be patched inside the binary, so an
         // update or downgrade works as soon as the installed symlink points at the new build.
-        val preload = File(OpenCodeBootstrap.PATHMAP_PATH).takeIf { it.isFile }
-            ?.let { " --preload '${it.absolutePath}'" } ?: ""
-        val exec = "exec '$loader'$preload --library-path '${OpenCodeBootstrap.GLIBC_LIB_DIR}'" +
-            " '${binary.absolutePath}' serve --hostname 127.0.0.1 --port $port"
-        val command = "echo $$ > '$PID_FILE'; $exec"
+        // The command and the environment come from the same contract that produced the shell
+        // script and the adoption hash; there is no second list of paths to keep in sync.
+        val contract = runtimeContract ?: buildContract()
+        val command = contract.launchCommand(PID_FILE)
         clearPidFile()
         // The glibc runtime of the prefix resolves names itself and cannot use the resolver of
         // Android: without resolv.conf every host lookup of the server fails with
@@ -411,150 +430,21 @@ class OpenCodeService : Service() {
         builder.directory(File(OpenCodeBootstrap.HOME))
         builder.redirectErrorStream(true)
         val service = this
+        val gitHubToken = System.getenv("GH_TOKEN")?.takeIf { it.isNotEmpty() }
+            ?: OpenCodeGitHub.storedToken()
         builder.environment().apply {
             clear()
-            // A JDK installed with 'pkg install openjdk' is only usable when the loader and PATH
-            // know about it: the Termux RUNPATH points at the com.termux prefix, and the package
-            // relies on update-alternatives for bin/java.
-            val javaHome = OpenCodeBootstrap.javaHome()
-            val sdkHome = OpenCodeBootstrap.androidSdkHome()
-            val pathEntries = ArrayList<String>()
-            pathEntries.add("${OpenCodeBootstrap.PREFIX}/bin")
-            if (javaHome != null) pathEntries.add("$javaHome/bin")
-            if (sdkHome != null) {
-                for (relative in listOf(
-                    "cmdline-tools/latest/bin", "cmdline-tools/bin", "tools/bin", "platform-tools",
-                )) {
-                    File(sdkHome, relative).takeIf { it.isDirectory }
-                        ?.let { pathEntries.add(it.absolutePath) }
-                }
+            contract.spawnEnvironment(
+                OpenCodeBootstrap.getServerPassword(service),
+                gitHubToken,
+            ).forEach { (key, value) -> put(key, value) }
+        }
+        // The PTY daemon creates its socket below this directory and dies with EACCES when it is
+        // missing, because its default `/tmp` does not exist on Android.
+        File(OpenCodeBootstrap.PTY_SOCKET_DIR).apply {
+            if (!isDirectory && !mkdirs()) {
+                Log.w(TAG, "Could not create the terminal socket directory $this")
             }
-            pathEntries.add("/system/bin")
-            put("HOME", OpenCodeBootstrap.HOME)
-            put("PREFIX", OpenCodeBootstrap.PREFIX)
-            put("PATH", pathEntries.joinToString(":"))
-            if (javaHome != null) put("JAVA_HOME", javaHome)
-            // The Termux JDK otherwise uses the home of the Termux app, and Android has no /tmp.
-            // Every JVM the server or its terminal starts (Gradle, the Kotlin daemon, test
-            // workers) inherits this, so no per-project flag is needed.
-            put("JAVA_TOOL_OPTIONS", OpenCodeBootstrap.javaToolOptions())
-            put("GRADLE_USER_HOME", OpenCodeBootstrap.GRADLE_USER_HOME)
-            put("ANDROID_USER_HOME", OpenCodeBootstrap.ANDROID_USER_HOME)
-            if (sdkHome != null) {
-                put("ANDROID_HOME", sdkHome.absolutePath)
-                put("ANDROID_SDK_ROOT", sdkHome.absolutePath)
-            }
-            put("TMPDIR", "${OpenCodeBootstrap.PREFIX}/tmp")
-            put("TERM", "xterm-256color")
-            put("LANG", "C.UTF-8")
-            if (File(OpenCodeBootstrap.PREFIX, "share/zoneinfo").isDirectory) {
-                put("TZDIR", "${OpenCodeBootstrap.PREFIX}/share/zoneinfo")
-            }
-            put("COLORTERM", "truecolor")
-            // The pty of OpenCode starts "$SHELL -l"; make sure it is the patched bash of this
-            // prefix and not the bionic /system/bin/sh, whose login startup files are different.
-            File(OpenCodeBootstrap.PREFIX, "bin/bash")
-                .takeIf { it.isFile }
-                ?.let { put("SHELL", it.absolutePath) }
-            // The tools the agent runs are non-interactive `bash -c` shells, which do not read
-            // the login profile or bashrc. BASH_ENV gives them the same package environment as
-            // the terminal: the `pkg`, `am`, `pm`, … wrappers, PATH and the Termux paths.
-            File(OpenCodeBootstrap.ENV_SCRIPT_PATH)
-                .takeIf { it.isFile }
-                ?.let { put("BASH_ENV", it.absolutePath) }
-            put("DEBIAN_FRONTEND", "noninteractive")
-            put("OPENCODE_DISABLE_AUTOUPDATE", "1")
-            // The loader is reported as /proc/self/exe; the path-map preload needs the real
-            // program so that OpenCode can re-exec itself. Always set it so self-spawn works even
-            // after an in-place update/downgrade of the binary.
-            put("OC_REAL_EXE", binary.absolutePath)
-            // The web terminal spawns `opencode-pty`. OpenCode's own copy is a glibc binary that
-            // cannot be started directly on Android; point it at the app's pure-C bionic daemon,
-            // extracted from native/<abi>/opencode-pty. The variable itself stays unchanged.
-            OpenCodeBootstrap.ensureTerminalRuntime()?.let { put("OPENCODE_PTY_BIN", it) }
-            // The daemon creates its unix socket below this directory and dies with EACCES when it
-            // is missing, because its default `/tmp` does not exist on Android. It is recreated on
-            // every start: `pkg install` empties parts of the prefix.
-            val socketDir = File(OpenCodeBootstrap.PTY_SOCKET_DIR)
-            if (!socketDir.isDirectory && !socketDir.mkdirs()) {
-                Log.w(TAG, "Could not create the terminal socket directory $socketDir")
-            }
-            put("OPENCODE_PTY_SOCKET_DIR", OpenCodeBootstrap.PTY_SOCKET_DIR)
-            // The 2.x server protects its API (/api, /api/session, …) with HTTP Basic auth. A
-            // fixed password from the app preferences is used instead of the random one the
-            // server would print, so the WebView can answer the authentication challenge itself.
-            put("OPENCODE_SERVER_PASSWORD", OpenCodeBootstrap.getServerPassword(service))
-            // The CA bundle of the ca-certificates package (or the asset of the app), Bun/Node
-            // would otherwise have no trust store on Android. The bundle is also handed to every
-            // python and git process, each of them consults its own variable first.
-            File(OpenCodeBootstrap.CA_BUNDLE_PATH)
-                .takeIf { it.isFile }
-                ?.let { cert ->
-                    put("SSL_CERT_FILE", cert.absolutePath)
-                    put("CURL_CA_BUNDLE", cert.absolutePath)
-                    put("NODE_EXTRA_CA_CERTS", cert.absolutePath)
-                    put("REQUESTS_CA_BUNDLE", cert.absolutePath)
-                    put("PIP_CERT", cert.absolutePath)
-                    put("GIT_SSL_CAINFO", cert.absolutePath)
-                }
-            // The tools OpenCode spawns (bash, rg, …) are Termux binaries whose RUNPATH points at
-            // the com.termux prefix. The glibc directory is deliberately not part of this
-            // variable: it contains a 'libc.so' linker script that the bionic linker cannot load
-            // as an ELF file. For a native (patched) binary the loader still finds libc.so.6 and
-            // friends through its own relocated tree; this directory only contains the bionic
-            // names.
-            //
-            // libjli re-executes /proc/self/exe when $JAVA_HOME/lib/server is not the first entry
-            // of LD_LIBRARY_PATH. On Android /proc/self/exe is the platform linker, so `java
-            // -version` would be interpreted as a file name. The JDK directories therefore come
-            // before the prefix libs, and only directories that exist are exported.
-            val libraryPath = ArrayList<String>()
-            if (javaHome != null) {
-                File(javaHome, "lib/server").takeIf { it.isDirectory }
-                    ?.let { libraryPath.add(it.absolutePath) }
-                File(javaHome, "lib").takeIf { it.isDirectory }
-                    ?.let { libraryPath.add(it.absolutePath) }
-            }
-            File(OpenCodeBootstrap.PREFIX, "lib").takeIf { it.isDirectory }
-                ?.let { libraryPath.add(it.absolutePath) }
-            if (libraryPath.isNotEmpty()) {
-                put("LD_LIBRARY_PATH", libraryPath.joinToString(":"))
-            }
-            // git from the Termux repository was built for the com.termux prefix: its helper
-            // programs (git-remote-https, git-upload-pack, …) and its template directory live
-            // below the old prefix, which is unreadable for this app. OpenCode runs git itself
-            // for the workspace snapshots, so it needs these even without a shell.
-            File(OpenCodeBootstrap.PREFIX, "libexec/git-core")
-                .takeIf { it.isDirectory }
-                ?.let { put("GIT_EXEC_PATH", it.absolutePath) }
-            File(OpenCodeBootstrap.PREFIX, "share/git-core/templates")
-                .takeIf { it.isDirectory }
-                ?.let { put("GIT_TEMPLATE_DIR", it.absolutePath) }
-            val gitSystemConfig = File(OpenCodeBootstrap.PREFIX, "etc/gitconfig")
-            if (gitSystemConfig.isFile) {
-                put("GIT_CONFIG_SYSTEM", gitSystemConfig.absolutePath)
-            } else {
-                // Without this git exits with 128 on every call: it tries to read the system
-                // config of the com.termux prefix, which belongs to another app.
-                put("GIT_CONFIG_NOSYSTEM", "1")
-            }
-            put("GIT_ATTR_NOSYSTEM", "1")
-            // OpenSSL's compiled-in OPENSSLDIR/MODULESDIR point at the com.termux prefix. The
-            // server itself is a glibc binary, but the git and gh processes it spawns load the
-            // bionic OpenSSL of this prefix, so they need the paths of this sandbox.
-            File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
-                .takeIf { it.isFile }
-                ?.let { put("OPENSSL_CONF", it.absolutePath) }
-            File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
-                .takeIf { it.isDirectory }
-                ?.let { put("OPENSSL_MODULES", it.absolutePath) }
-            File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
-                .takeIf { it.isDirectory }
-                ?.let { put("OPENSSL_ENGINES", it.absolutePath) }
-            val gitHubToken = System.getenv("GH_TOKEN")?.takeIf { it.isNotEmpty() }
-                ?: OpenCodeGitHub.storedToken()
-            gitHubToken?.let { put("GH_TOKEN", it) }
-            put("OPENCODE_PORT", port.toString())
         }
 
         val started = try {
@@ -570,7 +460,7 @@ class OpenCodeService : Service() {
         adopted = false
         recoveredFromBusyPort = false
         runningBinaryPath = binary.absolutePath
-        writeServerEnvironmentStamp()
+        writeRuntimeContract(contract)
         Log.i(TAG, "The OpenCode server process was started: $port (pid $startedPid)")
         markServerRunning()
 
@@ -581,118 +471,143 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * True when the running server was started with the environment this build would export.
-     *
-     * A server keeps the environment of its spawn, so an orphan of an older app build runs
-     * without the terminal helper (or with an older one). `/proc/<pid>/environ` answers that
-     * exactly; `$HOME/.opencode/.server-env` is the fallback for devices that hide it.
+     * Resolve the one runtime contract of this build. Everything Android-specific lives here;
+     * [RuntimeEnv] turns the result into the shell script, the process environment and the hash.
      */
-    private fun serverEnvironmentCurrent(pid: Int): Boolean {
-        val expected = ArrayList<String>()
-        OpenCodeBootstrap.terminalRuntimePath()?.let { helper ->
-            expected.add("OPENCODE_PTY_BIN=$helper")
-            expected.add("OPENCODE_PTY_SOCKET_DIR=${OpenCodeBootstrap.PTY_SOCKET_DIR}")
+    private fun buildContract(): RuntimeContract {
+        val binary = resolveBinary()
+        val contract = RuntimeEnv.build(
+            RuntimeInputs(
+                abi = OpenCodeBootstrap.getOpenCodeArch().orEmpty(),
+                prefix = OpenCodeBootstrap.PREFIX,
+                home = OpenCodeBootstrap.HOME,
+                ocHome = OpenCodeBootstrap.OC_HOME,
+                port = port,
+                binaryPath = binary?.absolutePath.orEmpty(),
+                loader = OpenCodeBootstrap.findGlibcLoader().orEmpty(),
+                preload = File(OpenCodeBootstrap.PATHMAP_PATH)
+                    .takeIf { it.isFile }?.absolutePath,
+                glibcLibDir = OpenCodeBootstrap.GLIBC_LIB_DIR,
+                ptyBin = OpenCodeBootstrap.ensureTerminalRuntime(),
+                ptySocketDir = OpenCodeBootstrap.PTY_SOCKET_DIR,
+                javaHome = OpenCodeBootstrap.javaHome(),
+                javaToolOptions = OpenCodeBootstrap.javaToolOptions(),
+                gradleUserHome = OpenCodeBootstrap.GRADLE_USER_HOME,
+                androidUserHome = OpenCodeBootstrap.ANDROID_USER_HOME,
+                androidSdkHome = OpenCodeBootstrap.androidSdkHome(),
+                bashPath = File(OpenCodeBootstrap.PREFIX, "bin/bash")
+                    .takeIf { it.isFile }?.absolutePath,
+                envScriptPath = OpenCodeBootstrap.ENV_SCRIPT_PATH,
+                caBundlePath = File(OpenCodeBootstrap.CA_BUNDLE_PATH)
+                    .takeIf { it.isFile }?.absolutePath,
+                opensslConfPath = File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
+                    .takeIf { it.isFile }?.absolutePath,
+                opensslModulesPath = File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
+                    .takeIf { it.isDirectory }?.absolutePath,
+                opensslEnginesPath = File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
+                    .takeIf { it.isDirectory }?.absolutePath,
+                gitExecPath = File(OpenCodeBootstrap.PREFIX, "libexec/git-core")
+                    .takeIf { it.isDirectory }?.absolutePath,
+                gitTemplateDir = File(OpenCodeBootstrap.PREFIX, "share/git-core/templates")
+                    .takeIf { it.isDirectory }?.absolutePath,
+                gitSystemConfigPath = File(OpenCodeBootstrap.PREFIX, "etc/gitconfig")
+                    .takeIf { it.isFile }?.absolutePath,
+                apkStamp = apkStamp(),
+                packagesStamp = fileStamp(
+                    "${OpenCodeBootstrap.PREFIX}/bin/opencode",
+                    OpenCodeBootstrap.ENV_SCRIPT_PATH,
+                    OpenCodeBootstrap.RESOLV_CONF_PATH,
+                ),
+                nativeStamp = fileStamp(
+                    OpenCodeBootstrap.CA_BUNDLE_PATH,
+                    OpenCodeBootstrap.PATHMAP_PATH,
+                    OpenCodeBootstrap.OPENSSL_CONF_PATH,
+                ),
+            ),
+        )
+        runtimeContract = contract
+        return contract
+    }
+
+    private fun apkStamp(): String = try {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode.toString()
+        } else {
+            @Suppress("DEPRECATION") info.versionCode.toString()
         }
-        // A server spawned by an older build has no Java/Android environment. Requiring it
-        // restarts that server once, so a Gradle build started from its terminal gets the
-        // corrected user.home, the Gradle/Android homes and the native aapt2 override.
-        expected.add("JAVA_TOOL_OPTIONS=${OpenCodeBootstrap.javaToolOptions()}")
-        expected.add("GRADLE_USER_HOME=${OpenCodeBootstrap.GRADLE_USER_HOME}")
-        expected.add("ANDROID_USER_HOME=${OpenCodeBootstrap.ANDROID_USER_HOME}")
-        OpenCodeBootstrap.androidSdkHome()?.let {
-            expected.add("ANDROID_HOME=${it.absolutePath}")
-        }
-        // A server spawned by an older build has no BASH_ENV, so its non-interactive shells do
-        // not see the `pkg`/`am`/`pm` wrappers. Restart it once after the update.
-        File(OpenCodeBootstrap.ENV_SCRIPT_PATH)
-            .takeIf { it.isFile }
-            ?.let { expected.add("BASH_ENV=${it.absolutePath}") }
-        File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
-            .takeIf { it.isFile }
-            ?.let { expected.add("OPENSSL_CONF=${it.absolutePath}") }
-        File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
-            .takeIf { it.isDirectory }
-            ?.let { expected.add("OPENSSL_MODULES=${it.absolutePath}") }
-        File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
-            .takeIf { it.isDirectory }
-            ?.let { expected.add("OPENSSL_ENGINES=${it.absolutePath}") }
-        // A server spawned by an older build has no REQUESTS_CA_BUNDLE/GIT_SSL_CAINFO. Requiring
-        // them restarts it once after the update, so python and git pick up the new trust store.
-        File(OpenCodeBootstrap.CA_BUNDLE_PATH)
-            .takeIf { it.isFile }
-            ?.let {
-                expected.add("SSL_CERT_FILE=${it.absolutePath}")
-                expected.add("REQUESTS_CA_BUNDLE=${it.absolutePath}")
-            }
-        if (expected.isEmpty()) return true
-        val environ = try {
-            File("/proc/$pid/environ").takeIf { it.isFile }?.readBytes()
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not read the environment of the server $pid", e)
-            null
-        }
-        if (environ != null && environ.isNotEmpty()) {
-            val entries = String(environ, StandardCharsets.ISO_8859_1).split('\u0000')
-            return expected.all { entries.contains(it) }
-        }
-        return readServerEnvironmentStamp() == serverEnvironmentStamp()
+    } catch (e: Exception) {
+        ""
+    }
+
+    private fun fileStamp(vararg paths: String): String = paths.joinToString(",") { path ->
+        val file = File(path)
+        if (file.exists()) "${file.absolutePath}:${file.length()}:${file.lastModified()}" else "$path:-"
+    }
+
+    /** Publish a state snapshot, bumping the generation only for a genuinely new server. */
+    private fun publishState(phase: RuntimePhase, reason: String, bump: Boolean = false) {
+        val current = RuntimeStateHolder.state
+        val generation = if (bump) current.generation + 1 else current.generation
+        RuntimeStateHolder.publish(RuntimeState(phase, generation, reason))
     }
 
     /**
-     * Environment signature of a spawned server, the fallback of [serverEnvironmentCurrent].
+     * Readiness of the contract: a socket is not enough, the server must answer `/api/info` with
+     * the credential the WebView will use. This is the single health primitive for adoption, the
+     * heartbeat and the Activity.
      */
-    private fun serverEnvironmentStamp(): String = buildString {
-        append("pty=").append(OpenCodeBootstrap.terminalRuntimePath() ?: "")
-        append(" socket=").append(OpenCodeBootstrap.PTY_SOCKET_DIR)
-        append(" java=").append(OpenCodeBootstrap.javaToolOptions())
-        append(" gradle=").append(OpenCodeBootstrap.GRADLE_USER_HOME)
-        append(" android=").append(OpenCodeBootstrap.ANDROID_USER_HOME)
-        append(" sdk=").append(OpenCodeBootstrap.androidSdkHome()?.absolutePath.orEmpty())
-        append(" bash_env=").append(
-            File(OpenCodeBootstrap.ENV_SCRIPT_PATH).takeIf { it.isFile }?.absolutePath.orEmpty(),
-        )
-        append(" openssl=").append(
-            File(OpenCodeBootstrap.OPENSSL_CONF_PATH).takeIf { it.isFile }?.absolutePath.orEmpty(),
-        )
-        append(" modules=").append(
-            File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
-                .takeIf { it.isDirectory }?.absolutePath.orEmpty(),
-        )
-        append(" engines=").append(
-            File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
-                .takeIf { it.isDirectory }?.absolutePath.orEmpty(),
-        )
-        append(" cacert=").append(
-            File(OpenCodeBootstrap.CA_BUNDLE_PATH)
-                .takeIf { it.isFile }?.absolutePath.orEmpty(),
-        )
+    private fun serverHealthy(
+        secret: String = OpenCodeBootstrap.getServerPassword(this),
+        timeoutMs: Int = 2000,
+    ): Boolean {
+        if (!isPortOpen(port)) return false
+        return OpenCodeApi.serverVersion(port, secret, timeoutMs) != null
     }
 
-    /** Remember the environment of the server that was just spawned. */
-    private fun writeServerEnvironmentStamp() {
+    /** After a spawn, wait briefly for `/api/info` before declaring the runtime HEALTHY. */
+    private fun confirmHealthy() {
+        Thread({
+            for (attempt in 0 until 30) {
+                if (sInstance !== this@OpenCodeService || stopping) return@Thread
+                if (serverHealthy()) {
+                    handler.post { RuntimeStateHolder.transition(RuntimeEvent.HEALTH_OK) }
+                    return@Thread
+                }
+                Thread.sleep(500)
+            }
+            handler.post { publishState(RuntimePhase.DEGRADED, "health-timeout") }
+        }, "opencode-health").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Adoption decision. A server keeps the environment of its spawn, so an orphan of an older
+     * build has to be replaced. The stamp written at spawn is the hash of the whole contract,
+     * which removes the old hand-maintained list of expected `KEY=value` entries.
+     */
+    private fun serverEnvironmentCurrent(@Suppress("UNUSED_PARAMETER") pid: Int): Boolean {
+        val contract = runtimeContract ?: return false
+        val recorded = RuntimeContract.readHash(File(SERVER_CONTRACT_FILE))
+        return recorded == contract.contractHash()
+    }
+
+    /** Write the persistent manifest and the hash a future process uses to adopt this server. */
+    private fun writeRuntimeContract(contract: RuntimeContract) {
         try {
-            File(OpenCodeBootstrap.OC_HOME, ".server-env")
-                .writeText(serverEnvironmentStamp() + "\n")
+            File(CONTRACT_FILE).apply {
+                parentFile?.mkdirs()
+                writeText(contract.toJson() + "\n")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not record the environment of the server", e)
+            Log.w(TAG, "Could not record the runtime contract", e)
         }
-    }
-
-    private fun readServerEnvironmentStamp(): String? = try {
-        File(OpenCodeBootstrap.OC_HOME, ".server-env")
-            .takeIf { it.isFile }?.readText()?.trim()
-    } catch (e: Exception) {
-        Log.w(TAG, "Could not read the recorded environment of the server", e)
-        null
+        RuntimeContract.writeHash(File(SERVER_CONTRACT_FILE), contract.contractHash())
     }
 
     /** Clear the explanation of an earlier phantom kill and publish the new server state. */
     private fun markServerRunning() {
-        // The WebView pairs with the server once. When the server is replaced in the background
-        // (a restart, or a second start after the app process was killed), the session cookie and
-        // the basic credentials of the old pairing are stale; this counter tells the UI to pair
-        // again instead of showing a dead page.
-        sServerGeneration++
+        // A new server identity: the WebView drops the cookie/token of the previous generation.
+        publishState(RuntimePhase.STARTING, "spawned", bump = true)
         getSystemService(NotificationManager::class.java)?.cancel(PHANTOM_NOTIFICATION_ID)
         // Register the server in the state file that the TUI and the CLI of OpenCode discover.
         // Without it `opencode` starts a second server of its own, which then fights for the
@@ -702,6 +617,7 @@ class OpenCodeService : Service() {
         // Show the sessions of the server that just (re)started without waiting for the next
         // four-second poll, so the notification never points at a session of the old server.
         refreshNotificationSessionsSoon()
+        confirmHealthy()
     }
 
     /**
@@ -833,16 +749,27 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * Runs on [WORKER]. Restart the server when it should be running but nothing listens on the
-     * port. The reader thread of a spawned server reports its own exit, so this mainly covers an
-     * adopted server (which has no reader) and an exit that was missed while the app was frozen.
+     * Runs on [WORKER]. A socket is not readiness: the heartbeat asks `/api/info` with the current
+     * credential. A process that still listens but cannot answer is DEGRADED, and is replaced after
+     * two consecutive failures. This is the same health primitive adoption and the WebView use.
      */
     private fun checkServerAlive() {
         if (sInstance !== this || stopping || !bootstrapReady) return
         if (OpenCodeSettings.stoppedByUser(this)) return
-        if (process?.isAlive == true) return
-        if (isPortOpen(port)) return
-        Log.w(TAG, "The heartbeat found no server on port $port, starting it again.")
+        if (serverHealthy()) {
+            healthFailures = 0
+            RuntimeStateHolder.transition(RuntimeEvent.HEALTH_OK)
+            return
+        }
+        healthFailures++
+        RuntimeStateHolder.transition(RuntimeEvent.HEALTH_LOST)
+        if (process?.isAlive == true || isPortOpen(port)) {
+            if (healthFailures < 2) return
+            Log.w(TAG, "The heartbeat found an unresponsive server on port $port, restarting it.")
+        } else {
+            Log.w(TAG, "The heartbeat found no server on port $port, starting it again.")
+        }
+        publishState(RuntimePhase.RESTARTING, "heartbeat")
         startServerBlocking()
     }
 
@@ -854,6 +781,7 @@ class OpenCodeService : Service() {
     private fun handleUserStop() {
         OpenCodeSettings.setStoppedByUser(this, true)
         OpenCodeWatchdog.cancel(this)
+        RuntimeStateHolder.transition(RuntimeEvent.STOP_REQUESTED)
         updateNotification("The OpenCode server was stopped.")
         handler.post {
             if (sInstance === this) stopSelf()
@@ -938,6 +866,8 @@ class OpenCodeService : Service() {
             synchronized(SERVER_LOCK) {
                 if (sInstance !== this) return@synchronized
                 restartAttempts = 0
+                // Publish RESTARTING immediately so the WebView hides before the port dies.
+                publishState(RuntimePhase.RESTARTING, "restart")
                 stopExisting()
                 if (bootstrapReady) startServerBlocking()
             }
@@ -1455,13 +1385,12 @@ class OpenCodeService : Service() {
         @Volatile
         private var sInstance: OpenCodeService? = null
 
-        /** Incremented every time a server becomes reachable, shared with the WebView. */
-        @Volatile
-        private var sServerGeneration = 0
-
-        /** The generation of the server that is listening right now, 0 when none ever started. */
+        /**
+         * The generation of the server that is listening right now, 0 when none ever started.
+         * Kept for compatibility; the supervisor's [RuntimeStateHolder] is the single source.
+         */
         @JvmStatic
-        fun serverGeneration(): Int = sServerGeneration
+        fun serverGeneration(): Int = RuntimeStateHolder.state.generation
 
         /**
          * Apply the wake lock preference to the running service immediately. Preferences are
@@ -1496,6 +1425,10 @@ class OpenCodeService : Service() {
         private val SERVICE_STATE_DIR = OpenCodeBootstrap.HOME + "/.local/state/opencode"
         private val SERVICE_FILE = "$SERVICE_STATE_DIR/service.json"
 
+        /** The full environment contract (never contains a secret) and the adoption hash. */
+        private val CONTRACT_FILE = OpenCodeBootstrap.OC_HOME + "/runtime.json"
+        private val SERVER_CONTRACT_FILE = OpenCodeBootstrap.OC_HOME + "/.server-contract"
+
         /** Release channel of the installed build: `latest` uses the plain `service.json`. */
         private const val SERVICE_CHANNEL = "latest"
 
@@ -1505,6 +1438,25 @@ class OpenCodeService : Service() {
         /** True while the OpenCode server process is running. */
         @JvmStatic
         fun isRunning(): Boolean = sInstance != null
+
+        /**
+         * The watchdog's readiness probe. A listening socket is not enough: the server must answer
+         * `/api/info` with the credential the WebView uses. Also publishes the result so the UI and
+         * the notification observe the same health as the watchdog.
+         */
+        @JvmStatic
+        fun ensureHealthy(context: Context): Boolean {
+            if (OpenCodeSettings.stoppedByUser(context)) return false
+            val healthy = OpenCodeApi.serverVersion(
+                DEFAULT_PORT,
+                OpenCodeBootstrap.getServerPassword(context),
+                2000,
+            ) != null
+            RuntimeStateHolder.transition(
+                if (healthy) RuntimeEvent.HEALTH_OK else RuntimeEvent.HEALTH_LOST,
+            )
+            return healthy
+        }
 
         private fun isPortOpen(port: Int): Boolean = OpenCodeHttp.isPortOpen(port)
 
