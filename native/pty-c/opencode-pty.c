@@ -930,9 +930,25 @@ static int make_argv(const char *program, Json *args, char ***out, size_t *count
 
 static void free_vector(char **vector, size_t count);
 
+static int env_has_key(Json *env, const char *key) {
+    if (!env || env->type != JSON_OBJECT) return 0;
+    for (size_t i = 0; i < env->u.object.count; i++) {
+        if (!strcmp(env->u.object.keys[i], key)) return 1;
+    }
+    return 0;
+}
+
+static void envp_set(char **envp, size_t *written, const char *key, const char *value) {
+    size_t len = strlen(key) + strlen(value) + 2;
+    envp[*written] = xmalloc(len);
+    snprintf(envp[*written], len, "%s=%s", key, value);
+    (*written)++;
+}
+
 static int make_envp(Json *env, char ***out, size_t *out_count) {
     size_t n = env && env->type == JSON_OBJECT ? env->u.object.count : 0;
-    char **envp = xcalloc(n + 3, sizeof(char *));
+    /* Room for the caller map, the terminal overrides and the Android runtime variables below. */
+    char **envp = xcalloc(n + 14, sizeof(char *));
     size_t written = 0;
     for (size_t i = 0; i < n; i++) {
         Json *value = &env->u.object.values[i];
@@ -943,13 +959,26 @@ static int make_envp(Json *env, char ***out, size_t *out_count) {
         const char *key = env->u.object.keys[i];
         /* The daemon overrides these two after the caller environment. */
         if (!strcmp(key, "TERM") || !strcmp(key, "COLORTERM")) continue;
-        size_t len = strlen(key) + strlen(value->u.string.data) + 2;
-        envp[written] = xmalloc(len);
-        snprintf(envp[written], len, "%s=%s", key, value->u.string.data);
-        written++;
+        envp_set(envp, &written, key, value->u.string.data);
     }
-    envp[written++] = xstrdup("TERM=xterm-256color");
-    envp[written++] = xstrdup("COLORTERM=truecolor");
+    /*
+     * The web client sends an empty env map, but the Android prefix shell needs the runtime paths
+     * of the server that spawned this daemon. Without LD_LIBRARY_PATH its first exec dies with
+     * `libandroid-support.so not found` before the login profile can set anything up. Inherit only
+     * these safe variables, and never override a value the caller supplied explicitly.
+     */
+    static const char *const inherited[] = {
+        "LD_LIBRARY_PATH", "BASH_ENV", "HOME", "PATH", "TMPDIR",
+        "LANG", "TZDIR", "SHELL", "PREFIX", "OC_PREFIX", "OC_USER_HOME",
+        NULL
+    };
+    for (size_t i = 0; inherited[i]; i++) {
+        if (env_has_key(env, inherited[i])) continue;
+        const char *value = getenv(inherited[i]);
+        if (value && *value) envp_set(envp, &written, inherited[i], value);
+    }
+    envp_set(envp, &written, "TERM", "xterm-256color");
+    envp_set(envp, &written, "COLORTERM", "truecolor");
     char **fit = realloc(envp, (written + 1) * sizeof(char *));
     *out = fit ? fit : envp;
     *out_count = written;

@@ -553,6 +553,13 @@ và thư mục này được tạo lại mỗi lần khởi động. Đường d
 daemon cộng thêm `/opencode-pty-<uid>/<32 hex>.sock` (57 byte), nên không dùng được
 `$HOME/.opencode/tmp`.
 
+**Web client gửi `env: {}` khi tạo PTY, nhưng bash của prefix cần `LD_LIBRARY_PATH` ngay từ lần exec đầu
+(nếu không có sẽ báo `libandroid-support.so not found` và terminal đóng ngay). Daemon vì thế kế thừa
+các biến runtime an toàn của chính server (`LD_LIBRARY_PATH`, `BASH_ENV`, `HOME`, `PATH`, `TMPDIR`,
+`LANG`, `TZDIR`, `SHELL`, `PREFIX`, `OC_PREFIX`, `OC_USER_HOME`) khi client không gửi giá trị rõ ràng,
+rồi mới áp `TERM`/`COLORTERM` của terminal. Login profile trong prefix tiếp tục thiết lập phần còn
+lại sau khi bash đã khởi động được.
+
 **Công cụ đọc code (`grep`, `sed`, `awk`, `find`, `ripgrep`):** `CORE_PACKAGES` của app cài sẵn
 bản GNU/bionic (`grep sed gawk findutils diffutils ripgrep`) ngay từ lần cài đầu. `$PREFIX/bin`
 đứng trước `/system/bin`, nên shell dùng GNU grep/sed/awk/find thay vì toybox; nhờ vậy
