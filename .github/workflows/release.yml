@@ -46,22 +46,13 @@ jobs:
           "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" \
             --install "ndk;27.2.12479018" "cmake;3.22.1"
 
-      - name: Generate release keystore
-        run: |
-          keytool -genkeypair -v \
-            -keystore release.jks \
-            -alias opencode \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass opencode -keystorepass opencode -keypass opencode \
-            -dname "CN=OpenCode for Android, OU=OpenCode, O=OpenCode for Android, L=Ho Chi Minh, ST=Ho Chi Minh, C=VN"
-
       - name: Build release APK
         run: >
           ./gradlew :app:assembleRelease
-          -PRELEASE_STORE_FILE=$GITHUB_WORKSPACE/release.jks
-          -PRELEASE_STORE_PASSWORD=opencode
-          -PRELEASE_KEY_ALIAS=opencode
-          -PRELEASE_KEY_PASSWORD=opencode
+          -PRELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/debug.keystore
+          -PRELEASE_STORE_PASSWORD=android
+          -PRELEASE_KEY_ALIAS=androiddebugkey
+          -PRELEASE_KEY_PASSWORD=android
           --no-daemon --stacktrace
 
       - name: Stamp APK with tag

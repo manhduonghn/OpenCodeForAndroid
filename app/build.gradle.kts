@@ -117,8 +117,12 @@ android {
 
     buildTypes {
         getByName("release") {
-            if (project.hasProperty("RELEASE_STORE_FILE")) {
-                signingConfig = signingConfigs.getByName("release")
+            // Use the committed debug key by default so CI/release builds work without
+            // extra secrets and keep the same signature as debug installs.
+            signingConfig = if (project.hasProperty("RELEASE_STORE_FILE")) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
             }
             isMinifyEnabled = false
             proguardFiles(
