@@ -208,6 +208,10 @@ data class RuntimeContract(
 
     companion object {
         const val SCHEMA = 1
+
+        /** Default `opencode serve` port. The shell script only needs a placeholder input. */
+        const val DEFAULT_PORT = 49374
+
         const val OPENCODE_SERVER_PASSWORD = "OPENCODE_SERVER_PASSWORD"
         const val OPENCODE_PORT = "OPENCODE_PORT"
         const val BASH_ENV = "BASH_ENV"

@@ -471,47 +471,15 @@ class OpenCodeService : Service() {
     }
 
     /**
-     * Resolve the one runtime contract of this build. Everything Android-specific lives here;
-     * [RuntimeEnv] turns the result into the shell script, the process environment and the hash.
+     * Resolve the one runtime contract of this build. The sandbox adapter lives in
+     * [OpenCodeBootstrap.runtimeInputs] so the server and the generated shell script consume the
+     * same resolved values; [RuntimeEnv] turns them into the process environment, the script and
+     * the hash.
      */
     private fun buildContract(): RuntimeContract {
-        val binary = resolveBinary()
         val contract = RuntimeEnv.build(
-            RuntimeInputs(
-                abi = OpenCodeBootstrap.getOpenCodeArch().orEmpty(),
-                prefix = OpenCodeBootstrap.PREFIX,
-                home = OpenCodeBootstrap.HOME,
-                ocHome = OpenCodeBootstrap.OC_HOME,
+            OpenCodeBootstrap.runtimeInputs(
                 port = port,
-                binaryPath = binary?.absolutePath.orEmpty(),
-                loader = OpenCodeBootstrap.findGlibcLoader().orEmpty(),
-                preload = File(OpenCodeBootstrap.PATHMAP_PATH)
-                    .takeIf { it.isFile }?.absolutePath,
-                glibcLibDir = OpenCodeBootstrap.GLIBC_LIB_DIR,
-                ptyBin = OpenCodeBootstrap.ensureTerminalRuntime(),
-                ptySocketDir = OpenCodeBootstrap.PTY_SOCKET_DIR,
-                javaHome = OpenCodeBootstrap.javaHome(),
-                javaToolOptions = OpenCodeBootstrap.javaToolOptions(),
-                gradleUserHome = OpenCodeBootstrap.GRADLE_USER_HOME,
-                androidUserHome = OpenCodeBootstrap.ANDROID_USER_HOME,
-                androidSdkHome = OpenCodeBootstrap.androidSdkHome(),
-                bashPath = File(OpenCodeBootstrap.PREFIX, "bin/bash")
-                    .takeIf { it.isFile }?.absolutePath,
-                envScriptPath = OpenCodeBootstrap.ENV_SCRIPT_PATH,
-                caBundlePath = File(OpenCodeBootstrap.CA_BUNDLE_PATH)
-                    .takeIf { it.isFile }?.absolutePath,
-                opensslConfPath = File(OpenCodeBootstrap.OPENSSL_CONF_PATH)
-                    .takeIf { it.isFile }?.absolutePath,
-                opensslModulesPath = File(OpenCodeBootstrap.OPENSSL_MODULES_PATH)
-                    .takeIf { it.isDirectory }?.absolutePath,
-                opensslEnginesPath = File(OpenCodeBootstrap.OPENSSL_ENGINES_PATH)
-                    .takeIf { it.isDirectory }?.absolutePath,
-                gitExecPath = File(OpenCodeBootstrap.PREFIX, "libexec/git-core")
-                    .takeIf { it.isDirectory }?.absolutePath,
-                gitTemplateDir = File(OpenCodeBootstrap.PREFIX, "share/git-core/templates")
-                    .takeIf { it.isDirectory }?.absolutePath,
-                gitSystemConfigPath = File(OpenCodeBootstrap.PREFIX, "etc/gitconfig")
-                    .takeIf { it.isFile }?.absolutePath,
                 apkStamp = apkStamp(),
                 packagesStamp = fileStamp(
                     "${OpenCodeBootstrap.PREFIX}/bin/opencode",
@@ -996,15 +964,7 @@ class OpenCodeService : Service() {
         stopExisting()
     }
 
-    private fun resolveBinary(): File? {
-        val link = File(OpenCodeBootstrap.LINK_PATH)
-        if (!link.exists()) {
-            // The installed binary lives in the install directory.
-            val binaries = File(OpenCodeBootstrap.INSTALL_DIR).listFiles() ?: return null
-            return binaries.firstOrNull { it.isFile && it.name.startsWith("opencode-v") }
-        }
-        return OpenCodeBootstrap.resolveLink(link)
-    }
+    private fun resolveBinary(): File? = OpenCodeBootstrap.installedBinary()
 
     /* ------------------------------------------------------------------ notification */
 
@@ -1351,7 +1311,7 @@ class OpenCodeService : Service() {
         private const val TAG = "OpenCodeService"
 
         /** Default port of `opencode serve`, shared with the activity and the watchdog. */
-        const val DEFAULT_PORT = 49374
+        const val DEFAULT_PORT = RuntimeContract.DEFAULT_PORT
 
         const val NOTIFICATION_CHANNEL_ID = "opencode_service_channel"
         const val NOTIFICATION_ID = 1340

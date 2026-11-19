@@ -156,8 +156,8 @@ Nội dung đề xuất (bỏ secret):
 ```
 
 - `RuntimeEnv` là data class Kotlin duy nhất. Ba nơi render từ nó: script shell
-  (`buildPackageEnvironment()` hiện tại), env của `ProcessBuilder`, và `contractHash`.
-  Điều này xóa hẳn việc định nghĩa env 2–3 lần như hiện nay.
+  (`RuntimeShellScript.render()` ← `buildPackageEnvironment()`), env của `ProcessBuilder`,
+  và `contractHash`. Điều này xóa hẳn việc định nghĩa env 2–3 lần như hiện nay.
 - `contractHash = sha256(nội dung contract không tính generation/password)`.
   Server ghi hash vào `$OC_HOME/.server-contract` lúc spawn. **Adopt rule mới**:
   pid file + `/proc` scan + `service.json` + `GET /api/info` 200 + hash khớp + password
@@ -327,7 +327,12 @@ retry cold-start (native cấp `allowRetry`), làm **P0+P1+P2** cùng một đ�
 - **Tầng A — `RuntimeContract.kt` / `RuntimeEnv` (mới):** `RuntimeInputs` → một `env` map →
   ba renderer `spawnEnvironment()` / `shellExports()` / `toJson()` + `contractHash()` (sha256).
   Secret (`OPENCODE_SERVER_PASSWORD`, `GH_TOKEN`) chỉ được chèn lúc spawn, không bao giờ nằm
-  trong `runtime.json` hay script. Trong `OpenCodeService`:
+  trong `runtime.json` hay script.
+- **Tầng A/P3 — `RuntimeShellScript.kt` + `OpenCodeBootstrap.runtimeInputs()`:** adapter Android
+  duy nhất phân giải path; service build contract từ đó, `buildPackageEnvironment()` render script
+  từ `shellExports()`. Script chỉ giữ hành vi thuần shell (wrapper `pkg`/curl/Android, `unset
+  LD_PRELOAD`, cache npm/pip, PERL5LIB/RUBYLIB), không còn bản sao `export` nào của `env`.
+  Trong `OpenCodeService`:
   - `buildContract()` là adapter Android duy nhất (đọc bootstrap, stamp APK/packages/native);
   - `writeRuntimeContract()` ghi `$OC_HOME/runtime.json` + `.server-contract` (hash) lúc spawn;
   - `serverEnvironmentCurrent()` giờ chỉ so `readHash(.server-contract) == contractHash()`,
@@ -351,7 +356,8 @@ retry cold-start (native cấp `allowRetry`), làm **P0+P1+P2** cùng một đ�
 - `RuntimeStateMachineTest.kt` — transition, generation +1, `SessionRef` giữ id/bỏ token.
 - `RuntimeContractTest.kt` — render lặp lại giống nhau, hash đổi khi sửa 1 biến, secret không
   xuất hiện trong `toJson()`/`shellExports()` nhưng có trong `spawnEnvironment()`, shell-quote,
-  launch command.
+  launch command; script sinh ra có đúng một `export` cho mỗi biến của contract, chỉ chứa helper
+  thuần shell, và export cả path tuỳ chọn (JDK/SDK/OpenSSL/Git).
 
 ### Chưa làm được trong môi trường này
 
@@ -361,5 +367,13 @@ retry cold-start (native cấp `allowRetry`), làm **P0+P1+P2** cùng một đ�
   `./gradlew :app:assembleDebug --no-daemon --stacktrace`.
 - Chưa chạy device smoke (mục 6) — tiêu chí "không stack trace, kể cả vài frame đầu" chỉ coi là
   xong sau khi chạy đủ 6 kịch bản trên thiết bị.
-- `buildPackageEnvironment()` trong `OpenCodeBootstrap.kt` vẫn là bản sao shell của env dùng chung;
-  bước tiếp theo (P3) là cho nó gọi `RuntimeContract.shellExports()` để xoá hoàn toàn bản sao thứ hai.
+
+### P3 — đã xong
+
+`buildPackageEnvironment()` không còn tự dựng env: nó gọi
+`RuntimeShellScript.render(RuntimeEnv.build(OpenCodeBootstrap.runtimeInputs()))`, trong đó phần
+`export` là `RuntimeContract.shellExports()`. Mọi path Android được phân giải một lần ở
+`runtimeInputs()` và dùng chung cho server lẫn shell; xoá được bản sao thứ hai. `writePackageEnvironment()`
+ghi `gitconfig` trước khi render script để `GIT_CONFIG_SYSTEM` trong contract khớp với trạng thái
+mà shell sẽ thấy. Script chuyển sang "package environment v5", nên app update sẽ đổi hash và
+restart server đúng một lần theo contract.

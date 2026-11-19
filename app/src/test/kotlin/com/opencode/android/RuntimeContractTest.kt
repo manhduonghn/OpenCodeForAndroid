@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class RuntimeContractTest {
 
@@ -68,6 +69,52 @@ class RuntimeContractTest {
         assertEquals("ghp_token", env["GH_TOKEN"])
         assertEquals("49374", env[RuntimeContract.OPENCODE_PORT])
         assertFalse(contract.env.containsKey(RuntimeContract.OPENCODE_SERVER_PASSWORD))
+    }
+
+    @Test
+    fun generatedShellScriptHasOneExportPerEnvironmentVariable() {
+        val contract = RuntimeEnv.build(inputs())
+        val script = RuntimeShellScript.render(contract)
+        for (key in contract.env.keys) {
+            if (key == RuntimeContract.BASH_ENV) continue
+            assertEquals(
+                "the script must not redefine $key outside the contract",
+                1,
+                script.lineSequence().count { it.startsWith("export $key=") },
+            )
+        }
+        assertTrue(script.contains("export ${RuntimeContract.BASH_ENV}="))
+        assertFalse(script.contains("export ${RuntimeContract.OPENCODE_SERVER_PASSWORD}="))
+    }
+
+    @Test
+    fun generatedShellScriptKeepsOnlyShellBehaviourOutsideTheContract() {
+        val script = RuntimeShellScript.render(RuntimeEnv.build(inputs()))
+        assertTrue(script.contains("Generated from RuntimeContract"))
+        assertTrue(script.contains("OC_PREFIX="))
+        assertTrue(script.contains("unset LD_PRELOAD"))
+        assertTrue(script.contains("pkg() {"))
+        assertTrue(script.contains("npm_config_cache="))
+        assertFalse(script.contains("for _oc_sdk"))
+    }
+
+    @Test
+    fun shellExportsIncludeOptionalResolvedPaths() {
+        val contract = RuntimeEnv.build(
+            inputs(
+                javaToolOptions = "-Duser.home=/home -Djava.io.tmpdir=/tmp",
+            ).copy(
+                javaHome = "/opt/jdk",
+                androidSdkHome = File("/opt/sdk"),
+                opensslConfPath = "/etc/openssl.cnf",
+                gitExecPath = "/git-core",
+            ),
+        )
+        val shell = contract.shellExports()
+        assertTrue(shell.contains("export JAVA_HOME='/opt/jdk'"))
+        assertTrue(shell.contains("export ANDROID_HOME='/opt/sdk'"))
+        assertTrue(shell.contains("export OPENSSL_CONF='/etc/openssl.cnf'"))
+        assertTrue(shell.contains("export GIT_EXEC_PATH='/git-core'"))
     }
 
     @Test

@@ -849,11 +849,11 @@ object OpenCodeBootstrap {
             Log.w(LOG_TAG, "Could not create $etc")
             return
         }
-        // Seed the trust store before the environment and gitconfig are written: the git config
-        // below only points at the bundle when it actually exists.
+        // Seed the trust store and the git config first: the contract reads both files when it
+        // renders the environment script, so it must see the state the shells will run with.
         ensureCaBundle(context)
-        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
         writeGitConfig()
+        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
         ensureGradleProperties()
         ensureLoginProfile()
         hookBashrc()
@@ -1027,232 +1027,65 @@ object OpenCodeBootstrap {
     }
 
     /**
-     * The Termux packages link against `$PREFIX/lib` with an absolute RUNPATH that points at the
-     * com.termux prefix. The git build additionally has its helper programs and its template
-     * directory compiled in below the old prefix. Neither is readable from this app, so both are
-     * re-rooted here. The file is sourced by the login profile and by etc/bash.bashrc.
+     * The generated package environment. All exported variables come from the runtime contract;
+     * only the shell-only helpers live in [RuntimeShellScript].
      */
-    private fun buildPackageEnvironment(): String = buildString {
-        append("# Managed by the OpenCode for Android app (package environment v4).\n")
-        append("# Sourced by etc/profile and etc/bash.bashrc of the runtime.\n")
-        append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
-        append("export PREFIX\n")
-        // The two roots of the sandbox, used by liboc-pathmap.so and oc-gopatch when a program
-        // that was downloaded later still contains the Termux paths.
-        append("OC_PREFIX=\"\${OC_PREFIX:-").append(PREFIX).append("}\"; export OC_PREFIX\n")
-        append("OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"; export OC_USER_HOME\n")
-        append("case \":\${PATH:-}:\" in\n")
-        append("  *\":\$PREFIX/bin:\"*) ;;\n")
-        append("  *) PATH=\"\$PREFIX/bin\${PATH:+:\$PATH}\"; export PATH ;;\n")
-        append("esac\n")
-        append("TMPDIR=\"\${TMPDIR:-\$PREFIX/tmp}\"; export TMPDIR\n")
-        append("[ -d \"\$TMPDIR\" ] || mkdir -p \"\$TMPDIR\" 2>/dev/null\n")
-        // The Termux JDK resolves user.home to the home of the Termux app, which belongs to
-        // another package and does not exist here. Gradle then fails to create its metrics
-        // directory and Robolectric cannot create its download lock. JAVA_TOOL_OPTIONS is read
-        // by every JVM (the Gradle daemon, the Kotlin compiler daemon and the forked test
-        // workers), so the two paths are fixed in one place. Robolectric's Conscrypt JNI is
-        // x86_64-only; disabling that provider keeps the rest of the test suite usable on
-        // ARM64. Existing options are kept and only the missing -D flags are prepended.
-        append("if [ -z \"\${JAVA_TOOL_OPTIONS:-}\" ]; then\n")
-        append("  JAVA_TOOL_OPTIONS=\"-Duser.home=\$HOME -Djava.io.tmpdir=\$TMPDIR -Drobolectric.conscryptMode=OFF\"; export JAVA_TOOL_OPTIONS\n")
-        append("else\n")
-        append("  case \" \$JAVA_TOOL_OPTIONS \" in *\" -Duser.home=\"*) ;; *) JAVA_TOOL_OPTIONS=\"-Duser.home=\$HOME \$JAVA_TOOL_OPTIONS\" ;; esac\n")
-        append("  case \" \$JAVA_TOOL_OPTIONS \" in *\" -Djava.io.tmpdir=\"*) ;; *) JAVA_TOOL_OPTIONS=\"-Djava.io.tmpdir=\$TMPDIR \$JAVA_TOOL_OPTIONS\" ;; esac\n")
-        append("  case \" \$JAVA_TOOL_OPTIONS \" in *\" -Drobolectric.conscryptMode=\"*) ;; *) JAVA_TOOL_OPTIONS=\"\$JAVA_TOOL_OPTIONS -Drobolectric.conscryptMode=OFF\" ;; esac\n")
-        append("  export JAVA_TOOL_OPTIONS\n")
-        append("fi\n")
-        // Gradle normally derives its user home from the JVM user.home; export it explicitly so
-        // the wrapper distribution, the build cache and the managed gradle.properties stay in
-        // this app's sandbox. sdkmanager/avdmanager use ANDROID_USER_HOME for the same reason.
-        append("GRADLE_USER_HOME=\"\${GRADLE_USER_HOME:-\$HOME/.gradle}\"; export GRADLE_USER_HOME\n")
-        append("ANDROID_USER_HOME=\"\${ANDROID_USER_HOME:-\$HOME/.android}\"; export ANDROID_USER_HOME\n")
-        // The SDK command line tools are normally unpacked below $HOME. Export the first usable
-        // SDK so Gradle and the tools agree on it, and put the tools on PATH. The app repairs
-        // their #!/usr/bin/env shebangs in its maintenance pass (see pkg repair).
-        append("for _oc_sdk in \"\${ANDROID_HOME:-}\" \"\${ANDROID_SDK_ROOT:-}\" \"\$HOME/Android/Sdk\" \"\$HOME/android-sdk\" \"\$HOME/Android/sdk\" \"\$HOME/sdk\" \"\$PREFIX/opt/android-sdk\" \"\$PREFIX/share/android-sdk\"; do\n")
-        append("  [ -n \"\$_oc_sdk\" ] || continue\n")
-        append("  if [ -d \"\$_oc_sdk/cmdline-tools\" ] || [ -d \"\$_oc_sdk/platform-tools\" ] || [ -d \"\$_oc_sdk/build-tools\" ]; then\n")
-        append("    ANDROID_HOME=\"\$_oc_sdk\"; export ANDROID_HOME\n")
-        append("    ANDROID_SDK_ROOT=\"\$_oc_sdk\"; export ANDROID_SDK_ROOT\n")
-        append("    for _oc_sdkbin in \"\$_oc_sdk/cmdline-tools/latest/bin\" \"\$_oc_sdk/cmdline-tools/bin\" \"\$_oc_sdk/tools/bin\" \"\$_oc_sdk/platform-tools\"; do\n")
-        append("      [ -d \"\$_oc_sdkbin\" ] || continue\n")
-        append("      case \":\${PATH:-}:\" in *\":\$_oc_sdkbin:\"*) ;; *) PATH=\"\$PATH:\$_oc_sdkbin\" ;; esac\n")
-        append("    done\n")
-        append("    break\n")
-        append("  fi\n")
-        append("done\n")
-        append("unset _oc_sdk _oc_sdkbin\n")
-        // Android has no /usr/share/locale; glibc only ships C.UTF-8 in this prefix, and an
-        // unavailable locale makes node, git and the editors print a warning on every start.
-        append("if [ -z \"\${LANG:-}\" ]; then LANG=C.UTF-8; export LANG; fi\n")
-        // Java, Python and the GNU tools look for /usr/share/zoneinfo, which does not exist on
-        // Android. Set TZDIR only when the prefix really has a time zone database.
-        append("if [ -d \"\$PREFIX/share/zoneinfo\" ]; then\n")
-        append("  TZDIR=\"\${TZDIR:-\$PREFIX/share/zoneinfo}\"; export TZDIR\n")
-        append("fi\n")
-        append("if [ -d \"\$PREFIX/lib\" ]; then\n")
-        append("  case \":\${LD_LIBRARY_PATH:-}:\" in\n")
-        append("    *\":\$PREFIX/lib:\"*) ;;\n")
-        append("    *) LD_LIBRARY_PATH=\"\$PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
-        append("  esac\n")
-        append("fi\n")
-        // The app owns the installed binary, and the bionic preload of Termux must never be
-        // loaded into a glibc process.
-        append("OPENCODE_DISABLE_AUTOUPDATE=1; export OPENCODE_DISABLE_AUTOUPDATE\n")
-        append("unset LD_PRELOAD\n")
-        // `pkg` is the bionic bridge of the app. The Android linker resolves the platform
-        // libraries it needs (libunwindstack pulls libz and liblzma) through LD_LIBRARY_PATH too,
-        // and the copies of this prefix are not the ones Android ships: without clearing it the
-        // command dies with `cannot locate symbol "Xzs_Construct"`. Clear it for the bridge only.
-        append("pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg \"\$@\"; }\n")
-        // The same applies to the Android commands that the extractor deliberately does not
-        // shadow with the termux-tools wrappers. /system/bin/curl, for example, links against
-        // the OpenSSL of the platform and dies with `cannot locate symbol "EVP_MD_CTX_create"`
-        // when it picks up the OpenSSL 3 of this prefix instead.
-        append("for _oc_cmd in am bmgr bu cmd content device_config dpm dumpsys getprop ime input log logcat media mount notify pm settings setprop sm svc uiautomator umount wm start stop; do\n")
-        append("  eval \"\$_oc_cmd() { LD_LIBRARY_PATH= LD_PRELOAD= command \$_oc_cmd \\\"\\\$@\\\"; }\"\n")
-        append("done\n")
-        append("unset _oc_cmd\n")
-        // Only wrap curl while the prefix has no curl of its own: a Termux curl needs the
-        // libraries of the prefix, the Android one must not see them.
-        append("if [ ! -x \"\$PREFIX/bin/curl\" ]; then\n")
-        append("  curl() { LD_LIBRARY_PATH= LD_PRELOAD= command curl \"\$@\"; }\n")
-        append("fi\n")
-        append("if [ -z \"\${SHELL:-}\" ] && [ -x \"\$PREFIX/bin/bash\" ]; then\n")
-        append("  SHELL=\"\$PREFIX/bin/bash\"; export SHELL\n")
-        append("fi\n")
-        // The JDK links its own libraries relative to JAVA_HOME, but its RUNPATH still points at
-        // /data/data/com.termux. libjli re-executes /proc/self/exe when $JAVA_HOME/lib/server is
-        // not the first entry of LD_LIBRARY_PATH, and on Android /proc/self/exe is the platform
-        // linker, so the loader path has to start with lib/server. Only export paths that exist.
-        jdkHome()?.let { jdk ->
-            append("JAVA_HOME=\"\${JAVA_HOME:-").append(jdk.absolutePath).append("}\"; export JAVA_HOME\n")
-            append("if [ -d \"\$JAVA_HOME/lib/server\" ]; then\n")
-            append("  case \":\${LD_LIBRARY_PATH:-}:\" in\n")
-            append("    *\":\$JAVA_HOME/lib/server:\"*) ;;\n")
-            append("    *) LD_LIBRARY_PATH=\"\$JAVA_HOME/lib/server:\$JAVA_HOME/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
-            append("  esac\n")
-            append("elif [ -d \"\$JAVA_HOME/lib\" ]; then\n")
-            append("  case \":\${LD_LIBRARY_PATH:-}:\" in\n")
-            append("    *\":\$JAVA_HOME/lib:\"*) ;;\n")
-            append("    *) LD_LIBRARY_PATH=\"\$JAVA_HOME/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\"; export LD_LIBRARY_PATH ;;\n")
-            append("  esac\n")
-            append("fi\n")
-            append("if [ -d \"\$JAVA_HOME/bin\" ]; then\n")
-            append("  case \":\${PATH:-}:\" in\n")
-            append("    *\":\$JAVA_HOME/bin:\"*) ;;\n")
-            append("    *) PATH=\"\$JAVA_HOME/bin:\$PATH\"; export PATH ;;\n")
-            append("  esac\n")
-            append("fi\n")
-        }
-        append("# npm and pip keep their caches in the app HOME, the prefix may be read only for them.\n")
-        append("npm_config_cache=\"\${npm_config_cache:-\${HOME:-\$PREFIX}/.npm}\"; export npm_config_cache\n")
-        append("PIP_CACHE_DIR=\"\${PIP_CACHE_DIR:-\${HOME:-\$PREFIX}/.cache/pip}\"; export PIP_CACHE_DIR\n")
-        // Perl was built with @INC under /data/data/com.termux/files/usr, so every module and
-        // the scripts that use them (cowsay, …) fail with "Can't locate …". PERL5LIB prepends
-        // the version and architecture directories of this prefix; the stale entries stay in
-        // @INC and are simply not found.
-        append("if [ -d \"\$PREFIX/lib/perl5\" ]; then\n")
-        append("  _oc_perl=\n")
-        append("  for _oc_ver in \"\$PREFIX\"/lib/perl5/site_perl/* \"\$PREFIX\"/lib/perl5/*; do\n")
-        append("    [ -d \"\$_oc_ver\" ] || continue\n")
-        append("    case \"\${_oc_ver##*/}\" in [0-9]*) ;; *) continue ;; esac\n")
-        append("    _oc_perl=\"\${_oc_perl:+\$_oc_perl:}\$_oc_ver\"\n")
-        append("    for _oc_arch in \"\$_oc_ver\"/*-android; do\n")
-        append("      [ -d \"\$_oc_arch\" ] && _oc_perl=\"\${_oc_perl:+\$_oc_perl:}\$_oc_arch\"\n")
-        append("    done\n")
-        append("  done\n")
-        append("  if [ -n \"\$_oc_perl\" ]; then PERL5LIB=\"\${PERL5LIB:+\$PERL5LIB:}\$_oc_perl\"; export PERL5LIB; fi\n")
-        append("  unset _oc_perl _oc_ver _oc_arch\n")
-        append("fi\n")
-        // Ruby has the same problem: the compiled $LOAD_PATH starts with the com.termux prefix,
-        // so `require "json"` and `gem` fail even though the files are here. RUBYLIB prepends the
-        // site, vendor and core directories of this prefix, with their architecture subdirectory.
-        append("if [ -d \"\$PREFIX/lib/ruby\" ]; then\n")
-        append("  _oc_ruby=\n")
-        append("  for _oc_base in \"\$PREFIX/lib/ruby/site_ruby\" \"\$PREFIX/lib/ruby/vendor_ruby\" \"\$PREFIX/lib/ruby\"; do\n")
-        append("    [ -d \"\$_oc_base\" ] || continue\n")
-        append("    for _oc_ver in \"\$_oc_base\"/*; do\n")
-        append("      [ -d \"\$_oc_ver\" ] || continue\n")
-        append("      case \"\${_oc_ver##*/}\" in [0-9]*) ;; *) continue ;; esac\n")
-        append("      _oc_ruby=\"\${_oc_ruby:+\$_oc_ruby:}\$_oc_ver\"\n")
-        append("      for _oc_arch in \"\$_oc_ver\"/*-android; do\n")
-        append("        [ -d \"\$_oc_arch\" ] && _oc_ruby=\"\${_oc_ruby:+\$_oc_ruby:}\$_oc_arch\"\n")
-        append("      done\n")
-        append("    done\n")
-        append("    _oc_ruby=\"\${_oc_ruby:+\$_oc_ruby:}\$_oc_base\"\n")
-        append("  done\n")
-        append("  if [ -n \"\$_oc_ruby\" ]; then RUBYLIB=\"\${RUBYLIB:+\$RUBYLIB:}\$_oc_ruby\"; export RUBYLIB; fi\n")
-        append("  case \":\${RUBYOPT:-}:\" in\n")
-        append("    *-rrubygems*) ;;\n")
-        append("    *) RUBYOPT=\"-rrubygems\${RUBYOPT:+ \$RUBYOPT}\"; export RUBYOPT ;;\n")
-        append("  esac\n")
-        append("  unset _oc_ruby _oc_base _oc_ver _oc_arch\n")
-        append("fi\n")
-        append("# git was built for /data/data/com.termux/files/usr: its helpers would be looked up\n")
-        append("# there, which belongs to another app.\n")
-        append("if [ -d \"\$PREFIX/libexec/git-core\" ]; then\n")
-        append("  GIT_EXEC_PATH=\"\$PREFIX/libexec/git-core\"; export GIT_EXEC_PATH\n")
-        append("fi\n")
-        append("if [ -d \"\$PREFIX/share/git-core/templates\" ]; then\n")
-        append("  GIT_TEMPLATE_DIR=\"\$PREFIX/share/git-core/templates\"; export GIT_TEMPLATE_DIR\n")
-        append("fi\n")
-        append("if [ -f \"\$PREFIX/etc/gitconfig\" ]; then\n")
-        append("  GIT_CONFIG_SYSTEM=\"\$PREFIX/etc/gitconfig\"; export GIT_CONFIG_SYSTEM\n")
-        append("  unset GIT_CONFIG_NOSYSTEM\n")
-        append("else\n")
-        append("  GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM\n")
-        append("fi\n")
-        append("GIT_ATTR_NOSYSTEM=1; export GIT_ATTR_NOSYSTEM\n")
-        // OpenSSL was built for the com.termux prefix. Without these variables it looks for its
-        // configuration and provider modules below /data/data/com.termux, which does not belong
-        // to this app. The default provider is built in, but the configuration file is not, and
-        // the legacy provider only loads when OPENSSL_MODULES points at this prefix.
-        append("if [ -f \"\$PREFIX/etc/tls/openssl.cnf\" ]; then\n")
-        append("  OPENSSL_CONF=\"\${OPENSSL_CONF:-\$PREFIX/etc/tls/openssl.cnf}\"; export OPENSSL_CONF\n")
-        append("fi\n")
-        append("if [ -d \"\$PREFIX/lib/ossl-modules\" ]; then\n")
-        append("  OPENSSL_MODULES=\"\${OPENSSL_MODULES:-\$PREFIX/lib/ossl-modules}\"; export OPENSSL_MODULES\n")
-        append("fi\n")
-        append("if [ -d \"\$PREFIX/lib/engines-3\" ]; then\n")
-        append("  OPENSSL_ENGINES=\"\${OPENSSL_ENGINES:-\$PREFIX/lib/engines-3}\"; export OPENSSL_ENGINES\n")
-        append("fi\n")
-        append("if [ -f \"\$PREFIX/etc/tls/cert.pem\" ]; then\n")
-        append("  SSL_CERT_FILE=\"\$PREFIX/etc/tls/cert.pem\"; export SSL_CERT_FILE\n")
-        append("  CURL_CA_BUNDLE=\"\$SSL_CERT_FILE\"; export CURL_CA_BUNDLE\n")
-        append("  NODE_EXTRA_CA_CERTS=\"\$SSL_CERT_FILE\"; export NODE_EXTRA_CA_CERTS\n")
-        // requests/certifi and pip read their own variables before they consult OpenSSL, so the
-        // generic SSL_CERT_FILE alone does not cover python based tools.
-        append("  REQUESTS_CA_BUNDLE=\"\$SSL_CERT_FILE\"; export REQUESTS_CA_BUNDLE\n")
-        append("  PIP_CERT=\"\$SSL_CERT_FILE\"; export PIP_CERT\n")
-        append("  GIT_SSL_CAINFO=\"\$SSL_CERT_FILE\"; export GIT_SSL_CAINFO\n")
-        append("fi\n")
-        // The WebView and the terminal use the same server password, so a server started from
-        // the terminal and the one of the app cannot disagree about the credentials.
-        append("if [ -z \"\${OPENCODE_SERVER_PASSWORD:-}\" ] && [ -f \"")
-        append(SERVER_PASSWORD_PATH)
-        append("\" ]; then\n")
-        append("  IFS= read -r OPENCODE_SERVER_PASSWORD < \"")
-        append(SERVER_PASSWORD_PATH)
-        append("\" 2>/dev/null\n")
-        append("  if [ -n \"\$OPENCODE_SERVER_PASSWORD\" ]; then export OPENCODE_SERVER_PASSWORD; fi\n")
-        append("fi\n")
-        // The web terminal uses the app's pure-C bionic helper, not the glibc binary embedded in
-        // the CLI. It is a normal executable and needs no loader or version-specific patching.
-        terminalRuntimePath()?.let { pty ->
-            append("OPENCODE_PTY_BIN=\"\${OPENCODE_PTY_BIN:-").append(pty).append("}\"; export OPENCODE_PTY_BIN\n")
-        }
-        // The daemon of the web terminal creates its socket below this directory; its default
-        // `/tmp` does not exist on Android.
-        append("OPENCODE_PTY_SOCKET_DIR=\"\${OPENCODE_PTY_SOCKET_DIR:-")
-        append(PTY_SOCKET_DIR)
-        append("}\"; export OPENCODE_PTY_SOCKET_DIR\n")
-        append(":\n")
-    }
+    private fun buildPackageEnvironment(): String =
+        RuntimeShellScript.render(RuntimeEnv.build(runtimeInputs()))
 
     /** Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed. */
     fun javaHome(): String? = jdkHome()?.absolutePath
+
+    /**
+     * The Android/filesystem half of [RuntimeInputs]. This is the only adapter that resolves the
+     * sandbox paths: the service builds the server contract from it and the generated shell script
+     * renders from the same result, so the two layers cannot drift apart.
+     */
+    fun runtimeInputs(
+        port: Int = RuntimeContract.DEFAULT_PORT,
+        apkStamp: String = "",
+        packagesStamp: String = "",
+        nativeStamp: String = "",
+    ): RuntimeInputs = RuntimeInputs(
+        abi = getOpenCodeArch().orEmpty(),
+        prefix = PREFIX,
+        home = HOME,
+        ocHome = OC_HOME,
+        port = port,
+        binaryPath = installedBinary()?.absolutePath.orEmpty(),
+        loader = findGlibcLoader().orEmpty(),
+        preload = File(PATHMAP_PATH).takeIf { it.isFile }?.absolutePath,
+        glibcLibDir = GLIBC_LIB_DIR,
+        ptyBin = ensureTerminalRuntime(),
+        ptySocketDir = PTY_SOCKET_DIR,
+        javaHome = javaHome(),
+        javaToolOptions = javaToolOptions(),
+        gradleUserHome = GRADLE_USER_HOME,
+        androidUserHome = ANDROID_USER_HOME,
+        androidSdkHome = androidSdkHome(),
+        bashPath = File(PREFIX, "bin/bash").takeIf { it.isFile }?.absolutePath,
+        envScriptPath = ENV_SCRIPT_PATH,
+        caBundlePath = File(CA_BUNDLE_PATH).takeIf { it.isFile }?.absolutePath,
+        opensslConfPath = File(OPENSSL_CONF_PATH).takeIf { it.isFile }?.absolutePath,
+        opensslModulesPath = File(OPENSSL_MODULES_PATH).takeIf { it.isDirectory }?.absolutePath,
+        opensslEnginesPath = File(OPENSSL_ENGINES_PATH).takeIf { it.isDirectory }?.absolutePath,
+        gitExecPath = File(PREFIX, "libexec/git-core").takeIf { it.isDirectory }?.absolutePath,
+        gitTemplateDir = File(PREFIX, "share/git-core/templates").takeIf { it.isDirectory }?.absolutePath,
+        gitSystemConfigPath = File(PREFIX, "etc/gitconfig").takeIf { it.isFile }?.absolutePath,
+        apkStamp = apkStamp,
+        packagesStamp = packagesStamp,
+        nativeStamp = nativeStamp,
+    )
+
+    /** The installed OpenCode binary, following the version symlink when one exists. */
+    fun installedBinary(): File? {
+        val link = File(LINK_PATH)
+        if (!link.exists()) {
+            return File(INSTALL_DIR).listFiles()
+                ?.firstOrNull { it.isFile && it.name.startsWith("opencode-v") }
+        }
+        return resolveLink(link)
+    }
 
     /**
      * Options that every JVM in this sandbox needs.
