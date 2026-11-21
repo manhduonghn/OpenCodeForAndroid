@@ -178,7 +178,7 @@ Script đã được chạy trên thiết bị. Kết luận **đã chốt**, kh
 - Sau hook: `[XN]` trên thiết bị, `Pool`, `ProcessPoolExecutor`, `Lock`, `Queue` chạy OK với cả ba start method `fork`, `spawn`, `forkserver`; smoke test vẫn OK khi tiến trình chủ chủ động đóng FD 9 (`exec 9<&-`) trước khi chạy Python.
 - `RuntimeContractTest.semaphoreDirectoryFollowsTheInstallPathInEveryEnvironment` kiểm chứng `OC_SEMAPHORE_DIR` được export sang contract, shell script và spawn env, kể cả prefix work profile.
 - `:app:testDebugUnitTest` trên thiết bị sau khi thêm hook: **127 tests, 0 failures** (`PythonSemaphoreFdTest` kiểm tra cài vào mọi `site-packages`, ghi đè file hỏng và idempotent; `TermuxSemaphorePathTest` vẫn kiểm tra prefix 34/52 byte).
-- CI Debug build `44887151136`: success; native helper dựng cho `arm64-v8a`/`x86_64`, e2e pass, APK `OpenCodeForAndroid-20261121-0859-aba2e44-debug.apk`.
+- CI Debug build `44887151136`: success; native helper dựng cho `arm64-v8a`/`x86_64`, e2e pass, APK `OpenCodeForAndroid-20261121-0859-aba2e44-debug.apk`. CI bản hook `44901205964`: success, APK `OpenCodeForAndroid-20261121-1156-88757e2-debug.apk`.
 - `[XN]` Cơ chế đã chạy thật trên thiết bị đang dùng root 31 byte, với mọi start method của Python 3.14. `[GT]` Chưa có thiết bị work profile/package name dài để chạy Python `multiprocessing` thật; phần đó mới chỉ được unit test (prefix 34/52 byte) và harness xác nhận, không khẳng định bằng thiết bị.
 
 ### 3.5 Khuyến nghị
