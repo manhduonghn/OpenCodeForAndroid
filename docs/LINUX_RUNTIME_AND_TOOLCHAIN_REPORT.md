@@ -170,7 +170,16 @@ Script đã được chạy trên thiết bị. Kết luận **đã chốt**, kh
 
 > Ghi chú sửa lại: kết luận cũ cho rằng "không có đường dẫn ngắn nào app ghi được" chỉ đúng với đường dẫn **tĩnh**. Với `/proc/self/fd/N`, một descriptor mở tới thư mục thật cho phép ghi qua alias ngắn mà vẫn giữ nguyên offset ELF. Đo thực tế: `TERMUX_TMP` 40 byte, replacement 19 byte; `patch()` trả `1` cho mọi prefix, kể cả `/data/user/10/...` (43 byte) vốn trước đó trả `0`. Cơ chế FD chỉ áp dụng cho semaphore; các relocation 31 byte còn lại vẫn theo phương án A.
 
-### 3.4 Khuyến nghị
+### 3.4 Kiểm chứng hướng D [XN]
+
+- Trước sửa, harness đo trực tiếp `patch()` trên thiết bị: root 31 byte → `patch=1` (vừa khít 40 byte), root 34 byte (`/data/user/10/...`) và 52 byte → `patch=0`.
+- Sau sửa, `replacement()` trả `/proc/self/fd/9/sem.` (19 byte) **độc lập prefix**; unit test `patchWorksForWorkProfileAndLongPackageNames` chạy với prefix 34/52 byte đều `patch=1`, file giữ nguyên kích thước.
+- `RuntimeContractTest.semaphoreDirectoryFollowsTheInstallPathInEveryEnvironment` kiểm chứng `OC_SEMAPHORE_DIR` được export sang contract, shell script và spawn env, kể cả prefix work profile.
+- `:app:testDebugUnitTest` trên thiết bị: **125 tests, 0 failures** (trước đó 123/1 fail chính vì ranh giới này).
+- CI Debug build `44887151136`: success; native helper dựng cho `arm64-v8a`/`x86_64`, e2e pass, APK `OpenCodeForAndroid-20261121-0859-aba2e44-debug.apk`.
+- [GT] Chưa có thiết bị cài thật ở work profile/package name dài để chạy Python `multiprocessing`; cơ chế mới được kiểm chứng bằng unit test, harness và cài đặt thật trên app release đang dùng root 31 byte.
+
+### 3.5 Khuyến nghị
 
 Làm A trước: gom hằng số relocation vào một nguồn, đổi cảnh báo P4 thành lỗi rõ ràng, thêm self-test alias vào `doMaintenance`, và ghi rõ trong README rằng 31 là hệ quả của in-place patch, không phải versionCode. Giữ B trong backlog như "lối thoát khi đổi applicationId".
 
@@ -253,7 +262,8 @@ grep -E 'JAVA_HOME|LD_LIBRARY_PATH' "$PREFIX/etc/opencode-env.sh"
 | P1 | Giữ `JAVA_TOOL_OPTIONS` người dùng | `RuntimeContract.kt`, `RuntimeShellScript.kt` | Flag tự thêm không bị mất sau source env |
 | P1 | Bundle C/C++ + env flags + wrapper | `Main.kt`, `RuntimeContract.kt`, `RuntimeShellScript.kt` | Smoke test C/C++ mục 4.4 đều OK |
 | P1 | A: dọn hardcode 31 + self-test alias + fail rõ | `OpenCodeBootstrap.kt`, `app/build.gradle.kts` | Đổi `applicationIdSuffix` cho lỗi rõ thay vì relocation âm thầm |
-| P2 | B: ELF expansion kiểu gopatch | `native/gopatch`, `OpenCodeBootstrap.kt` | Chạy được với id 32+ ký tự và `/data/user/0/...` |
+| P1 | ~~D: alias FD cho semaphore~~ **ĐÃ XONG** (`2eadaed`, `aba2e44`) | `TermuxSemaphorePath.kt`, `native/*`, `app/src/main/cpp/pty.cpp` | `patch()` trả `1` cho prefix 34/52 byte; env export `OC_SEMAPHORE_DIR`; unit test xanh |
+| P2 | B: ELF expansion kiểu gopatch cho các relocation 31 byte còn lại | `native/gopatch`, `OpenCodeBootstrap.kt` | Chạy được với id 32+ ký tự và `/data/user/0/...` ngoài semaphore |
 
 ---
 
