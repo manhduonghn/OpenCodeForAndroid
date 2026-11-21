@@ -262,6 +262,7 @@ riêng `opencode-pty` để mở shell.
 | 4.2 #9 launcher repair pattern | ✅ | `OpenCodePackages.JavaLaunchers` (d8/r8/apksigner) |
 | 4.2 #10 bảng syscall bị chặn | ✅ tài liệu | mục 7 dưới đây |
 | Python `multiprocessing`: đường dẫn semaphore cắm cứng của Termux | ✅ | `TermuxSemaphorePath`, `OpenCodePackages.extractEntry` / `repair` |
+| Python `multiprocessing`: FD 9 bị CPython đóng khi spawn/forkserver | ✅ | `PythonSemaphoreFd`, `OpenCodePackages.install` / `repair` |
 | 4.3 #11 preload path translation | ✅ | `native/pathmap`, `OpenCodeBootstrap.installNativeTools`, `oc-gopatch run` |
 | 4.3 #12 Go static patch | ✅ (AArch64) | `native/gosys`, `native/gopatch`, `oc-run` |
 | P2 C tĩnh `svc #0` | ✅ (AArch64) | `native/gopatch/patchc.go`, `native/gosys/cstub.S`, `OC_STATIC_PATCH` |
@@ -284,6 +285,18 @@ Thư mục `tmp` ở gốc sandbox được tạo riêng — không phải `$PRE
 thật được export dưới tên `OC_SEMAPHORE_DIR` trong runtime contract, env script và env
 của terminal. Việc vá chạy cả lúc trích xuất gói lẫn trong `pkg repair`, nên prefix cài
 từ bản cũ được sửa mà không cần cài lại.
+
+`[XN]` Trên Python 3.14, alias chỉ giải quyết được nửa đầu của vấn đề: thư viện tạo đúng
+tên `mp-*`, nhưng `forkserver`/`spawn` (mặc định của 3.14) khởi động con với
+`close_fds=True` và chỉ truyền danh sách FD được phép, nên worker mất FD 9 và báo
+`FileNotFoundError` dù file semaphore đã tồn tại. `PythonSemaphoreFd` khắc phục bằng cách
+ghi `oc_semaphore_fd.py` + `oc-semaphore.pth` vào mọi `site-packages` của prefix: khi khởi
+động, module so sánh `fstat(9)` với `stat($OC_SEMAPHORE_DIR)`; nếu FD 9 không còn trỏ đúng
+thư mục thì `open` + `dup2` lại, rồi bổ sung FD 9 vào `pass_fds` của
+`multiprocessing.util.spawnv_passfds`. Hook được cài ngay sau `pkg install` (trong
+`OpenCodePackages.install`) và trong `pkg repair`, không cần sửa test hay sửa code người
+dùng. Đã kiểm tra trên máy thật: `Pool`, `ProcessPoolExecutor`, `Lock`, `Queue` chạy OK
+với `fork`, `spawn`, `forkserver`, kể cả khi FD 9 bị đóng trước khi chạy Python.
 
 ## 7. Bảng chính sách syscall Android cho binary glibc (4.2 #10)
 

@@ -320,6 +320,9 @@ object OpenCodePackages {
         // The marker is rewritten, not appended: entries of broken packages must disappear so the
         // next run does not trust them again.
         writeInstalled(marker, already, closure)
+        // A freshly extracted Python needs the multiprocessing FD hook right away; do not wait
+        // for the next repair pass, which may only happen after the next app start.
+        PythonSemaphoreFd.install(prefix)
         ensureEnvironmentLinks(prefix)
         progress.onPercent(100, "")
     }
@@ -375,6 +378,7 @@ object OpenCodePackages {
         var shellPatched = 0
         var semaphoresPatched = 0
         var semaphoreDirectoryCreated = false
+        var pythonFdHooks = false
         var launchersRepaired = 0
         var sdkScripts = 0
 
@@ -478,12 +482,14 @@ object OpenCodePackages {
         if (semaphoreLibrary.isFile) {
             semaphoreDirectoryCreated = TermuxSemaphorePath.ensureDirectory(prefix)
             semaphoresPatched = TermuxSemaphorePath.patch(semaphoreLibrary, prefix)
+            // The alias lives on FD 9, which CPython's spawn helpers do not pass to children.
+            pythonFdHooks = PythonSemaphoreFd.install(prefix)
         }
 
         ensureEnvironmentLinks(prefix)
 
         if (relinked == 0 && removed == 0 && rewritten == 0 && shellPatched == 0 &&
-            semaphoresPatched == 0 && !semaphoreDirectoryCreated &&
+            semaphoresPatched == 0 && !semaphoreDirectoryCreated && !pythonFdHooks &&
             launchersRepaired == 0 && sdkScripts == 0
         ) {
             return null
@@ -509,6 +515,10 @@ object OpenCodePackages {
             if (semaphoresPatched > 0) {
                 if (isNotEmpty()) append("; ")
                 append("patched the POSIX semaphore library")
+            }
+            if (pythonFdHooks) {
+                if (isNotEmpty()) append("; ")
+                append("installed the Python semaphore FD hook")
             }
             if (launchersRepaired > 0) {
                 if (isNotEmpty()) append("; ")
