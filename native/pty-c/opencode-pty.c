@@ -37,6 +37,12 @@
 #define MAX_FRAME_DATA (MAX_FRAME_BYTES - 32)
 #define TAG_OUTPUT 0
 #define HANDOFF_TIMEOUT_MS 120000
+#define MAX_METADATA_BYTES (1024u * 1024u)
+#define DRAIN_AFTER_EXIT_MS 1000
+
+/* Protocol 9 has two process modes. The PTY mode serves the web terminal;
+ * pipe mode is what the `shell` tool uses. */
+typedef enum { MODE_PTY = 0, MODE_PIPE = 1 } ProcessMode;
 
 typedef struct {
     int fd;
@@ -70,6 +76,17 @@ typedef struct {
     int eof;
     int exit_sent;
     int fd_closed;
+
+    ProcessMode mode;
+    /* Pipe-only state. `pty.master` holds the pipe read end for pipes. */
+    int output_fd;
+    char *output_path;
+    char *metadata;
+    uint64_t output_lines;
+    char *output_error;
+    uint64_t drain_deadline;
+    Client **waiters;
+    size_t waiter_count;
 } Terminal;
 
 static char g_instance[33];
@@ -356,6 +373,11 @@ static void terminal_add(Terminal *t) {
 
 static void terminal_free(Terminal *t) {
     pty_close(&t->pty);
+    if (t->mode == MODE_PIPE && t->output_fd >= 0) close(t->output_fd);
+    free(t->output_path);
+    free(t->metadata);
+    free(t->output_error);
+    free(t->waiters);
     screen_free(&t->screen);
     free(t->replay);
     free(t->cwd);
@@ -408,6 +430,19 @@ static void client_remove(size_t index) {
         /* A prepared handoff may still be claimed by the replacement server. */
         if (g_handoff_ticket[0]) g_handoff_waiting = 1;
         else g_stop = 1;
+    }
+    /* A client may be blocked in `wait`; drop it so no stale pointer is signalled later. */
+    for (size_t i = 0; i < g_terminal_count; i++) {
+        Terminal *t = g_terminals[i];
+        for (size_t j = 0; j < t->waiter_count;) {
+            if (t->waiters[j] == c) {
+                memmove(t->waiters + j, t->waiters + j + 1,
+                        (t->waiter_count - j - 1) * sizeof(Client *));
+                t->waiter_count--;
+            } else {
+                j++;
+            }
+        }
     }
     client_free(c);
     memmove(g_clients + index, g_clients + index + 1, (g_client_count - index - 1) * sizeof(Client *));
@@ -557,7 +592,8 @@ static int replay_slice(Terminal *t, uint64_t offset, uint64_t *available, uint6
 }
 
 static void write_process_info(Buf *b, Terminal *t) {
-    buf_printf(b, "{\"id\":%llu,\"mode\":\"pty\",\"pid\":", (unsigned long long)t->id);
+    buf_printf(b, "{\"id\":%llu,\"mode\":\"%s\",\"pid\":",
+               (unsigned long long)t->id, t->mode == MODE_PIPE ? "pipe" : "pty");
     if (t->pty.pid > 0) buf_printf(b, "%d", (int)t->pty.pid);
     else buf_puts(b, "null");
     buf_puts(b, ",\"command\":[");
@@ -588,17 +624,33 @@ static void write_process_info(Buf *b, Terminal *t) {
                (unsigned long long)t->started_at);
     if (t->exit_sent && t->pty.exited_at) buf_printf(b, "%llu", (unsigned long long)t->pty.exited_at);
     else buf_puts(b, "null");
-    buf_puts(b, ",\"pty\":{\"title\":");
-    const char *title = term_title(t);
-    buf_json_string(b, title, strlen(title));
-    buf_puts(b, ",\"user_title\":");
-    if (t->user_title) buf_json_string(b, t->user_title, strlen(t->user_title));
-    else buf_puts(b, "null");
-    buf_puts(b, ",\"foreground_process\":");
-    const char *foreground = term_foreground(t);
-    if (foreground) buf_json_string(b, foreground, strlen(foreground));
-    else buf_puts(b, "null");
-    buf_printf(b, ",\"cols\":%d,\"rows\":%d}}", t->screen.cols, t->screen.rows);
+
+    if (t->mode == MODE_PIPE) {
+        /* Protocol 9: a pipe process has a `pipe` object and no `pty` object. */
+        const char *path = t->output_path ? t->output_path : "";
+        buf_puts(b, ",\"pipe\":{\"output_path\":");
+        buf_json_string(b, path, strlen(path));
+        buf_printf(b, ",\"output_lines\":%llu,\"metadata\":", (unsigned long long)t->output_lines);
+        buf_puts(b, t->metadata ? t->metadata : "{}");
+        if (t->output_error) {
+            buf_puts(b, ",\"output_error\":");
+            buf_json_string(b, t->output_error, strlen(t->output_error));
+        }
+        buf_putc(b, '}');
+    } else {
+        buf_puts(b, ",\"pty\":{\"title\":");
+        const char *title = term_title(t);
+        buf_json_string(b, title, strlen(title));
+        buf_puts(b, ",\"user_title\":");
+        if (t->user_title) buf_json_string(b, t->user_title, strlen(t->user_title));
+        else buf_puts(b, "null");
+        buf_puts(b, ",\"foreground_process\":");
+        const char *foreground = term_foreground(t);
+        if (foreground) buf_json_string(b, foreground, strlen(foreground));
+        else buf_puts(b, "null");
+        buf_printf(b, ",\"cols\":%d,\"rows\":%d}", t->screen.cols, t->screen.rows);
+    }
+    buf_putc(b, '}');
 }
 
 static void response(Client *c, const Buf *payload) {
@@ -647,12 +699,16 @@ static void send_process(Client *c, Terminal *t) {
     buf_free(&b);
 }
 
-static void send_processes(Client *c) {
+static void send_processes(Client *c, ProcessMode mode) {
     Buf b = {0};
     buf_puts(&b, "{\"type\":\"processes\",\"processes\":[");
+    int first = 1;
     for (size_t i = 0; i < g_terminal_count; i++) {
-        if (i) buf_putc(&b, ',');
-        write_process_info(&b, g_terminals[i]);
+        Terminal *t = g_terminals[i];
+        if (t->mode != mode) continue;
+        if (!first) buf_putc(&b, ',');
+        first = 0;
+        write_process_info(&b, t);
     }
     buf_puts(&b, "]}");
     response(c, &b);
@@ -841,8 +897,19 @@ static void build_exited(Terminal *t, Buf *b) {
         buf_puts(b, ",\"signal\":");
         buf_json_string(b, signal_name(t->pty.signal_number), strlen(signal_name(t->pty.signal_number)));
     }
-    buf_printf(b, ",\"final_offset\":%llu,\"exited_at\":%llu}",
-               (unsigned long long)t->tail, (unsigned long long)t->pty.exited_at);
+    if (t->mode == MODE_PIPE) {
+        buf_printf(b, ",\"final_offset\":%llu,\"output_lines\":%llu,\"exited_at\":%llu",
+                   (unsigned long long)t->tail, (unsigned long long)t->output_lines,
+                   (unsigned long long)t->pty.exited_at);
+        if (t->output_error) {
+            buf_puts(b, ",\"output_error\":");
+            buf_json_string(b, t->output_error, strlen(t->output_error));
+        }
+        buf_putc(b, '}');
+    } else {
+        buf_printf(b, ",\"final_offset\":%llu,\"exited_at\":%llu}",
+                   (unsigned long long)t->tail, (unsigned long long)t->pty.exited_at);
+    }
 }
 
 static void send_exited(Client *c, Terminal *t) {
@@ -857,6 +924,16 @@ static void broadcast_exited(Terminal *t) {
     build_exited(t, &b);
     broadcast(NULL, t->id, &b);
     buf_free(&b);
+    /* `wait` clients are not subscribers: they get exactly one Exited response
+     * on the connection that issued the request. */
+    for (size_t i = 0; i < t->waiter_count; i++) {
+        Client *c = t->waiters[i];
+        if ((c->subscribed && c->terminal_id == t->id) || c->closing) continue;
+        send_exited(c, t);
+    }
+    free(t->waiters);
+    t->waiters = NULL;
+    t->waiter_count = 0;
 }
 
 static void scan_title(Terminal *t, const unsigned char *data, size_t len) {
@@ -1060,6 +1137,20 @@ static int terminal_set_controller(Terminal *t, const char *attachment) {
     return 1;
 }
 
+/* Serialize opaque pipe metadata once, then store/emit the same bytes. */
+static char *json_dup(const Json *value) {
+    Buf b = {0};
+    if (json_write(&b, value) || b.len > MAX_METADATA_BYTES) {
+        buf_free(&b);
+        return NULL;
+    }
+    char *out = xmalloc(b.len + 1);
+    memcpy(out, b.data ? b.data : "", b.len);
+    out[b.len] = 0;
+    buf_free(&b);
+    return out;
+}
+
 static void handle_request(Client *c, Json *request) {
     if (!request || request->type != JSON_OBJECT) {
         resp_error(c, "invalid request");
@@ -1150,12 +1241,9 @@ static void handle_request(Client *c, Json *request) {
     if (!strcmp(op, "list")) {
         const char *mode = json_string(request, "mode", "pty");
         if (!strcmp(mode, "pipe")) {
-            Buf b = {0};
-            buf_puts(&b, "{\"type\":\"processes\",\"processes\":[]}");
-            response(c, &b);
-            buf_free(&b);
+            send_processes(c, MODE_PIPE);
         } else if (!strcmp(mode, "pty")) {
-            send_processes(c);
+            send_processes(c, MODE_PTY);
         } else {
             resp_error(c, "invalid process mode");
         }
@@ -1168,6 +1256,15 @@ static void handle_request(Client *c, Json *request) {
         Terminal *t = terminal_find(request_id(request));
         if (!t) {
             resp_error(c, "unknown terminal");
+            return;
+        }
+        /* A pipe has no screen and no terminal master. Output replay and
+         * subscription still work on pipes; only terminal ops are rejected. */
+        if (t->mode != MODE_PTY &&
+            (!strcmp(op, "write") || !strcmp(op, "resize") || !strcmp(op, "control") ||
+             !strcmp(op, "input") || !strcmp(op, "snapshot") || !strcmp(op, "read_rows") ||
+             !strcmp(op, "rename"))) {
+            resp_error(c, "operation requires a pty process");
             return;
         }
         if (!strcmp(op, "get")) {
@@ -1427,12 +1524,164 @@ static void handle_request(Client *c, Json *request) {
         free(resolved);
         return;
     }
-    if (!strcmp(op, "wait")) {
-        resp_error(c, "wait is only supported for pipes");
+    if (!strcmp(op, "create_pipe")) {
+        const char *program = json_string(request, "program", "");
+        const char *cwd = json_string(request, "cwd", "");
+        const char *output_path = json_string(request, "output_path", "");
+        Json *env = json_get(request, "env");
+        Json *meta = json_get(request, "metadata");
+        if (!*program || !*cwd || cwd[0] != '/' || !*output_path || output_path[0] != '/') {
+            resp_error(c, "program, cwd and output_path are required; paths must be absolute");
+            return;
+        }
+        if (!env || env->type != JSON_OBJECT || !meta || meta->type != JSON_OBJECT) {
+            resp_error(c, "env and metadata must be objects");
+            return;
+        }
+        struct stat st;
+        if (stat(cwd, &st) || !S_ISDIR(st.st_mode)) {
+            Buf message = {0};
+            buf_printf(&message, "cwd is not a directory: %s", cwd);
+            resp_error(c, (const char *)message.data);
+            buf_free(&message);
+            return;
+        }
+        char *metadata = json_dup(meta);
+        if (!metadata) {
+            resp_error(c, "metadata must be an object of at most 1 MiB");
+            return;
+        }
+        char *resolved = NULL;
+        if (resolve_program(program, &resolved)) {
+            Buf message = {0};
+            buf_printf(&message, "program not found: %s", program);
+            resp_error(c, (const char *)message.data);
+            buf_free(&message);
+            free(metadata);
+            return;
+        }
+        char **argv = NULL;
+        size_t argc = 0;
+        if (make_argv(program, json_get(request, "args"), &argv, &argc)) {
+            free(resolved);
+            free(metadata);
+            resp_error(c, "args must be strings");
+            return;
+        }
+        char **envp = NULL;
+        size_t env_count = 0;
+        if (make_envp(env, &envp, &env_count)) {
+            free_vector(argv, argc);
+            free(resolved);
+            free(metadata);
+            resp_error(c, "env values must be strings");
+            return;
+        }
+        uint64_t started = ptime_ms();
+        Terminal *t = xcalloc(1, sizeof(Terminal));
+        t->mode = MODE_PIPE;
+        t->id = g_next_id++;
+        t->started_at = started;
+        t->cwd = xstrdup(cwd);
+        t->group_id = xstrdup(json_string(request, "group_id", ""));
+        t->output_path = xstrdup(output_path);
+        t->metadata = metadata;
+        t->output_fd = -1;
+        /* Screen is unused for pipes, but keeping it valid makes generic ops safe. */
+        screen_init(&t->screen, 80, 24);
+        int sink = -1;
+        if (pipe_spawn(resolved, argv, envp, cwd, output_path, &sink, &t->pty)) {
+            if (sink >= 0) close(sink);
+            resp_error(c, "failed to start pipe");
+            screen_free(&t->screen);
+            free(t->cwd);
+            free(t->group_id);
+            free(t->output_path);
+            free(t->metadata);
+            free(t);
+        } else {
+            t->output_fd = sink;
+            terminal_add(t);
+            send_created(c, t);
+        }
+        free_vector(envp, env_count);
+        free_vector(argv, argc);
+        free(resolved);
         return;
     }
-    if (!strcmp(op, "create_pipe") || !strcmp(op, "signal") || !strcmp(op, "set_metadata")) {
-        resp_error(c, "unsupported request");
+    if (!strcmp(op, "wait")) {
+        Terminal *t = terminal_find(request_id(request));
+        if (!t) {
+            resp_error(c, "process not found");
+            return;
+        }
+        if (t->mode != MODE_PIPE) {
+            resp_error(c, "wait is only supported for pipes");
+            return;
+        }
+        if (t->exit_sent) {
+            send_exited(c, t);
+            return;
+        }
+        for (size_t i = 0; i < t->waiter_count; i++) {
+            if (t->waiters[i] == c) return; /* already waiting on this connection */
+        }
+        Client **next = realloc(t->waiters, (t->waiter_count + 1) * sizeof(Client *));
+        if (!next) {
+            resp_error(c, "out of memory");
+            return;
+        }
+        t->waiters = next;
+        t->waiters[t->waiter_count++] = c;
+        /* No response now: `broadcast_exited` streams exactly one Exited reply. */
+        return;
+    }
+    if (!strcmp(op, "signal")) {
+        Terminal *t = terminal_find(request_id(request));
+        if (!t) {
+            resp_error(c, "process not found");
+            return;
+        }
+        if (t->mode != MODE_PIPE) {
+            resp_error(c, "signal is only supported for pipes");
+            return;
+        }
+        const char *name = json_string(request, "signal", "");
+        int sig = 0;
+        if (!strcmp(name, "SIGTERM")) sig = SIGTERM;
+        else if (!strcmp(name, "SIGINT")) sig = SIGINT;
+        else if (!strcmp(name, "SIGKILL")) sig = SIGKILL;
+        if (!sig) {
+            resp_error(c, "unsupported signal");
+            return;
+        }
+        pty_signal(&t->pty, sig);
+        resp_ok(c);
+        return;
+    }
+    if (!strcmp(op, "set_metadata")) {
+        Terminal *t = terminal_find(request_id(request));
+        if (!t) {
+            resp_error(c, "process not found");
+            return;
+        }
+        if (t->mode != MODE_PIPE) {
+            resp_error(c, "set_metadata is only supported for pipes");
+            return;
+        }
+        Json *meta = json_get(request, "metadata");
+        if (!meta || meta->type != JSON_OBJECT) {
+            resp_error(c, "metadata must be an object");
+            return;
+        }
+        char *value = json_dup(meta);
+        if (!value) {
+            resp_error(c, "metadata exceeds 1 MiB limit");
+            return;
+        }
+        free(t->metadata);
+        t->metadata = value;
+        resp_ok(c);
         return;
     }
     Buf message = {0};
@@ -1507,6 +1756,71 @@ static void pump_pty(Terminal *t) {
         }
         t->fd_closed = 1;
     }
+}
+
+/*
+ * Pipe output is persisted to output_path first, then replayed/broadcast with
+ * the same offset semantics as a terminal. A file write failure is reported in
+ * PipeInfo/Exited but never stalls the reader.
+ */
+static void pump_pipe(Terminal *t) {
+    if (!t || t->mode != MODE_PIPE) return;
+    if (t->pty.master >= 0 && !t->eof) {
+        for (;;) {
+            unsigned char chunk[READ_CHUNK];
+            ssize_t n = read(t->pty.master, chunk, sizeof(chunk));
+            if (n > 0) {
+                if (t->output_fd >= 0 && !t->output_error) {
+                    size_t off = 0;
+                    while (off < (size_t)n) {
+                        ssize_t w = write(t->output_fd, chunk + off, (size_t)n - off);
+                        if (w > 0) {
+                            for (ssize_t k = 0; k < w; k++) {
+                                if (chunk[off + (size_t)k] == '\n') t->output_lines++;
+                            }
+                            off += (size_t)w;
+                            continue;
+                        }
+                        if (w < 0 && errno == EINTR) continue;
+                        t->output_error = xstrdup(strerror(errno ? errno : EIO));
+                        break;
+                    }
+                }
+                uint64_t start = 0, end = 0;
+                replay_append(t, chunk, (size_t)n, &start, &end);
+                broadcast_output(t, start, end, chunk, (size_t)n);
+                continue;
+            }
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            t->eof = 1;
+            break;
+        }
+    }
+
+    int state = pty_wait(&t->pty);
+    if (state < 0) return;
+    if (state > 0 && !t->drain_deadline) {
+        /* Upstream drains 1s in case a grandchild still holds the write end. */
+        t->drain_deadline = monotonic_ms() + DRAIN_AFTER_EXIT_MS;
+    }
+    if (!t->exit_sent && state > 0 &&
+        (t->eof || (t->drain_deadline && monotonic_ms() >= t->drain_deadline))) {
+        t->exit_sent = 1;
+        if (t->pty.exited_at < t->started_at) t->pty.exited_at = t->started_at;
+        broadcast_exited(t);
+        if (!t->fd_closed && t->pty.master >= 0) {
+            close(t->pty.master);
+            t->pty.master = -1;
+        }
+        t->fd_closed = 1;
+    }
+}
+
+static void pump_process(Terminal *t) {
+    if (!t) return;
+    if (t->mode == MODE_PIPE) pump_pipe(t);
+    else pump_pty(t);
 }
 
 static void close_finished_clients(void) {
@@ -1587,12 +1901,12 @@ static void event_loop(void) {
                     size_t slot = indexes[i];
                     if (slot < g_terminal_count && fds[i].fd == g_terminals[slot]->pty.master &&
                         (fds[i].revents & (POLLIN | POLLHUP))) {
-                        pump_pty(g_terminals[slot]);
+                        pump_process(g_terminals[slot]);
                     }
                 }
             }
         }
-        for (size_t i = 0; i < g_terminal_count; i++) pump_pty(g_terminals[i]);
+        for (size_t i = 0; i < g_terminal_count; i++) pump_process(g_terminals[i]);
         close_finished_clients();
         free(fds);
         free(kinds);
