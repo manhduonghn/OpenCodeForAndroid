@@ -4,11 +4,35 @@
 **Phạm vi:** runtime Termux-like của `com.opencode.android`, JDK/Gradle/AAPT2, môi trường C/C++ trên thiết bị, và giới hạn địa chỉ prefix 31 byte.
 **Cách đọc:** `[XN]` = đã xác nhận bằng file trên máy/mã nguồn; `[GT]` = giả thuyết, cần chạy trên thiết bị để khẳng định.
 
-> **Giới hạn kiểm chứng:** agent chỉ đọc/ghi file được; tool `shell` trả `unsupported request` do **capability gap của helper PTY** (`native/pty-c/opencode-pty.c:1435` từ chối `create_pipe`/`signal`/`set_metadata`), **không phải thiếu quyền** — phân tích đầy đủ tại `docs/OPENCODE_SHELL_CAPABILITY_REPORT.md`. Vì vậy phần lớn báo cáo này là điều tra tĩnh + ảnh chụp state thực tế của app; các lệnh kiểm chứng do người dùng chạy trong Terminal panel và paste output (mục 2.5). Đây cũng là lý do docs cũ (`TERMUX_DAEMON_AND_API.md:632-635`, `LIBRARY_FIXUPS.md:223`) để mục "JDK chạy được" ở trạng thái **chưa kiểm chứng trên máy**.
+> **Giới hạn kiểm chứng — CẬP NHẬT 21/11/2026 (phiên sau):** tool `shell` đã chạy đầy đủ sau các commit `3c8e0f9`/`9f05e27`/`db57df3` (xem mục 0 của `OPENCODE_SHELL_CAPABILITY_REPORT.md`). Agent tự chạy lệnh được, không cần bạn paste output nữa. Tuy nhiên **phiên cài đặt hiện tại đã bị reset** (uid `u0_a404`, trước đó `u0_a403`): `java: command not found`, `JAVA_HOME`/`ANDROID_HOME` rỗng, không có NDK. Mục 2.5 bên dưới là **kết quả của phiên cũ**; mục 1.2/1.3 trùng với state hiện tại nhưng nên đọc cùng mục 0. Số liệu mới nằm ngay dưới đây. Phần còn lại giữ nguyên làm hồ sơ điều tra.
 
 ---
 
-## 1. Ảnh chụp hiện trạng
+## 0. Ảnh chụp phiên hiện tại (cập nhật cuối ngày 21/11/2026)
+
+`[XN]` Tất cả số liệu dưới đây lấy trực tiếp từ harness Android trong phiên mới:
+
+| Mục | Giá trị hiện tại | Bằng chứng |
+| --- | --- | --- |
+| OpenCode CLI | `v2.3.2` | `opencode --version` |
+| Helper terminal | `opencode-pty 1.0.0 (android-c, protocol 9)` | `~/.opencode/bin/opencode-pty --version`, stamp `2 31 arm64-v8a …` |
+| Tool `shell` | Đầy đủ pipe/exit code/pipeline/background | `sh -c '…; exit 7'` → `exit=7`; `echo abc \| grep -q b` → `0`; `(sleep …; echo …) & wait` → `0` |
+| Quyền OpenCode | Không có rule thu hẹp | Không có `opencode.json(c)`, `.opencode/`, `AGENTS.md`; base policy `allow *` |
+| uid / SELinux | `u0_a404`, `untrusted_app_27` thay vì `u0_a403` | `id` → phiên cài đặt đã reset |
+| Gói đã cài | Đúng 31 gói nền tảng | `pkg list-installed` exit=0; vẫn có `bash/git/gh/rg/glibc/openssl/...` |
+| JDK / build tool | **Không có** `java`, `javac`, `aapt2`, `clang`, `make`, `cmake`, `pkg-config` | `command -v` trống; `java -version` → `command not found` |
+| `JAVA_HOME` / `ANDROID_HOME` | Đều rỗng | `env` trong shell; không có SDK ở mọi đường dẫn quen thuộc |
+| Server | Sống, `/api/info` phản hồi | `opencode api get /api/info` exit=0, `http://127.0.0.1:49374` |
+
+**Hệ quả:**
+
+1. Agent đã có đủ công cụ lõi để đọc, sửa, tìm kiếm, chạy lệnh và gọi API — không còn phụ thuộc vào việc bạn paste output từ Terminal panel.
+2. Agent **chưa build được APK ngay lúc này**: JDK và Android SDK đã mất cùng lần reset dữ liệu. Đây là provisioning của runtime, không phải lỗi tool OpenCode. Có thể tự khôi phục qua shell: `pkg install -y openjdk-17`, cài cmdline-tools/platform/build-tools rồi `pkg repair "$ANDROID_HOME"`.
+3. Giới hạn cứng lớp C vẫn giữ nguyên: uid app thường, không root/`apt`, `targetSdk=28` cố ý; bản APK có JNI terminal vẫn dùng artifact CI (xem mục 7.2).
+
+---
+
+## 1. Ảnh chụp hiện trạng (hồ sơ phiên cũ)
 
 ### 1.1 Runtime đang chạy
 
@@ -117,7 +141,9 @@ sh "$HOME/OpenCodeForAndroid/docs/scripts/java-install-diagnose.sh"
 Script cài `openjdk-17`, nạp lại env, in `java -version` / `javac -version` / `oc-run java -version` kèm exit code, trạng thái symlink, `cacerts`, `aapt2` và Gradle override.
 (Lưu ý đã sửa: `oc-run` tự chèn `--`, nên gọi `oc-run java -version`; viết `oc-run -- java -version` tạo `--` trùng và bị `oc-gopatch: --: executable file not found in $PATH`.)
 
-### 2.5 Kết quả kiểm chứng thực tế (21/11/2026, Android 13 / aarch64)
+### 2.5 Kết quả kiểm chứng thực tế (21/11/2026, Android 13 / aarch64) — HỒ SƠ PHIÊN CŨ
+
+> Đây là bằng chứng rằng JDK **từng** chạy đúng trong app. Dữ liệu app sau đó được reset (uid `u0_a403` → `u0_a404`) nên JDK/SDK không còn trên máy hiện tại; số liệu mới xem mục 0. Cách chạy script giờ đã khác: agent tự chạy được, không cần paste output.
 
 Script đã được chạy trên thiết bị. Kết luận **đã chốt**, không còn là phỏng đoán:
 
@@ -132,7 +158,7 @@ Script đã được chạy trên thiết bị. Kết luận **đã chốt**, kh
 | `aapt2` | `bin/aapt2` 3,59 MB, override `android.aapt2FromMavenOverride` đã có trong `~/.gradle/gradle.properties` | J6 **xong** |
 | `ANDROID_HOME` | `<unset>`; `$HOME/Android/Sdk`, `$HOME/android-sdk`, `$HOME/sdk`, `$PREFIX/opt/android-sdk`, `$PREFIX/share/android-sdk` đều không có SDK | **Đây mới là lý do build APK không chạy**: Java ổn, nhưng `sdkmanager`/Gradle không có SDK. Cần cài cmdline-tools + platform/build-tools rồi `pkg repair "$ANDROID_HOME"` để rewrite shebang |
 
-**Kết luận cuối:** cài Java trong app này **hoạt động đúng**. Triệu chứng "build APK lỗi" không nằm ở JDK/aapt2/relocation 31 byte mà ở **thiếu Android SDK** (và, nếu có SDK, cần `./gradlew --stop` để daemon cũ nhặt env mới). Việc cần sửa trong code chỉ còn: (a) làm env tự refresh ngay trong shell hiện tại thay vì bắt user source, (b) bỏ `--` thừa trong `oc-run` cho thân thiện, (c) cập nhật docs về `cacerts` thay vì `jssecacerts`.
+**Kết luận cuối (phiên cũ):** cài Java trong app này **hoạt động đúng**. Triệu chứng "build APK lỗi" không nằm ở JDK/aapt2/relocation 31 byte mà ở **thiếu Android SDK** (và, nếu có SDK, cần `./gradlew --stop` để daemon cũ nhặt env mới). Ở phiên hiện tại cả JDK lẫn SDK đều phải cài lại từ đầu — xem mục 0. Việc cần sửa trong code chỉ còn: (a) làm env tự refresh ngay trong shell hiện tại thay vì bắt user source, (b) bỏ `--` thừa trong `oc-run` cho thân thiện, (c) cập nhật docs về `cacerts` thay vì `jssecacerts`.
 
 ---
 
@@ -257,7 +283,7 @@ grep -E 'JAVA_HOME|LD_LIBRARY_PATH' "$PREFIX/etc/opencode-env.sh"
 
 | Ưu tiên | Việc | File dự kiến | Tiêu chí xong |
 | --- | --- | --- | --- |
-| P0 | ~~Xác nhận Java trên device~~ **ĐÃ XONG** (2.5): `java`/`javac` exit=0 | `docs/scripts/java-install-diagnose.sh` | Có log thật, các giả thuyết J1/J2/J5/J6 đã chốt |
+| P0 | ~~Xác nhận Java trên device~~ **ĐÃ XONG trong phiên cũ** (2.5): `java`/`javac` exit=0 — **đã reset, cần cài lại** (mục 0) | `docs/scripts/java-install-diagnose.sh` | Có log thật, các giả thuyết J1/J2/J5/J6 đã chốt |
 | P0 | Bổ sung proof `aapt2` (bỏ `jssecacerts` khỏi docs) | `OpenCodePackages.kt`, docs | Phát hiện cài thiếu `aapt2` qua marker thay vì chỉ kiểm tra `java` |
 | P0 | Refresh env ngay sau `configureJdk()` | `OpenCodePackages.kt`, `OpenCodeBootstrap.kt` | Không cần `. opencode-env.sh` thủ công trong shell hiện tại |
 | P1 | Bỏ `--` thừa do wrapper `oc-run` truyền | `OpenCodeBootstrap.kt:2707` | `oc-run -- java -version` không còn báo `--: not found` |

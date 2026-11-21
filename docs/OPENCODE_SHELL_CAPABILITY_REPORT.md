@@ -1,12 +1,51 @@
 # Báo cáo: vì sao agent không dùng được lệnh shell, và cách lấy lại quyền đó
 
 **Ngày:** 2026-11-21
+**Cập nhật:** 2026-11-21 (phiên sau) — **lỗi `unsupported request` đã được vá**; xem mục 0. Các mục 1–6 giữ nguyên phần phân tích gốc, chỉ bổ sung ghi chú về trạng thái hiện tại.
 **Câu hỏi:** "Tại sao bạn không toàn quyền sử dụng và thực hiện lệnh shell trong môi trường, cách để bạn toàn quyền sử dụng?"
-**Kết luận ngắn:** **Đây không phải lỗi xin quyền (permission).** OpenCode V2 mặc định đã `allow *`; không có file cấu hình nào thu hẹp quyền. Lệnh shell bị chặn ở **lớp năng lực (capability)**: tool `shell` đi qua helper PTY do chính repo này tự build, và helper đó **từ chối các op cần thiết để chạy lệnh không tương tác** bằng chuỗi `unsupported request`. Ngoài ra còn một lớp nữa không thể gỡ bằng cấu hình: **sandbox Android** (uid `u0_a403`, SELinux `untrusted_app_27`).
+**Kết luận ngắn (tại thời điểm điều tra):** **Đây không phải lỗi xin quyền (permission).** OpenCode V2 mặc định đã `allow *`; không có file cấu hình nào thu hẹp quyền. Lệnh shell bị chặn ở **lớp năng lực (capability)**: tool `shell` đi qua helper PTY do chính repo này tự build, và helper đó **từ chối các op cần thiết để chạy lệnh không tương tác** bằng chuỗi `unsupported request`. Ngoài ra còn một lớp nữa không thể gỡ bằng cấu hình: **sandbox Android** (uid `u0_a403`, SELinux `untrusted_app_27`).
 
-> Đây là lý do script Java ở mục trước phải do **bạn** chạy trong Terminal panel rồi paste output — tôi chỉ đọc/ghi file được. Cách làm đó đã chứng minh hiệu quả (`java -version` exit=0).
+> **Không còn đúng nữa:** script Java giờ có thể do agent tự chạy; không cần bạn chạy trong Terminal panel rồi paste output. Lý do lịch sử của cách làm đó là capability gap của helper PTY, đã được sửa (mục 0).
 
 Quy ước: `[XN]` = có bằng chứng trực tiếp (mã nguồn/log/file); `[GT]` = suy luận có cơ sở, cần thử nghiệm để chốt.
+
+## 0. Cập nhật: tool `shell` đã hoạt động đầy đủ
+
+`[XN]` Bản vá nửa pipe của giao thức 9 đã vào repo và được cài trên máy:
+
+| Mốc | Bằng chứng |
+| --- | --- |
+| `3c8e0f9` | thêm `pipe_spawn` và JSON writer (`native/pty-c/pty_core.c`, `util.c`) |
+| `9f05e27` | implement `create_pipe`, `wait`, `signal`, `set_metadata` trong `native/pty-c/opencode-pty.c` |
+| `db57df3` | sửa cast cho `-Werror` |
+| `0e195a5` | ghi lại tài liệu nghiên cứu (báo cáo này và `PTY_C_PIPE_SUPPORT_RESEARCH.md`) |
+
+Code hiện tại: `create_pipe` ở `opencode-pty.c:1553`, `wait` ở `:1638`, `signal` ở `:1665`, `set_metadata` ở `:1688`. Nhánh `unsupported request: <op>` ở `:1713` giờ chỉ dành cho op không được định nghĩa; thông báo `wait is only supported for pipes` ở `:1645` chỉ áp cho PTY tương tác, đúng thiết kế upstream.
+
+Helper đã cài: `~/.opencode/bin/opencode-pty --version` → `opencode-pty 1.0.0 (android-c, protocol 9)`, stamp `2 31 arm64-v8a …`. CLI: `opencode v2.3.2`.
+
+Kiểm chứng trực tiếp trong harness Android (không cần paste output nữa):
+
+```text
+$ sh -c 'printf "out\n"; printf "err\n" >&2; exit 7'; echo "exit=$?"
+out
+err
+exit=7
+$ echo abc | grep -q b; echo "pipeline=$?"
+pipeline=0
+$ (sleep 0.01; echo bg-ok) & wait; echo "wait=$?"
+bg-ok
+wait=0
+$ pkg list-installed | head -1  → exit 0
+$ opencode api get /api/info   → exit 0 (127.0.0.1:49374)
+```
+
+Hệ quả:
+
+- **Lớp B (năng lực)** đã đóng; phương án B3 (`bạn chạy rồi paste`) không còn cần thiết.
+- **Lớp A (quyền)** vẫn như cũ: không có file cấu hình nào trong repo/home, base policy vẫn `allow *`.
+- **Lớp C (Android)** không đổi: tiến trình vẫn là app thường (`u0_a404`, `untrusted_app_27` trong phiên hiện tại), không root, không `apt`. Đây là giới hạn hệ điều hành, không phải lỗi tool.
+- Cấu hình OpenCode V2 không cần sửa để khôi phục shell: docs `https://opencode.ai/docs/tools/` và `/permissions/` xác nhận `shell` là tool lõi, quyền mặc định đã mở.
 
 ---
 
@@ -15,10 +54,10 @@ Quy ước: `[XN]` = có bằng chứng trực tiếp (mã nguồn/log/file); `[
 | Lớp | Cái gì quyết định | Trạng thái hiện tại | Có sửa bằng `opencode.jsonc` được không |
 | --- | --- | --- | --- |
 | **A. Quyền tool OpenCode** | `permissions` / `policies`, file `opencode.json(c)` | `[XN]` **Đã mở sẵn** (base policy `{action:"*",resource:"*",effect:"allow"}`), không có config file nào trong repo/home | Không cần; sửa cũng không đổi triệu chứng |
-| **B. Đường dẫn thực thi shell của tool** | helper `opencode-pty` / cách harness spawn lệnh | `[XN]` helper trả `unsupported request` cho `create_pipe`, `signal`, `set_metadata` | **Không** — phải sửa code/build |
+| **B. Đường dẫn thực thi shell của tool** | helper `opencode-pty` / cách harness spawn lệnh | `[XN]` helper trả `unsupported request` cho `create_pipe`, `signal`, `set_metadata` — **đã sửa, xem mục 0** | **Không** — phải sửa code/build (đã làm) |
 | **C. Hệ điều hành Android** | uid, SELinux, targetSdk, quyền app | `[XN]` `u0_a403`, `untrusted_app_27`, Android 13 | **Không** — chỉ root/host khác mới thoát |
 
-Lỗi ta gặp nằm ở **B**, không phải A hay C.
+Lỗi đã gặp nằm ở **B**, không phải A hay C — và B đã được sửa (mục 0). Lớp C vẫn là giới hạn cứng của Android.
 
 ---
 
@@ -146,11 +185,11 @@ Hoặc khi hiện dialog phê duyệt, chọn **Allow always** để lưu rule d
 
 ## 4. Khuyến nghị
 
-1. **Đừng tốn thời gian sửa `opencode.jsonc`** cho trường hợp này — quyền đã mở sẵn, lỗi là `unsupported request` dòng 1435.
-2. Nếu mục tiêu là để tôi tự chạy `pkg install`, `./gradlew`, smoke test C/C++: làm **B1**, kèm test pipe/exit code. Đây là thay đổi code duy nhất giải quyết triệt để.
-3. Nếu chỉ cần kết quả nhanh: dùng **B3** như đã làm với Java.
-4. Khi viết lại báo cáo Java, ghi rõ "agent không tự chạy lệnh do capability gap của PTY helper, không do thiếu quyền" để tránh hiểu nhầm.
-5. Sau khi vá B1, chạy lại script `docs/scripts/java-install-diagnose.sh` **từ agent** để chứng minh vòng lặp khép kín (không cần paste).
+1. **Đừng tốn thời gian sửa `opencode.jsonc`** cho trường hợp này — quyền đã mở sẵn, lỗi là `unsupported request` dòng 1435 (cũ).
+2. ~~Nếu mục tiêu là để tôi tự chạy `pkg install`, `./gradlew`, smoke test C/C++: làm **B1**, kèm test pipe/exit code.~~ **ĐÃ LÀM:** B1 đã được triển khai qua `3c8e0f9`/`9f05e27`/`db57df3` và kiểm chứng ở mục 0.
+3. ~~Nếu chỉ cần kết quả nhanh: dùng **B3** như đã làm với Java.~~ **Không còn cần** — agent tự chạy lệnh được.
+4. Khi đọc lại báo cáo Java cũ, ghi rõ lý do lịch sử là "capability gap của PTY helper, không phải thiếu quyền"; lý do đó đã không còn sau bản vá.
+5. Script `docs/scripts/java-install-diagnose.sh` giờ có thể chạy trực tiếp từ agent. Tuy nhiên ở phiên cài đặt hiện tại JDK/SDK đã bị reset (xem mục 0 của `LINUX_RUNTIME_AND_TOOLCHAIN_REPORT.md`), nên cần `pkg install -y openjdk-17` trước khi chạy script.
 
 ---
 
@@ -158,7 +197,7 @@ Hoặc khi hiện dialog phê duyệt, chọn **Allow always** để lưu rule d
 
 | Thử | Kết quả nếu là A (quyền) | Kết quả nếu là B (năng lực) | Kết quả nếu là C (OS) |
 | --- | --- | --- | --- |
-| `shell echo hello` | Dialog Allow/Reject hoặc `denied` | `unsupported request` (hiện tại) | `permission denied` / `EACCES` / `operation not permitted` |
+| `shell echo hello` | Dialog Allow/Reject hoặc `denied` | `unsupported request` (trước bản vá); **hiện tại chạy bình thường** | `permission denied` / `EACCES` / `operation not permitted` |
 | Xem `opencode.jsonc` | Có rule `deny` | Không có rule nào | Không liên quan |
 | `id`, `context=` từ terminal | Bình thường | Bình thường | `u0_a...`, `untrusted_app`, không root |
 | `oc-run java -version` | — | Chạy được (sửa script xong) | SIGSYS nếu binary tĩnh không được patch |
@@ -170,7 +209,7 @@ Hoặc khi hiện dialog phê duyệt, chọn **Allow always** để lưu rule d
 - `https://opencode.ai/docs/permissions/` — base policy, thứ tự rule, `ask`/`allow`/`deny`, `policies`, approvals.
 - `https://opencode.ai/docs/tools/` — `shell`, `execute` (Code Mode), permission của từng tool.
 - `https://opencode.ai/docs/config/` — vị trí `opencode.jsonc`.
-- `native/pty-c/opencode-pty.c:4-8, 972, 1150-1167, 1253, 1430-1441` — protocol 9, env an toàn, tập op, nhánh `unsupported request`.
+- `native/pty-c/opencode-pty.c:4-8, 972, 1150-1167, 1253, 1430-1441` — protocol 9, env an toàn, tập op, nhánh `unsupported request` **trước bản vá**; sau bản vá xem `:1553,1638,1665,1688,1713` (mục 0).
 - `docs/RUNTIME_PATH_HOOK.md:31, 236-247` — helper bionic, SIGSYS policy.
 - `docs/TERMUX_DAEMON_AND_API.md:369-370, 539-561, 618-619, 684` — `OPENCODE_PTY_BIN`, socket dir, env kế thừa, broadcast signature permission, targetSdk.
 - `docs/SESSION_RUNTIME_ENVIRONMENT.md:121-155` — runtime contract và helper PTY.
