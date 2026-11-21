@@ -180,6 +180,7 @@ Script đã được chạy trên thiết bị. Kết luận **đã chốt**, kh
 - `:app:testDebugUnitTest` trên thiết bị sau khi thêm hook: **127 tests, 0 failures** (`PythonSemaphoreFdTest` kiểm tra cài vào mọi `site-packages`, ghi đè file hỏng và idempotent; `TermuxSemaphorePathTest` vẫn kiểm tra prefix 34/52 byte).
 - CI Debug build `44887151136`: success; native helper dựng cho `arm64-v8a`/`x86_64`, e2e pass, APK `OpenCodeForAndroid-20261121-0859-aba2e44-debug.apk`. CI bản hook `44901205964`: success, APK `OpenCodeForAndroid-20261121-1156-88757e2-debug.apk`.
 - `[XN]` Cơ chế đã chạy thật trên thiết bị đang dùng root 31 byte, với mọi start method của Python 3.14. `[GT]` Chưa có thiết bị work profile/package name dài để chạy Python `multiprocessing` thật; phần đó mới chỉ được unit test (prefix 34/52 byte) và harness xác nhận, không khẳng định bằng thiết bị.
+- `[XN]` Sau khi cài APK `88757e2`: `base.apk` trên máy có SHA-256 `75c5bfcac3c2c683236612bc08c8813ed09855fbf8e1c70b758f25cf3e1fac41`, trùng artifact CI. App tự ghi lại `oc_semaphore_fd.py` lúc maintenance (khớp từng byte với nguồn Kotlin), rodata của thư viện vẫn là alias `/proc/self/fd/9/` + 24 dấu `/`, và `mp_matrix.py` in `fork OK` / `spawn OK` / `forkserver OK` / `MATRIX OK`.
 
 ### 3.5 Khuyến nghị
 
