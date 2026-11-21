@@ -126,12 +126,12 @@ static void keep_semaphore_fd(void) {
     if (dir == NULL || dir[0] == '\0') return;
     int fd = (int)syscall(SYS_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY);
     if (fd < 0) {
-        syscall(SYS_mkdir, dir, 0700);
+        syscall(SYS_mkdirat, AT_FDCWD, dir, 0700);
         fd = (int)syscall(SYS_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY);
     }
     if (fd < 0) return;
     if (fd != OC_SEMAPHORE_FD) {
-        if (syscall(SYS_dup2, fd, OC_SEMAPHORE_FD) < 0) {
+        if (syscall(SYS_dup3, fd, OC_SEMAPHORE_FD, 0) < 0) {
             syscall(SYS_close, fd);
             return;
         }
