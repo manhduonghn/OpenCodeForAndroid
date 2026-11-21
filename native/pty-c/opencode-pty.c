@@ -1145,7 +1145,7 @@ static char *json_dup(const Json *value) {
         return NULL;
     }
     char *out = xmalloc(b.len + 1);
-    memcpy(out, b.data ? b.data : "", b.len);
+    memcpy(out, b.data ? (const char *)b.data : "", b.len);
     out[b.len] = 0;
     buf_free(&b);
     return out;
