@@ -275,7 +275,7 @@ file thiếu hoặc bị cắt cụt (ví dụ sau khi app bị kill giữa lúc
 Ghi chú cho `multiprocessing`: `libandroid-posix-semaphore.so` của Termux cắm cứng
 `/data/data/com.termux/files/usr/tmp/sem.`, nên `sem_open` của Python chết với
 `FileNotFoundError` (locks, queue, `Pool`, `ProcessPoolExecutor`). `TermuxSemaphorePath`
-đổi chuỗi đó thành `/proc/self/fd/9/sem.` (19 byte, ngắn hơn 40 byte gốc nên không xê dịch
+đổi chuỗi đó thành `/proc/self/fd/9/sem.` (20 byte, ngắn hơn 40 byte gốc nên không xê dịch
 offset nào) và tạo thư mục `tmp` ở gốc sandbox — không phải `$PREFIX/tmp`. FD 9 được
 `pathmap`, `opencode-pty`, `oc-launcher` và JNI `pty.cpp` mở sẵn tới thư mục đó và giữ qua
 `execve`, nên alias hoạt động độc lập với application id, user id hay work profile. Giá trị thư mục

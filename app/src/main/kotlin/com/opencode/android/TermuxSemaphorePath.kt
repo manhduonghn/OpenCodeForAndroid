@@ -11,7 +11,7 @@ import java.nio.charset.StandardCharsets
  *
  * The path is rewritten in place with [ElfStrings] to [SEMAPHORE_ALIAS], a short alias that points
  * at the real directory through a descriptor kept open by every process that can execute commands.
- * The alias is 19 bytes, always shorter than the 40-byte compiled-in string, so no offset in the
+ * The alias is 20 bytes, always shorter than the 40-byte compiled-in string, so no offset in the
  * binary moves and the install path (package name, work profile, ... ) no longer matters. The real
  * directory is created by [ensureDirectory] and exported to the native processes as
  * `OC_SEMAPHORE_DIR`, because `sem_open` only creates the files inside it.
