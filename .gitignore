@@ -33,3 +33,6 @@ id_ed25519
 
 # Tài liệu nghiên cứu cục bộ (tải từ repo tham chiếu, không commit)
 .research/
+
+# Native binaries are produced by .github/workflows/native.yml, not committed.
+app/src/main/assets/native/
