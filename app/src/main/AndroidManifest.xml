@@ -76,6 +76,11 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- Doze-tolerant tick that revives the server when JobScheduler is throttled by the OEM. -->
+        <receiver
+            android:name=".OpenCodeKeepAliveReceiver"
+            android:exported="false" />
+
         <!-- Receives the package request of the terminal, see OpenCodePkgReceiver. A broadcast is
              used because 'am start-service' cannot start a service of another app on Android 11+
              ('Can't start from invalid source'). -->

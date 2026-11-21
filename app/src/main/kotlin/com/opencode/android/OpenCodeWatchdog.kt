@@ -1,5 +1,7 @@
 package com.opencode.android
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.app.job.JobInfo
 import android.app.job.JobParameters
 import android.app.job.JobScheduler
@@ -7,6 +9,7 @@ import android.app.job.JobService
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -30,6 +33,15 @@ object OpenCodeWatchdog {
     private const val INTERVAL_MS = 15 * 60 * 1000L
 
     /**
+     * Independent, Doze-tolerant tick. OEM battery managers delay periodic jobs far beyond 15
+     * minutes; a while-idle alarm is delivered even when the device is dozing and the app process
+     * was frozen, which is the state a backgrounded chat was stuck in on Honor/MagicOS.
+     */
+    private const val KEEP_ALIVE_REQUEST_CODE = 1741
+    private const val KEEP_ALIVE_INTERVAL_MS = 2 * 60 * 1000L
+    private const val KEEP_ALIVE_ACTION = "com.opencode.android.KEEP_ALIVE"
+
+    /**
      * Schedule the watchdog when the user enabled it (the default), cancel it otherwise.
      * Safe to call from the activity, the service and the boot receiver.
      */
@@ -40,9 +52,12 @@ object OpenCodeWatchdog {
             cancel(app)
             return
         }
+        // Arm the faster alarm first: even when JobScheduler is unavailable or later throttled by
+        // the ROM, the server still gets an independent chance to be revived every two minutes.
+        scheduleKeepAlive(app)
         val scheduler = app.getSystemService(JobScheduler::class.java)
         if (scheduler == null) {
-            Log.w(TAG, "JobScheduler is not available, the watchdog stays off.")
+            Log.w(TAG, "JobScheduler is not available, only the keep-alive alarm stays active.")
             return
         }
         val component = ComponentName(app, OpenCodeWatchdogJobService::class.java)
@@ -69,6 +84,34 @@ object OpenCodeWatchdog {
         }
     }
 
+    /**
+     * Arm the exact alarm that is allowed while the device is idle. Every call moves the tick two
+     * minutes out; the receiver re-arms it after each run. Cancelling is handled by [cancel].
+     */
+    @JvmStatic
+    fun scheduleKeepAlive(context: Context) {
+        val app = context.applicationContext
+        if (!OpenCodeSettings.watchdogEnabled(app) || OpenCodeSettings.stoppedByUser(app)) return
+        val alarm = app.getSystemService(AlarmManager::class.java) ?: return
+        try {
+            alarm.setExactAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + KEEP_ALIVE_INTERVAL_MS,
+                keepAliveIntent(app),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not arm the keep-alive alarm", e)
+        }
+    }
+
+    private fun keepAliveIntent(context: Context): PendingIntent {
+        val intent = Intent(context, OpenCodeKeepAliveReceiver::class.java).apply {
+            action = KEEP_ALIVE_ACTION
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getBroadcast(context, KEEP_ALIVE_REQUEST_CODE, intent, flags)
+    }
+
     /** Apply a change of the watchdog preference immediately. */
     @JvmStatic
     fun setEnabled(context: Context, enabled: Boolean) {
@@ -80,12 +123,19 @@ object OpenCodeWatchdog {
 
     @JvmStatic
     fun cancel(context: Context) {
+        val app = context.applicationContext
         try {
-            val scheduler = context.getSystemService(JobScheduler::class.java) ?: return
-            scheduler.cancel(JOB_ID)
-            scheduler.cancel(JOB_ID + 1)
+            app.getSystemService(JobScheduler::class.java)?.let { scheduler ->
+                scheduler.cancel(JOB_ID)
+                scheduler.cancel(JOB_ID + 1)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Could not cancel the watchdog", e)
+        }
+        try {
+            app.getSystemService(AlarmManager::class.java)?.cancel(keepAliveIntent(app))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not cancel the keep-alive alarm", e)
         }
     }
 

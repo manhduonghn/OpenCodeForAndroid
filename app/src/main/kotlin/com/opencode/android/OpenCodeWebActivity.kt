@@ -1520,19 +1520,25 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     }
 
     /**
-     * Ask once for the battery optimization exemption. Without it Doze can stop the server while
-     * the screen is off, which is exactly the case this app is used in. The prompt is recorded
-     * before it is shown, so a rotation or a second launch does not ask again; the button in the
-     * settings screen remains for users who choose "later".
+     * Ask for the battery optimization exemption until it is actually granted. Without it Doze and
+     * OEM ROMs (Honor/MagicOS in particular) freeze or kill the server when the screen is off, which
+     * is exactly how this app is used. The old "ask once" behaviour left a fresh install broken
+     * forever after a single "later", so the prompt now returns after a cooldown. The settings
+     * button stays available for immediate action.
      */
     private fun offerBatteryOptimizationOnce() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        if (OpenCodeSettings.batteryPromptShown(this)) return
-        OpenCodeSettings.setBatteryPromptShown(this, true)
         if (isIgnoringBatteryOptimizations()) return
+        if (!OpenCodeSettings.batteryPromptDue(this)) return
+        OpenCodeSettings.markBatteryPromptShown(this)
+        val oem = Build.MANUFACTURER.equals("HONOR", ignoreCase = true) ||
+            Build.MANUFACTURER.equals("HUAWEI", ignoreCase = true)
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.opencode_battery_prompt_title)
-            .setMessage(R.string.opencode_battery_prompt_message)
+            .setMessage(
+                if (oem) R.string.opencode_battery_prompt_message_honor
+                else R.string.opencode_battery_prompt_message,
+            )
             .setPositiveButton(R.string.opencode_battery_prompt_allow) { _, _ ->
                 requestIgnoreBatteryOptimizations()
             }

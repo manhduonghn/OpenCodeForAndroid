@@ -4,6 +4,16 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Minimum delay between two battery-exemption prompts. */
+internal const val BATTERY_PROMPT_COOLDOWN_MS = 24L * 60 * 60 * 1000
+
+/**
+ * Pure cooldown decision, separated from [Context] so it can be unit tested without Android.
+ * An install that never got a timestamp (older versions) is treated as due immediately.
+ */
+internal fun shouldOfferBatteryPrompt(shown: Boolean, lastMs: Long, nowMs: Long): Boolean =
+    !shown || lastMs <= 0L || nowMs - lastMs >= BATTERY_PROMPT_COOLDOWN_MS
+
 /**
  * Preferences of the settings screen.
  *
@@ -22,6 +32,7 @@ object OpenCodeSettings {
     private const val KEY_GIT_AUTO_COMMIT = "git_auto_commit"
     private const val KEY_LAST_SESSION = "last_session_id"
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
+    private const val KEY_BATTERY_PROMPT_LAST = "battery_prompt_last_ms"
     private const val KEY_REPO_PATHS = "repo_local_paths"
     private const val KEY_LAST_CLONE_DIR = "clone_last_dir"
     private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
@@ -111,15 +122,33 @@ object OpenCodeSettings {
         prefs(context).edit().putString(KEY_LAST_SESSION, normalized).apply()
     }
 
-    /**
-     * False until the app offered the battery optimization exemption once. Asking on every launch
-     * is hostile; the settings screen keeps the button for later.
-     */
+    /** True once the battery exemption was offered. Kept for older installs and the UI. */
     fun batteryPromptShown(context: Context): Boolean =
         prefs(context).getBoolean(KEY_BATTERY_PROMPT_SHOWN, false)
 
     fun setBatteryPromptShown(context: Context, shown: Boolean) {
         prefs(context).edit().putBoolean(KEY_BATTERY_PROMPT_SHOWN, shown).apply()
+    }
+
+    /**
+     * Whether the battery prompt should be shown again. The old code asked exactly once, so a user
+     * who tapped "later" on a fresh install was never asked again even though the ROM kept killing
+     * the server in the background. Keep asking with a cooldown until the exemption is granted.
+     */
+    fun batteryPromptDue(context: Context, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val p = prefs(context)
+        return shouldOfferBatteryPrompt(
+            shown = p.getBoolean(KEY_BATTERY_PROMPT_SHOWN, false),
+            lastMs = p.getLong(KEY_BATTERY_PROMPT_LAST, 0L),
+            nowMs = nowMs,
+        )
+    }
+
+    fun markBatteryPromptShown(context: Context, nowMs: Long = System.currentTimeMillis()) {
+        prefs(context).edit()
+            .putBoolean(KEY_BATTERY_PROMPT_SHOWN, true)
+            .putLong(KEY_BATTERY_PROMPT_LAST, nowMs)
+            .apply()
     }
 
     /**

@@ -284,3 +284,26 @@ grep -E 'JAVA_HOME|LD_LIBRARY_PATH' "$PREFIX/etc/opencode-env.sh"
 - `docs/LIBRARY_FIXUPS.md:91-103,176-223` — JDK notes + đề xuất #4 "đổi thứ tự LD_LIBRARY_PATH".
 - `docs/TERMUX_DAEMON_AND_API.md:388-445,622-635` — bundle, JDK, trạng thái chưa kiểm chứng.
 - State trên máy: `$PREFIX/.packages-installed`, `$PREFIX/etc/opencode-env.sh`, `$PREFIX/bin`, `$PREFIX/lib/pkgconfig`, `$HOME/.opencode/runtime.json`, `$HOME/.opencode/.maintenance`, data root `/data/data/com.opencode.android`.
+
+---
+
+## 7. Server không kết nối khi app ở nền (Honor/MagicOS)
+
+### 7.1 Chẩn đoán `[XN]` / `[GT]`
+
+| Mức | Phát hiện | Bằng chứng |
+| --- | --- | --- |
+| `[XN]` | Server **không hề chết do lỗi code** | Ngay lúc user báo “vừa mới bị lại”: `127.0.0.1:49374` mở, `/api/info` trả `200` với pid `21406`, `$HOME/.local/state/opencode/service.json` có url/password/pid đúng, `/proc/21406` còn sống |
+| `[XN]` | Không có lỗi đăng ký server | `markServerRunning()` luôn gọi `writeServiceRegistration()` sau khi spawn/adopt; file `service.json` được ghi lại mỗi lần server thay thế |
+| `[XN]` | App **không được bỏ tối ưu pin** | `dumpsys deviceidle whitelist` không có `com.opencode.android` |
+| `[XN]` | Lời nhắc quyền pin chỉ hỏi đúng **một lần** | `OpenCodeSettings.batteryPromptShown` là flag duy nhất; `offerBatteryOptimizationOnce()` trả về ngay khi flag true. Trên máy `battery_prompt_shown=true` nhưng vẫn chưa exempt → user đã chọn “Để sau” và không bao giờ được hỏi lại |
+| `[XN]` | Cơ chế khởi động lại hiện tại yếu khi bị ROM đóng băng | Heartbeat chạy trong tiến trình app (`handler.postDelayed`); JobScheduler watchdog chỉ 15 phút và bị ROM trì hoãn. Cả hai đều không chạy khi process bị freeze |
+| `[GT]` | Nguyên nhân triệu chứng “cài mới hay bị, dùng lâu data nhiều thì hết” | Honor/MagicOS đưa app mới vào nhóm bị quản lý pin chặt, kill/freeze service khi ra nền; sau một thời gian sử dụng, học máy và bớt kill. Không có thiết bị Honor thứ hai để khẳng định `[XN]` |
+
+### 7.2 Đã sửa
+
+- `[XN]` `OpenCodeSettings`: thêm mốc thời gian nhắc lại; `shouldOfferBatteryPrompt()` là hàm thuần (có unit test), cooldown 24 giờ, và xử lý cả bản cũ không có mốc.
+- `[XN]` `OpenCodeWebActivity`: tiếp tục hỏi cho đến khi thực sự được exempt; trên HONOR/HUAWEI dùng thông điệp riêng chỉ đúng mục Pin → “Không tối ưu” và “Khởi chạy tự động / Chạy nền”.
+- `[XN]` `OpenCodeWatchdog` + `OpenCodeKeepAliveReceiver`: alarm `setExactAndAllowWhileIdle` mỗi 2 phút, broadcast **explicit** (không export), tự re-arm, kiểm tra `/api/info` trên thread nền rồi gọi `startForegroundService` nếu server khônghealthy. `cancel()` hủy cả job lẫn alarm.
+- `[XN]` Build/local verification: `:app:testDebugUnitTest :app:assembleDebug` **BUILD SUCCESSFUL**, **131 tests / 0 failures / 0 errors**. APK local `app-debug.apk` SHA-256 `35085c4bc0dab29f0add0823a6a18a04f71d63dbb62703d98da32ead9396bbf2`, đã chép tới `/sdcard/Download/oc-keepalive-debug.apk`.
+- `[GT]` Hiệu quả cuối cùng trên Honor cần xác nhận sau khi cài APK mới: kỳ vọng server tự hồi trong ~2 phút mà không cần mở lại app. Trước mắt user nên mở **Cài đặt → Ứng dụng → OpenCode → Pin → Không tối ưu** và bật tự khởi động/chạy nền để loại hẳn nguyên nhân ROM.
