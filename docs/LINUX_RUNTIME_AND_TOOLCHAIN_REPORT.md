@@ -166,9 +166,9 @@ Script đã được chạy trên thiết bị. Kết luận **đã chốt**, kh
 | **A. Giữ 31, làm data-driven** | Tính `TERMUX_PREFIX`, `DATA_DIR` từ `context.dataDir`; một hằng `RELOCATION_REQUIRES_EQUAL_LENGTH`; self-test kiểm tra mọi alias sau maintenance; P4 đổi thành throw | Rẻ, ổn định, nhưng vẫn cấm đổi id | **Làm ngay (P1)** |
 | **B. Mở rộng ELF kiểu `gopatch`** | Dùng cơ chế append + sửa `p_offset`/`p_filesz` đã có trong `native/gopatch/patch.go:265-315` để thay chuỗi 31 byte bằng đường dẫn **tuỳ độ dài** (vd `$PREFIX` thật hoặc `/data/user/0/...`), rồi bỏ `require(... == 31)` | Bỏ hẳn constraint, hỗ trợ multi-user; nhược: phải test kỹ mọi ABI/ELF, file tăng vài chục byte, mất tính "in-place" | **P2, nếu cần đổi id hoặc hỗ trợ `/data/user/0`** |
 | **C. Giảm patch, tăng pathmap** | Chỉ patch `PT_INTERP`; mọi path còn lại nhờ `liboc-pathmap.so` + `OC_PREFIX` | Hợp lý cho binary glibc, **không áp được cho toolchain bionic** (pathmap build bằng glibc, không preload vào clang bionic được) | Chỉ bổ trợ |
-| **D. Short alias cố định** | Gộp PREFIX thành 1 alias ngắn có sẵn độ dài 31 | Không có đường dẫn ngắn nào app có quyền ghi ngoài `/data/data/<id>`; thực tế quay lại P1 | Không |
+| **D. Short alias qua FD (đã triển khai)** | Patch chuỗi của `libandroid-posix-semaphore.so` thành `/proc/self/fd/9/sem.` (19 byte); `pathmap`, `opencode-pty`, `oc-launcher` và JNI `pty.cpp` giữ FD 9 mở tới thư mục semaphore thật | Thoát constraint 31 cho trường hợp này mà không sửa ELF hay đổi applicationId; cần giữ descriptor qua `execve` (không đặt `FD_CLOEXEC`) | **Đã làm** |
 
-> Ghi chú: ý tưởng "thay bằng đường dẫn ngắn hơn" không cứu được — replacement ngắn hơn để lại byte thừa trong rodata và vẫn cần một thư mục thật có quyền ghi/exec; trên Android chỉ có `/data/data/<applicationId>` thoả mãn. Muốn thoát 31 phải **mở rộng ELF** (phương án B).
+> Ghi chú sửa lại: kết luận cũ cho rằng "không có đường dẫn ngắn nào app ghi được" chỉ đúng với đường dẫn **tĩnh**. Với `/proc/self/fd/N`, một descriptor mở tới thư mục thật cho phép ghi qua alias ngắn mà vẫn giữ nguyên offset ELF. Đo thực tế: `TERMUX_TMP` 40 byte, replacement 19 byte; `patch()` trả `1` cho mọi prefix, kể cả `/data/user/10/...` (43 byte) vốn trước đó trả `0`. Cơ chế FD chỉ áp dụng cho semaphore; các relocation 31 byte còn lại vẫn theo phương án A.
 
 ### 3.4 Khuyến nghị
 

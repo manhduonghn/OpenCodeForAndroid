@@ -19,8 +19,30 @@ class TermuxSemaphorePathTest {
     @Test
     fun replacementFitsTheCompiledInPath() {
         val replacement = TermuxSemaphorePath.replacement(releasePrefix)
-        assertEquals("/data/data/com.opencode.android/tmp/sem.", replacement)
-        assertEquals(TermuxSemaphorePath.TERMUX_TMP.length, replacement.length)
+        assertEquals("/proc/self/fd/9/sem.", replacement)
+        assertTrue(replacement.length < TermuxSemaphorePath.TERMUX_TMP.length)
+        assertEquals("/data/data/com.opencode.android",
+            TermuxSemaphorePath.directory(releasePrefix).parentFile!!.absolutePath)
+    }
+
+    @Test
+    fun patchWorksForWorkProfileAndLongPackageNames() {
+        val prefixes = listOf(
+            File("/data/user/10/com.opencode.android/files/usr"),
+            File("/data/user/0/com.example.with.a.very.long.package.name/files/usr"),
+        )
+        for (prefix in prefixes) {
+            val library = File(temporary.newFolder(), "libandroid-posix-semaphore.so")
+            val original = ("ELF header\u0000" + TermuxSemaphorePath.TERMUX_TMP +
+                "\u0000trailing string").toByteArray(StandardCharsets.ISO_8859_1)
+            library.writeBytes(original)
+
+            assertEquals(1, TermuxSemaphorePath.patch(library, prefix))
+            val text = String(library.readBytes(), StandardCharsets.ISO_8859_1)
+            assertFalse(text.contains(TermuxSemaphorePath.TERMUX_TMP))
+            assertTrue(text.contains(TermuxSemaphorePath.SEMAPHORE_ALIAS))
+            assertEquals(original.size, library.readBytes().size)
+        }
     }
 
     @Test

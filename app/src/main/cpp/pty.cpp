@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -110,6 +111,40 @@ void closeInheritedDescriptors() {
     closedir(directory);
 }
 
+/**
+ * The relocated libandroid-posix-semaphore.so builds semaphore names below
+ * /proc/self/fd/9/sem.. Open descriptor 9 on the real directory after
+ * closeInheritedDescriptors(), so the shell and every program it starts can
+ * use the short alias regardless of the install path length. No O_CLOEXEC is
+ * used: the descriptor must survive execve(). The directory comes from the
+ * environment passed to execve, not from the app process environment.
+ */
+void keepSemaphoreDescriptor(char *const *environment) {
+    const char prefix[] = "OC_SEMAPHORE_DIR=";
+    const char *directory = nullptr;
+    for (char *const *item = environment; item != nullptr && *item != nullptr; ++item) {
+        if (strncmp(*item, prefix, sizeof(prefix) - 1) == 0) {
+            directory = *item + sizeof(prefix) - 1;
+            break;
+        }
+    }
+    if (directory == nullptr || *directory == '\0') return;
+
+    int descriptor = ::open(directory, O_RDONLY | O_DIRECTORY);
+    if (descriptor < 0) {
+        ::mkdir(directory, 0700);
+        descriptor = ::open(directory, O_RDONLY | O_DIRECTORY);
+    }
+    if (descriptor < 0) return;
+    if (descriptor != 9) {
+        if (dup2(descriptor, 9) < 0) {
+            ::close(descriptor);
+            return;
+        }
+        ::close(descriptor);
+    }
+}
+
 void resetSignalState() {
     sigset_t empty;
     sigemptyset(&empty);
@@ -142,6 +177,7 @@ void resetSignalState() {
     }
     if (slave.get() > STDERR_FILENO) slave.close();
     closeInheritedDescriptors();
+    keepSemaphoreDescriptor(environment);
 
     if (chdir(workingDirectory) != 0) chdir("/");
     execve(executable, arguments, environment);

@@ -1,6 +1,7 @@
 package com.opencode.android.terminal
 
 import com.opencode.android.OpenCodeBootstrap
+import com.opencode.android.TermuxSemaphorePath
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.AtomicMoveNotSupportedException
@@ -73,6 +74,7 @@ internal object TerminalLauncher {
             put("COLORTERM", "truecolor")
             put("LANG", "C.UTF-8")
             put("TMPDIR", tmp.absolutePath)
+            put("OC_SEMAPHORE_DIR", TermuxSemaphorePath.directory(File(OpenCodeBootstrap.PREFIX)).absolutePath)
             put("DEBIAN_FRONTEND", "noninteractive")
             put("OPENCODE_TERMINAL", "1")
             // Bash resolves its own libraries before the rc file runs; the rc
@@ -95,6 +97,7 @@ internal object TerminalLauncher {
             put("COLORTERM", "truecolor")
             put("LANG", "C.UTF-8")
             put("TMPDIR", tmp.absolutePath)
+            put("OC_SEMAPHORE_DIR", TermuxSemaphorePath.directory(File(OpenCodeBootstrap.PREFIX)).absolutePath)
             put("PS1", "\\$ ")
             put("ENV", install(FALLBACK_RC, fallbackRc()).absolutePath)
         }

@@ -112,6 +112,33 @@ extern char **environ;
 #define TERMUX_PREFIX_LEN (sizeof(TERMUX_PREFIX) - 1)
 #define TERMUX_HOME_LEN (sizeof(TERMUX_HOME) - 1)
 
+/* Descriptor kept open on the semaphore directory for the short ELF alias. */
+#define OC_SEMAPHORE_FD 9
+
+/*
+ * The relocated libandroid-posix-semaphore.so builds names below
+ * /proc/self/fd/9/sem. The descriptor is inherited across execve because this
+ * helper never sets FD_CLOEXEC. Use a raw syscall here so the call does not go
+ * through the open()/openat() hooks defined below while they are being set up.
+ */
+static void keep_semaphore_fd(void) {
+    const char *dir = getenv("OC_SEMAPHORE_DIR");
+    if (dir == NULL || dir[0] == '\0') return;
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) {
+        syscall(SYS_mkdir, dir, 0700);
+        fd = (int)syscall(SYS_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY);
+    }
+    if (fd < 0) return;
+    if (fd != OC_SEMAPHORE_FD) {
+        if (syscall(SYS_dup2, fd, OC_SEMAPHORE_FD) < 0) {
+            syscall(SYS_close, fd);
+            return;
+        }
+        syscall(SYS_close, fd);
+    }
+}
+
 /* The map is read-only after the constructor, no locking is needed. */
 static char g_prefix[PATH_MAX];
 static size_t g_prefix_len;
@@ -210,6 +237,7 @@ __attribute__((constructor)) static void pathmap_init(void) {
      * of this library after a fork. */
     popen_lock_init();
     install_sigsys_policy();
+    keep_semaphore_fd();
 }
 
 /*

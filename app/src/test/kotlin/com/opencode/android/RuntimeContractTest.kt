@@ -118,6 +118,26 @@ class RuntimeContractTest {
     }
 
     @Test
+    fun semaphoreDirectoryFollowsTheInstallPathInEveryEnvironment() {
+        val contract = RuntimeEnv.build(inputs())
+        assertEquals("/data/data/com.opencode.android/tmp", contract.env["OC_SEMAPHORE_DIR"])
+        assertTrue(contract.shellExports().contains("export OC_SEMAPHORE_DIR='/data/data/com.opencode.android/tmp'"))
+        assertEquals(
+            "/data/data/com.opencode.android/tmp",
+            contract.spawnEnvironment("secret", null)["OC_SEMAPHORE_DIR"],
+        )
+
+        val workProfile = RuntimeEnv.build(
+            inputs().copy(prefix = "/data/user/10/com.example.with.a.long.package/files/usr"),
+        )
+        assertEquals(
+            "/data/user/10/com.example.with.a.long.package/tmp",
+            workProfile.env["OC_SEMAPHORE_DIR"],
+        )
+        assertTrue(workProfile.shellExports().contains("export OC_SEMAPHORE_DIR="))
+    }
+
+    @Test
     fun shellQuoteKeepsSingleQuotedValuesValid() {
         assertEquals("a'\\''b", RuntimeContract.shellQuote("a'b"))
     }

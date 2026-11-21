@@ -25,7 +25,34 @@
 #define DEFAULT_PREFIX "/data/data/com.opencode.android/files/usr"
 #define DEFAULT_HOME "/data/data/com.opencode.android/files/home"
 
+/* Descriptor kept open on the semaphore directory for the short ELF alias. */
+#define OC_SEMAPHORE_FD 9
+
 extern char **environ;
+
+/*
+ * The relocated libandroid-posix-semaphore.so appends semaphore names to
+ * /proc/self/fd/9/sem. Keep a descriptor on the real directory so the alias
+ * resolves in the glibc process and in everything it execs. No FD_CLOEXEC is
+ * set, so the descriptor survives execve().
+ */
+static void keep_semaphore_fd(void) {
+    const char *dir = getenv("OC_SEMAPHORE_DIR");
+    if (dir == NULL || dir[0] == '\0') return;
+    int fd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) {
+        mkdir(dir, 0700);
+        fd = open(dir, O_RDONLY | O_DIRECTORY);
+    }
+    if (fd < 0) return;
+    if (fd != OC_SEMAPHORE_FD) {
+        if (dup2(fd, OC_SEMAPHORE_FD) < 0) {
+            close(fd);
+            return;
+        }
+        close(fd);
+    }
+}
 
 static void die(const char *fmt, ...) {
     va_list ap;
@@ -181,6 +208,7 @@ int main(int argc, char **argv) {
     if (!has_home) newe[j++] = join2("OC_USER_HOME=", home);
     newe[j] = NULL;
 
+    keep_semaphore_fd();
     execve(loader, newv, newe);
     fprintf(stderr, "opencode: could not start %s: %s\n", loader, strerror(errno));
     return 127;

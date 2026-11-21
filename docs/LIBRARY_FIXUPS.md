@@ -275,10 +275,13 @@ file thiếu hoặc bị cắt cụt (ví dụ sau khi app bị kill giữa lúc
 Ghi chú cho `multiprocessing`: `libandroid-posix-semaphore.so` của Termux cắm cứng
 `/data/data/com.termux/files/usr/tmp/sem.`, nên `sem_open` của Python chết với
 `FileNotFoundError` (locks, queue, `Pool`, `ProcessPoolExecutor`). `TermuxSemaphorePath`
-đổi chuỗi đó thành `/data/data/<package>/tmp/sem.` (cùng 40 byte với application id release,
-nên không xê dịch offset nào) và tạo thư mục `tmp` ở gốc sandbox — không phải `$PREFIX/tmp`,
-vì đường dẫn đó dài hơn 40 byte. Việc vá chạy cả lúc trích xuất gói lẫn trong `pkg repair`,
-nên prefix cài từ bản cũ được sửa mà không cần cài lại.
+đổi chuỗi đó thành `/proc/self/fd/9/sem.` (19 byte, ngắn hơn 40 byte gốc nên không xê dịch
+offset nào) và tạo thư mục `tmp` ở gốc sandbox — không phải `$PREFIX/tmp`. FD 9 được
+`pathmap`, `opencode-pty`, `oc-launcher` và JNI `pty.cpp` mở sẵn tới thư mục đó và giữ qua
+`execve`, nên alias hoạt động độc lập với application id, user id hay work profile. Giá trị thư mục
+thật được export dưới tên `OC_SEMAPHORE_DIR` trong runtime contract, env script và env
+của terminal. Việc vá chạy cả lúc trích xuất gói lẫn trong `pkg repair`, nên prefix cài
+từ bản cũ được sửa mà không cần cài lại.
 
 ## 7. Bảng chính sách syscall Android cho binary glibc (4.2 #10)
 

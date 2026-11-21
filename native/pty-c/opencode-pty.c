@@ -40,6 +40,32 @@
 #define MAX_METADATA_BYTES (1024u * 1024u)
 #define DRAIN_AFTER_EXIT_MS 1000
 
+/* Descriptor kept open on the semaphore directory for the short ELF alias. */
+#define OC_SEMAPHORE_FD 9
+
+/*
+ * Every child spawned by this daemon (both PTY and pipe processes) inherits an
+ * open descriptor on the real semaphore directory, so the relocated library's
+ * /proc/self/fd/9/sem. alias works regardless of the install path length.
+ */
+static void keep_semaphore_fd(void) {
+    const char *dir = getenv("OC_SEMAPHORE_DIR");
+    if (dir == NULL || dir[0] == '\0') return;
+    int fd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) {
+        mkdir(dir, 0700);
+        fd = open(dir, O_RDONLY | O_DIRECTORY);
+    }
+    if (fd < 0) return;
+    if (fd != OC_SEMAPHORE_FD) {
+        if (dup2(fd, OC_SEMAPHORE_FD) < 0) {
+            close(fd);
+            return;
+        }
+        close(fd);
+    }
+}
+
 /* Protocol 9 has two process modes. The PTY mode serves the web terminal;
  * pipe mode is what the `shell` tool uses. */
 typedef enum { MODE_PTY = 0, MODE_PIPE = 1 } ProcessMode;
@@ -1999,6 +2025,7 @@ static int run_daemon(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    keep_semaphore_fd();
     signal(SIGPIPE, SIG_IGN);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
