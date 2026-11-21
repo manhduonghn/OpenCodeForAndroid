@@ -9,11 +9,13 @@ import java.nio.charset.StandardCharsets
  * does not exist in this sandbox, so the first `sem_open` of Python's `multiprocessing` (locks,
  * queues, `Pool`, `ProcessPoolExecutor`) fails with `FileNotFoundError`.
  *
- * The path is rewritten in place with [ElfStrings] to [SEMAPHORE_ALIAS], a short alias that points
- * at the real directory through a descriptor kept open by every process that can execute commands.
- * The alias is 20 bytes, always shorter than the 40-byte compiled-in string, so no offset in the
- * binary moves and the install path (package name, work profile, ... ) no longer matters. The real
- * directory is created by [ensureDirectory] and exported to the native processes as
+ * The path is rewritten in place with [ElfStrings] to [SEMAPHORE_ALIAS], an alias that points at
+ * the real directory through a descriptor kept open by every process that can execute commands.
+ * The library copies a **fixed 40-byte prefix** and then memcpy()s the semaphore name after it; it
+ * is not a NUL-terminated string. The alias therefore has to be exactly 40 bytes as well. The
+ * redundant trailing slashes are harmless in a path and let it stay the same width, so no offset in
+ * the binary moves and the install path (package name, work profile, ...) no longer matters. The
+ * real directory is created by [ensureDirectory] and exported to the native processes as
  * `OC_SEMAPHORE_DIR`, because `sem_open` only creates the files inside it.
  *
  * This object is pure JVM code: it is used by the package extractor and by the repair pass, and it
@@ -35,8 +37,12 @@ internal object TermuxSemaphorePath {
      */
     const val SEMAPHORE_FD = 9
 
-    /** Short, path-length-independent replacement for [TERMUX_TMP]. */
-    const val SEMAPHORE_ALIAS = "/proc/self/fd/$SEMAPHORE_FD/sem."
+    /**
+     * Exactly [TERMUX_TMP].length bytes: `/proc/self/fd/9/` followed by 24 more slashes. The
+     * library appends the semaphore name at byte 40, so a shorter replacement would hide the name
+     * behind NUL padding and every semaphore would collapse onto the same empty name.
+     */
+    const val SEMAPHORE_ALIAS = "/proc/self/fd/9/////////////////////////"
 
     /** The last part of the prefix, stripped to get the sandbox root (`/data/data/<package>`). */
     private const val FILES_USR = "/files/usr"

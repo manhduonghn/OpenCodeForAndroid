@@ -46,7 +46,7 @@
 /*
  * Every child spawned by this daemon (both PTY and pipe processes) inherits an
  * open descriptor on the real semaphore directory, so the relocated library's
- * /proc/self/fd/9/sem. alias works regardless of the install path length.
+ * /proc/self/fd/9/ alias works regardless of the install path length.
  */
 static void keep_semaphore_fd(void) {
     const char *dir = getenv("OC_SEMAPHORE_DIR");

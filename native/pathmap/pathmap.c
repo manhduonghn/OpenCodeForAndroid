@@ -117,7 +117,7 @@ extern char **environ;
 
 /*
  * The relocated libandroid-posix-semaphore.so builds names below
- * /proc/self/fd/9/sem. The descriptor is inherited across execve because this
+ * /proc/self/fd/9/ (padded to 40 bytes). The descriptor is inherited across execve because this
  * helper never sets FD_CLOEXEC. Use a raw syscall here so the call does not go
  * through the open()/openat() hooks defined below while they are being set up.
  */

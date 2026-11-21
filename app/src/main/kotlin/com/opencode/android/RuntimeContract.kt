@@ -283,7 +283,7 @@ object RuntimeEnv {
         }
         env["TMPDIR"] = "${inputs.prefix}/tmp"
         // Native launchers keep a descriptor on this directory so the relocated semaphore library
-        // can use the short /proc/self/fd/9/sem. alias regardless of the install path length.
+        // can use the 40-byte /proc/self/fd/9/ alias regardless of the install path length.
         env["OC_SEMAPHORE_DIR"] = TermuxSemaphorePath.directory(File(inputs.prefix)).absolutePath
         env["TERM"] = "xterm-256color"
         env["LANG"] = "C.UTF-8"

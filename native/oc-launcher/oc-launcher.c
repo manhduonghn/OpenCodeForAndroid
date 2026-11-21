@@ -32,7 +32,8 @@ extern char **environ;
 
 /*
  * The relocated libandroid-posix-semaphore.so appends semaphore names to
- * /proc/self/fd/9/sem. Keep a descriptor on the real directory so the alias
+ * /proc/self/fd/9/ (padded to the original 40-byte prefix). Keep a descriptor on the real
+ * directory so the alias
  * resolves in the glibc process and in everything it execs. No FD_CLOEXEC is
  * set, so the descriptor survives execve().
  */

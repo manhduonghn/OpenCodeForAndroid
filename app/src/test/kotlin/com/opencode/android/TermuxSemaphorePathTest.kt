@@ -19,8 +19,10 @@ class TermuxSemaphorePathTest {
     @Test
     fun replacementFitsTheCompiledInPath() {
         val replacement = TermuxSemaphorePath.replacement(releasePrefix)
-        assertEquals("/proc/self/fd/9/sem.", replacement)
-        assertTrue(replacement.length < TermuxSemaphorePath.TERMUX_TMP.length)
+        assertEquals(TermuxSemaphorePath.SEMAPHORE_ALIAS, replacement)
+        // libandroid_sem_open() copies a fixed 40-byte prefix and appends the name at byte 40.
+        assertEquals(TermuxSemaphorePath.TERMUX_TMP.length, replacement.length)
+        assertTrue(replacement.endsWith("/"))
         assertEquals("/data/data/com.opencode.android",
             TermuxSemaphorePath.directory(releasePrefix).parentFile!!.absolutePath)
     }
@@ -33,14 +35,17 @@ class TermuxSemaphorePathTest {
         )
         for (prefix in prefixes) {
             val library = File(temporary.newFolder(), "libandroid-posix-semaphore.so")
-            val original = ("ELF header\u0000" + TermuxSemaphorePath.TERMUX_TMP +
+            // The library copies the 40-byte prefix and appends the name after it without a
+            // separator, so the patched prefix must still be exactly 40 bytes and end with '/'.
+            val name = "mp-abcdef"
+            val original = ("ELF header\u0000" + TermuxSemaphorePath.TERMUX_TMP + name +
                 "\u0000trailing string").toByteArray(StandardCharsets.ISO_8859_1)
             library.writeBytes(original)
 
             assertEquals(1, TermuxSemaphorePath.patch(library, prefix))
             val text = String(library.readBytes(), StandardCharsets.ISO_8859_1)
             assertFalse(text.contains(TermuxSemaphorePath.TERMUX_TMP))
-            assertTrue(text.contains(TermuxSemaphorePath.SEMAPHORE_ALIAS))
+            assertTrue(text.contains(TermuxSemaphorePath.SEMAPHORE_ALIAS + name))
             assertEquals(original.size, library.readBytes().size)
         }
     }

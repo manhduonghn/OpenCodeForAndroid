@@ -113,7 +113,7 @@ void closeInheritedDescriptors() {
 
 /**
  * The relocated libandroid-posix-semaphore.so builds semaphore names below
- * /proc/self/fd/9/sem.. Open descriptor 9 on the real directory after
+ * /proc/self/fd/9/ (padded to 40 bytes). Open descriptor 9 on the real directory after
  * closeInheritedDescriptors(), so the shell and every program it starts can
  * use the short alias regardless of the install path length. No O_CLOEXEC is
  * used: the descriptor must survive execve(). The directory comes from the
