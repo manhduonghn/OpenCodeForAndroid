@@ -590,6 +590,37 @@ static void json_dispose(Json *value) {
     }
 }
 
+int json_write(Buf *b, const Json *value) {
+    if (!b || !value) return -1;
+    switch (value->type) {
+    case JSON_NULL:
+        return buf_puts(b, "null");
+    case JSON_BOOL:
+        return buf_puts(b, value->u.boolean ? "true" : "false");
+    case JSON_NUMBER:
+        /* 17 significant digits round-trip every IEEE-754 double. */
+        return buf_printf(b, "%.17g", value->u.number);
+    case JSON_STRING:
+        return buf_json_string(b, value->u.string.data, value->u.string.len);
+    case JSON_ARRAY:
+        if (buf_putc(b, '[')) return -1;
+        for (size_t i = 0; i < value->u.array.count; i++) {
+            if ((i && buf_putc(b, ',')) || json_write(b, &value->u.array.items[i])) return -1;
+        }
+        return buf_putc(b, ']');
+    case JSON_OBJECT:
+        if (buf_putc(b, '{')) return -1;
+        for (size_t i = 0; i < value->u.object.count; i++) {
+            const char *key = value->u.object.keys[i];
+            if ((i && buf_putc(b, ',')) ||
+                buf_json_string(b, key, strlen(key)) || buf_putc(b, ':') ||
+                json_write(b, &value->u.object.values[i])) return -1;
+        }
+        return buf_putc(b, '}');
+    }
+    return -1;
+}
+
 void json_free(Json *value) {
     if (!value) return;
     json_dispose(value);

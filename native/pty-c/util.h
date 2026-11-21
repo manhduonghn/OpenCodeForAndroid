@@ -65,6 +65,8 @@ struct Json {
 };
 
 Json *json_parse(const char *text, size_t len, size_t *used);
+/* Serialize a parsed value back to JSON (used for opaque pipe metadata). */
+int json_write(Buf *b, const Json *value);
 void json_free(Json *value);
 Json *json_get(Json *object, const char *key);
 size_t json_array_count(Json *array);

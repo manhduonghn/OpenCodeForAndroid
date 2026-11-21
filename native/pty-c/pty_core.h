@@ -21,6 +21,13 @@ typedef struct {
 
 int pty_spawn(const char *program, char *const argv[], char *const envp[], const char *cwd,
               int cols, int rows, Pty *out);
+/*
+ * Non-terminal process: stdin is /dev/null, stdout and stderr share one pipe,
+ * and the caller writes those bytes to `output_path`. The read end is stored in
+ * `out->master` so the daemon's existing poll/pump loop can consume it.
+ */
+int pipe_spawn(const char *program, char *const argv[], char *const envp[], const char *cwd,
+               const char *output_path, int *out_sink, Pty *out);
 int pty_resize(Pty *pty, int cols, int rows);
 int pty_wait(Pty *pty);
 void pty_signal(Pty *pty, int sig);
