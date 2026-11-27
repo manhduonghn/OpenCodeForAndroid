@@ -19,8 +19,10 @@ Ba loại file được tách riêng:
 | helper tĩnh / entrypoint (`oc-gopatch`, `opencode-pty`, `oc-run`, cache `rg`) | `nativeLibraryDir` (`apk_data_file`) | `execve()` trực tiếp |
 
 `nativeLibraryDir` do hệ thống giải nén từ APK, nhãn `apk_data_file`, nên
-vẫn được `execve()` dưới targetSdk 36. Vì vậy `AndroidManifest.xml` phải có
-`android:extractNativeLibs="true"`.
+vẫn được `execve()` dưới targetSdk 36. Vì vậy `app/build.gradle.kts` dùng
+`packagingOptions.jniLibs.useLegacyPackaging = true` (AGP 8.1+ chấp nhận
+thuộc tính này trong build script, không cho phép ghi
+`android:extractNativeLibs` trong `AndroidManifest.xml`).
 
 ### Bionic `LD_PRELOAD` shim
 

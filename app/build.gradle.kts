@@ -55,6 +55,15 @@ android {
     namespace = "com.opencode.android"
     compileSdk = 37
 
+    // The targetSdk 36 exec shim needs real files in nativeLibraryDir. AGP 8.1+
+    // rejects android:extractNativeLibs in the source manifest, so request
+    // extraction through the packaging DSL instead.
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     if (hasNdk) {
         ndkVersion = pinnedNdk
         externalNativeBuild {
