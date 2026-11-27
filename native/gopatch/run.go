@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 // The sandbox of this app. The values are also what the app exports as
@@ -268,6 +269,20 @@ func startBionic(path string, args []string, env []string) error {
 	return syscall.Exec(systemLinker, argv, withoutRealExe(env))
 }
 
+// memfdCreate is the raw form of syscall.MemfdCreate, which is not exported by
+// the standard syscall package. MFD_CLOEXEC is 0x1 on Linux.
+func memfdCreate(name string) (int, error) {
+	p, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return -1, err
+	}
+	fd, _, errno := syscall.Syscall(syscall.SYS_MEMFD_CREATE, uintptr(unsafe.Pointer(p)), 1, 0)
+	if errno != 0 {
+		return -1, errno
+	}
+	return int(fd), nil
+}
+
 // startPatched runs a patched static ELF through an anonymous file. Patched
 // copies live in app data, which cannot be exec'd with targetSdk >= 29; a
 // memfd is not labelled app_data_file and keeps the binary in memory. Devices
@@ -277,7 +292,7 @@ func startPatched(path string, args []string, env []string) error {
 	if err != nil {
 		return syscall.Exec(path, args, env)
 	}
-	fd, err := syscall.MemfdCreate("oc-patched", syscall.MFD_CLOEXEC)
+	fd, err := memfdCreate("oc-patched")
 	if err != nil {
 		return syscall.Exec(path, args, env)
 	}
