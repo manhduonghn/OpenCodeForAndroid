@@ -611,7 +611,7 @@ Quy tắc:
 | `menu_files.xml` | Không còn icon GitHub: source bar Thiết bị/GitHub là entry duy nhất, tránh hai lối vào trùng nhau. |
 | `strings.xml` | Sửa `opencode_files_git_not_logged_in`; thêm string state/login/repo/editor; bỏ string không còn dùng sau migrate. |
 | `OpenCodeSettings.kt` | Thêm lưu mapping clone → local path; có thể thêm `editorAutoSave` (phase sau). |
-| Build | Không thêm dependency; giữ minSdk 26/targetSdk 28. |
+| Build | Không thêm dependency; giữ minSdk 26/targetSdk 36. |
 
 ### 7.1. Back stack
 
@@ -759,7 +759,7 @@ có Java/Gradle/thiết bị.
   bạch như hiện tại.
 - Mở tệp text mở editor trong app; lưu atomic; có dirty dialog, conflict dialog, read-only cho
   binary/large/encoding lạ; auto-commit theo setting và không tự push.
-- Không thêm dependency nặng; `minSdk 26`/`targetSdk 28` giữ nguyên; build và unit test hiện có
+- Không thêm dependency nặng; `minSdk 26`/`targetSdk 36` giữ nguyên; build và unit test hiện có
   vẫn chạy.
 - Dark/light/dynamic, tablet 640dp, font scale 200%, TalkBack: row wrap, không cắt chữ, touch
   target >= 48dp.

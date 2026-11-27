@@ -29,6 +29,8 @@ internal class TerminalLaunch(
  * with a bare "command not found".
  */
 internal object TerminalLauncher {
+    private const val SYSTEM_LINKER = "/system/bin/linker64"
+
     /** Managed rc file of bash, replaced when its content changes. */
     private val BASH_RC = File(OpenCodeBootstrap.PREFIX, "etc/opencode-terminal.bashrc")
 
@@ -40,10 +42,20 @@ internal object TerminalLauncher {
         val tmp = File(OpenCodeBootstrap.PREFIX, "tmp").apply { mkdirs() }
         val bash = File(OpenCodeBootstrap.PREFIX, "bin/bash")
         if (bash.isFile && bash.canExecute()) {
+            // targetSdk 36 denies execve() of app data files. The app process is forked from
+            // zygote, so a late LD_PRELOAD would not affect it: start the system linker
+            // directly and let it mmap bash. The shim is loaded into bash from that env and
+            // takes over every later exec (pkg, git, scripts, glibc programs).
             return TerminalLaunch(
                 shellName = "bash",
-                executable = bash.absolutePath,
-                argv = listOf(bash.absolutePath, "--rcfile", install(BASH_RC, bashRc()).absolutePath, "-i"),
+                executable = SYSTEM_LINKER,
+                argv = listOf(
+                    SYSTEM_LINKER,
+                    bash.absolutePath,
+                    "--rcfile",
+                    install(BASH_RC, bashRc()).absolutePath,
+                    "-i",
+                ),
                 env = bashEnvironment(home, tmp, bash),
                 cwd = home,
             )
@@ -51,8 +63,9 @@ internal object TerminalLauncher {
 
         // The runtime download failed or was never run. Android's shell is still
         // useful for looking at the device, but it must not inherit the prefix
-        // libraries or the bionic preload. Its rc file explains why `pkg` is
-        // missing; the terminal notice offers the retry that installs the runtime.
+        // libraries. It can still carry the bionic shim (a file in nativeLibraryDir)
+        // so a later `pkg` install works without restarting the terminal. Its rc
+        // file explains why `pkg` is missing; the notice offers a runtime retry.
         return TerminalLaunch(
             shellName = "sh",
             executable = "/system/bin/sh",
@@ -86,6 +99,7 @@ internal object TerminalLauncher {
             File(OpenCodeBootstrap.PREFIX, "share/terminfo").takeIf { it.isDirectory }?.let {
                 put("TERMINFO", it.absolutePath)
             }
+            putExecShim()
         }
 
     private fun fallbackEnvironment(home: File, tmp: File): Map<String, String> =
@@ -100,7 +114,20 @@ internal object TerminalLauncher {
             put("OC_SEMAPHORE_DIR", TermuxSemaphorePath.directory(File(OpenCodeBootstrap.PREFIX)).absolutePath)
             put("PS1", "\\$ ")
             put("ENV", install(FALLBACK_RC, fallbackRc()).absolutePath)
+            putExecShim()
         }
+
+    /** Environment entries that load the W^X shim in the first bionic process of the terminal. */
+    private fun MutableMap<String, String>.putExecShim() {
+        OpenCodeBootstrap.execShim()?.let {
+            put("LD_PRELOAD", it)
+            put("OC_EXEC_SHIM", it)
+        }
+        OpenCodeBootstrap.nativeGlibcLoader()?.let { put("OC_GLIBC_LOADER", it) }
+        put("OC_GLIBC_LIB_DIR", OpenCodeBootstrap.GLIBC_LIB_DIR)
+        put("OC_PREFIX", OpenCodeBootstrap.PREFIX)
+        put("OC_USER_HOME", OpenCodeBootstrap.HOME)
+    }
 
     private fun bashRc(): String = buildString {
         appendLine("# Managed by OpenCode for Android for the native terminal.")
@@ -130,7 +157,7 @@ internal object TerminalLauncher {
         // check on every call picks up a repair without restarting the shell.
         appendLine("pkg() {")
         appendLine("  if [ -x \"\$PREFIX/libexec/oc-bridge\" ]; then")
-        appendLine("    LD_LIBRARY_PATH= LD_PRELOAD= command \"\$PREFIX/libexec/oc-bridge\" \"\$@\"")
+        appendLine("    LD_LIBRARY_PATH= command \"\$PREFIX/libexec/oc-bridge\" \"\$@\"")
         appendLine("  else")
         appendLine("    printf '%s\\n' 'pkg: Linux runtime chưa sẵn sàng. Đóng rồi mở lại terminal để cài đặt.' >&2")
         appendLine("    return 127")

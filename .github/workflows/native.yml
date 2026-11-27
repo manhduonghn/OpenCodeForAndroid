@@ -3,9 +3,13 @@ name: Native helpers
 # Builds and tests the native assets of the app:
 #   - liboc-pathmap.so (glibc preload, per ABI),
 #   - oc-gopatch and the oc-gosys blob (static Go, per ABI),
-#   - opencode-pty (pure C web-terminal daemon, per ABI).
-# The debug and release workflows call this workflow and copy the artifact into
-# app/src/main/assets/native before Gradle packages the APK.
+#   - opencode-pty (pure C web-terminal daemon, per ABI),
+#   - liboc-exec.so (bionic LD_PRELOAD W^X shim, per ABI),
+#   - liboc_ld.so (relocated glibc loader for the APK native lib dir, per ABI),
+#   - oc-run and the ripgrep cache wrapper (bionic PIE, per ABI).
+# The debug and release workflows call this workflow and copy the assets into
+# app/src/main/assets/native and the executable APK libraries into
+# app/src/main/jniLibs before Gradle packages the APK.
 
 on:
   workflow_call:
@@ -42,6 +46,9 @@ jobs:
           native/pathmap/run-test.sh x86_64
           native/pathmap/run-test.sh aarch64
 
+      - name: Test the APK entry points
+        run: bash native/wrappers/run-test.sh
+
       - name: Set up Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -61,6 +68,15 @@ jobs:
           native/pathmap/build.sh x86_64 dist/native/x86_64/liboc-pathmap.so
           native/oc-launcher/build.sh arm64-v8a dist/native/arm64-v8a/oc-launcher
           native/oc-launcher/build.sh x86_64 dist/native/x86_64/oc-launcher
+          chmod +x native/oc-exec/build.sh native/glibc-loader/build.sh native/wrappers/build.sh
+          native/oc-exec/build.sh arm64-v8a dist/native/arm64-v8a/liboc-exec.so
+          native/oc-exec/build.sh x86_64 dist/native/x86_64/liboc-exec.so
+          native/glibc-loader/build.sh arm64-v8a dist/native/arm64-v8a/liboc_ld.so
+          native/glibc-loader/build.sh x86_64 dist/native/x86_64/liboc_ld.so
+          native/wrappers/build.sh arm64-v8a \
+            dist/native/arm64-v8a/liboc_ocrun.so dist/native/arm64-v8a/liboc_rg.so
+          native/wrappers/build.sh x86_64 \
+            dist/native/x86_64/liboc_ocrun.so dist/native/x86_64/liboc_rg.so
           (
             cd native/gopatch
             go vet ./...
@@ -70,6 +86,18 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false \
               -ldflags="-s -w" -o "$GITHUB_WORKSPACE/dist/native/x86_64/oc-gopatch" .
           )
+          # targetSdk 36 still allows execve() of files in nativeLibraryDir
+          # (apk_data_file). Static Go and the server-spawned PTY daemon cannot
+          # be routed through Android's linker, so those helpers live there.
+          mkdir -p dist/jniLibs/arm64-v8a dist/jniLibs/x86_64
+          for abi in arm64-v8a x86_64; do
+            cp "dist/native/$abi/liboc-exec.so" "dist/jniLibs/$abi/liboc_exec.so"
+            cp "dist/native/$abi/liboc_ld.so" "dist/jniLibs/$abi/liboc_ld.so"
+            cp "dist/native/$abi/oc-gopatch" "dist/jniLibs/$abi/liboc_gopatch.so"
+            cp "dist/native/$abi/opencode-pty" "dist/jniLibs/$abi/liboc_pty.so"
+            cp "dist/native/$abi/liboc_ocrun.so" "dist/jniLibs/$abi/liboc_ocrun.so"
+            cp "dist/native/$abi/liboc_rg.so" "dist/jniLibs/$abi/liboc_rg.so"
+          done
 
       - name: End-to-end tests
         run: native/test/run.sh
@@ -79,5 +107,13 @@ jobs:
         with:
           name: native-assets
           path: dist/native/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload APK native libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-libraries
+          path: dist/jniLibs/**
           if-no-files-found: error
           retention-days: 30

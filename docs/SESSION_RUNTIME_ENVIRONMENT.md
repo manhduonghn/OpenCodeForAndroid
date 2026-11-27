@@ -81,7 +81,7 @@ Mỗi ca mới lại nối thêm một Runnable hoặc một cờ. Đây là lý
    lại bất kỳ lúc nào; so nội dung thay vì tin timestamp.
 7. **Không lưu secret trong manifest.** Password vẫn ở SharedPreferences + file `0600`;
    manifest chỉ chứa *tham chiếu*.
-8. **Giữ nguyên nền tảng đã đúng:** `targetSdk 28`, không root/proot/chroot, relocation
+8. **Giữ nguyên nền tảng đã đúng:** `targetSdk 36` (với exec shim/loader), không root/proot/chroot, relocation
    cùng độ dài, pathmap/gopatch, self-heal hai mức, wake lock + watchdog, CA/resolv.conf.
 
 ---

@@ -30,6 +30,8 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+extern char **environ;
+
 #define PROTOCOL_VERSION 9
 #define MAX_FRAME_BYTES (8u * 1024u * 1024u)
 #define REPLAY_LIMIT (2u * 1024u * 1024u)
@@ -1071,8 +1073,9 @@ static int make_envp(Json *env, char ***out, size_t *out_count) {
      * these safe variables, and never override a value the caller supplied explicitly.
      */
     static const char *const inherited[] = {
-        "LD_LIBRARY_PATH", "BASH_ENV", "HOME", "PATH", "TMPDIR",
+        "LD_LIBRARY_PATH", "LD_PRELOAD", "BASH_ENV", "HOME", "PATH", "TMPDIR",
         "LANG", "TZDIR", "SHELL", "PREFIX", "OC_PREFIX", "OC_USER_HOME",
+        "OC_EXEC_SHIM", "OC_GLIBC_LOADER", "OC_GLIBC_LIB_DIR",
         NULL
     };
     for (size_t i = 0; inherited[i]; i++) {
@@ -2024,7 +2027,48 @@ static int run_daemon(int argc, char **argv) {
     return 0;
 }
 
+/*
+ * The server starts this daemon itself, so it cannot rely on the sh being
+ * preloaded with liboc_exec.so. Re-exec once through the system linker with
+ * LD_PRELOAD set: the daemon (apk_data_file) stays executable with targetSdk 36,
+ * and after this its fork/execve calls can run prefix programs (pkg, bash
+ * scripts, glibc binaries) without hitting the W^X denial.
+ */
+static void reexec_with_exec_shim(int argc, char **argv) {
+    const char *shim = getenv("OC_EXEC_SHIM");
+    if (shim == NULL || shim[0] == '\0' || getenv("OC_PTY_SHIMMED") != NULL) return;
+    if (access(shim, X_OK) != 0) return;
+
+    char self[PATH_MAX];
+    ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (length <= 0) return;
+    self[length] = '\0';
+
+    char **next = calloc((size_t)argc + 2, sizeof(char *));
+    if (next == NULL) return;
+    char *linker = "/system/bin/linker64";
+    next[0] = linker;
+    next[1] = self;
+    for (int i = 1; i < argc; i++) next[i + 1] = argv[i];
+
+    char *old_preload = getenv("LD_PRELOAD") != NULL ? strdup(getenv("LD_PRELOAD")) : NULL;
+    setenv("OC_PTY_SHIMMED", "1", 1);
+    setenv("LD_PRELOAD", shim, 1);
+    execve(linker, next, environ);
+
+    /* Re-exec failed: leave the daemon usable without the shim and try again next start. */
+    unsetenv("OC_PTY_SHIMMED");
+    if (old_preload != NULL) {
+        setenv("LD_PRELOAD", old_preload, 1);
+        free(old_preload);
+    } else {
+        unsetenv("LD_PRELOAD");
+    }
+    free(next);
+}
+
 int main(int argc, char **argv) {
+    reexec_with_exec_shim(argc, argv);
     keep_semaphore_fd();
     signal(SIGPIPE, SIG_IGN);
     signal(SIGTERM, on_signal);

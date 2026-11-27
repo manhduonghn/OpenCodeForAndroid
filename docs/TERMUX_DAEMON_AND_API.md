@@ -1,7 +1,8 @@
 # Termux daemon, Termux:API và cài thư viện ngoài `com.termux`
 
-Tài liệu nghiên cứu cho **OpenCode for Android** (`com.opencode.android`, prefix riêng,
-`targetSdk = 28`). Ngày: 2026-10-29.
+Tài liệu nghiên cứu cho **OpenCode for Android** (`com.opencode.android`, prefix riêng).
+Ngày: 2026-10-29. Phần targetSdk 28 bên dưới là **bối cảnh lịch sử**: app hiện đã chuyển
+sang `targetSdk = 36`, xem `docs/TARGET_SDK_36_EXEC_SHIM.md` cho cơ chế W^X hiện tại.
 
 Mục tiêu:
 
@@ -29,7 +30,7 @@ Nguồn đã đọc:
 | Dùng `termux-services`/runit làm daemon? | **Không phải giải pháp chính.** runit chỉ là supervisor *bên trong* process app; app chết là cả cây chết. Chỉ hữu ích khi cần chạy nhiều service (sshd, cron) và tự restart khi một service crash. |
 | Dùng Termux:API? | **Không gọi trực tiếp được** từ `com.opencode.android`: plugin chạy `sharedUserId="com.termux"`, `exported=false`, kiểm tra UID + chữ ký. Chỉ nên **port pattern** sang Kotlin. |
 | `termux-wake-lock` là gì? | Không phải termux-api. Nó là script trong `termux-tools` gửi `am startservice -a com.termux.service_wake_lock` cho `TermuxService`; app Termux tự bật `PARTIAL_WAKE_LOCK` + `WIFI_MODE_FULL_HIGH_PERF` và xin tắt battery optimization. |
-| Cài thư viện ngoài `com.termux`? | Repo này **đã có** kỹ thuật đúng (tải `.deb`, verify SHA-256, extract, rewrite path). Giữ `targetSdk 28` để tránh W^X; nếu nâng target phải thêm `termux-exec` preload hoặc linker shim. |
+| Cài thư viện ngoài `com.termux`? | Repo này **đã có** kỹ thuật đúng (tải `.deb`, verify SHA-256, extract, rewrite path). Nâng `targetSdk 36` dùng linker shim + loader trong APK; xem `docs/TARGET_SDK_36_EXEC_SHIM.md`. |
 | Điểm yếu lớn nhất (trước P0) | `OpenCodeService.onTaskRemoved()` từng gọi `stopSelf()` → `onDestroy()` → `stopServer()`, nên **vuốt app khỏi recents là server bị kill**. Đã sửa: service + server tiếp tục chạy, kèm watchdog và BootReceiver. |
 
 ---
@@ -45,8 +46,9 @@ Nguồn đã đọc:
   service sau khi giết app process) cũng start server ngay khi runtime đã sẵn sàng.
 - UI đã có nút xin **ignore battery optimizations**
   (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`).
-- `targetSdk = 28` → không bị giới hạn start FGS từ background (Android 12) và
-  `execve()` từ app data dir vẫn được phép (Android 10+).
+- (Lịch sử) `targetSdk = 28` → không bị giới hạn start FGS từ background (Android 12) và
+  `execve()` từ app data dir vẫn được phép (Android 10+). Với `targetSdk = 36`, phần `execve()`
+  được thay bằng shim/loader nêu ở đầu tài liệu; FGS vẫn chạy foreground khi người dùng đã mở app.
 
 Còn thiếu (trước P0/P1):
 
@@ -241,8 +243,9 @@ Hệ quả với app này:
   ```
   **Chỉ patch interpreter**, không `--set-rpath` (sửa dynamic section của binary ~200MB
   gây SIGSEGV).
-- Launcher `$PREFIX/bin/opencode` unset `LD_PRELOAD` (preload bionic của Termux không
-  được vào process glibc), đặt `OPENCODE_DISABLE_AUTOUPDATE=1`.
+- (Lịch sử) Launcher `$PREFIX/bin/opencode` unset `LD_PRELOAD` (preload bionic của Termux không
+  được vào process glibc), đặt `OPENCODE_DISABLE_AUTOUPDATE=1`. Bản hiện tại để shim bionic
+  trong shell và để shim tự xoá `LD_PRELOAD` trước khi gọi glibc loader.
 - Ưu điểm: mọi package Termux hoạt động nguyên bản, không cần rewrite path.
 - Nhược điểm: **thay thế app Termux**, plugin phải cùng chữ ký, phải maintain fork GPL,
   xung đột với Termux thật.
@@ -294,7 +297,7 @@ Luồng chuẩn:
   - OpenCode chạy qua loader glibc của prefix với `liboc-pathmap.so` (không cần `patchelf`), quan
     trọng cho `opencode serve` self-spawn qua `/proc/self/exe`. Helper terminal trên web là C/bionic
     nên chạy trực tiếp, không đi qua loader này;
-  - `targetSdk 28` nên **không cần** termux-exec/linker shim.
+  - Khi còn `targetSdk 28` thì không cần shim; với `targetSdk 36` dùng `liboc_exec.so` + loader trong APK (xem doc mới).
 - Hạn chế: không có `apt`/`dpkg` (không chạy `postinst`), không remove package,
   package nào hardcode path trong rodata (khác độ dài) sẽ cần xử lý riêng.
 
@@ -681,7 +684,7 @@ chưa có) thì kill rồi spawn server mới, thay vì chờ reboot.
 | Cài thư viện ngoài `com.termux` | Extractor `.deb` + rewrite (đã có) | `apt`/`dpkg` vào prefix riêng |
 | `pkg` báo `Can't start from invalid source` | Broadcast + receiver có signature permission | `am start-service` từ shell của app |
 | Cài nhanh bộ công cụ | `pkg bundle dev\|python\|node\|java\|net\|all` | Cài cả 3.028 gói của index |
-| Nâng targetSdk | termux-exec preload/linker shim + FGS type + notification permission | Chỉ đổi số trong Gradle |
+| Nâng targetSdk | Đã làm: shim/loader trong APK + FGS type + notification permission | Chỉ đổi số trong Gradle |
 
 ---
 
@@ -692,7 +695,7 @@ chưa có) thì kill rồi spawn server mới, thay vì chờ reboot.
 - **Phantom killer** không thể tắt bằng quyền app thường; đừng hứa "chạy mãi mãi".
   Chỉ có thể giảm khả năng bị giết và tự phục hồi.
 - **OEM** (Xiaomi/Samsung/Oppo/Vivo) có killer riêng; FGS vẫn có thể bị dừng.
-- **`targetSdk 28`** là điểm tựa kỹ thuật nhưng là nợ kỹ thuật nếu phát hành Play.
+- **`targetSdk 28`** từng là điểm tựa kỹ thuật; app đã nâng lên 36 với shim/loader nêu ở đầu.
 - **Termux:API** là GPLv3; fork sẽ ràng buộc giấy phép và làm tăng bề mặt bảo trì.
 - **Shizuku** chạy UID 2000, có thể đọc/ghi ngoài sandbox; chỉ dành cho user nâng cao,
   phải cảnh báo rõ.

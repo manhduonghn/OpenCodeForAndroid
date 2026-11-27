@@ -438,6 +438,13 @@ class OpenCodeService : Service() {
                 OpenCodeBootstrap.getServerPassword(service),
                 gitHubToken,
             ).forEach { (key, value) -> put(key, value) }
+            // Only /system/bin/sh is started with the bionic shim. Its execve route strips
+            // LD_PRELOAD before starting ld-linux, so the glibc server never loads it.
+            if (contract.execShim != null) {
+                put("LD_PRELOAD", contract.execShim)
+            } else {
+                remove("LD_PRELOAD")
+            }
         }
         // The PTY daemon creates its socket below this directory and dies with EACCES when it is
         // missing, because its default `/tmp` does not exist on Android.
@@ -480,6 +487,7 @@ class OpenCodeService : Service() {
         val contract = RuntimeEnv.build(
             OpenCodeBootstrap.runtimeInputs(
                 port = port,
+                context = this,
                 apkStamp = apkStamp(),
                 packagesStamp = fileStamp(
                     "${OpenCodeBootstrap.PREFIX}/bin/opencode",

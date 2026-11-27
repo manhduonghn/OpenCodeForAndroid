@@ -35,26 +35,34 @@ object RuntimeShellScript {
         append("OC_PREFIX=\"\${OC_PREFIX:-").append(prefix).append("}\"; export OC_PREFIX\n")
         append("OC_USER_HOME=\"\${OC_USER_HOME:-").append(home).append("}\"; export OC_USER_HOME\n")
         append("[ -d \"\$TMPDIR\" ] || mkdir -p \"\$TMPDIR\" 2>/dev/null\n")
-        // The bionic preload of Termux must never be loaded into a glibc process. TMPDIR, PATH,
-        // JAVA_HOME, LD_LIBRARY_PATH and the rest are already exported by the contract block.
-        append("unset LD_PRELOAD\n")
+        // targetSdk 36 cannot execve() files in app data. The bionic exec shim from
+        // nativeLibraryDir is the replacement for the old "unset LD_PRELOAD" rule: shells
+        // carry it, glibc children drop it before ld-linux starts (the shim does that in
+        // its execve route, liboc-pathmap.so is passed with --preload there).
+        val shim = contract.execShim
+        if (shim != null) {
+            append("LD_PRELOAD='").append(RuntimeContract.shellQuote(shim)).append("'; export LD_PRELOAD\n")
+        } else {
+            append("unset LD_PRELOAD\n")
+        }
         // `pkg` is the bionic bridge of the app. The Android linker resolves the platform
         // libraries it needs (libunwindstack pulls libz and liblzma) through LD_LIBRARY_PATH too,
         // and the copies of this prefix are not the ones Android ships: without clearing it the
-        // command dies with `cannot locate symbol "Xzs_Construct"`. Clear it for the bridge only.
-        append("pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg \"\$@\"; }\n")
+        // command dies with `cannot locate symbol "Xzs_Construct"`. Only the library path is
+        // cleared; LD_PRELOAD must stay so the W^X shim reaches the bridge and its children.
+        append("pkg() { LD_LIBRARY_PATH= command pkg \"\$@\"; }\n")
         // The same applies to the Android commands that the extractor deliberately does not
         // shadow with the termux-tools wrappers. /system/bin/curl, for example, links against
         // the OpenSSL of the platform and dies with `cannot locate symbol "EVP_MD_CTX_create"`
         // when it picks up the OpenSSL 3 of this prefix instead.
         append("for _oc_cmd in am bmgr bu cmd content device_config dpm dumpsys getprop ime input log logcat media mount notify pm settings setprop sm svc uiautomator umount wm start stop; do\n")
-        append("  eval \"\$_oc_cmd() { LD_LIBRARY_PATH= LD_PRELOAD= command \$_oc_cmd \\\"\\\$@\\\"; }\"\n")
+        append("  eval \"\$_oc_cmd() { LD_LIBRARY_PATH= command \$_oc_cmd \\\"\\\$@\\\"; }\"\n")
         append("done\n")
         append("unset _oc_cmd\n")
         // Only wrap curl while the prefix has no curl of its own: a Termux curl needs the
         // libraries of the prefix, the Android one must not see them.
         append("if [ ! -x \"\$PREFIX/bin/curl\" ]; then\n")
-        append("  curl() { LD_LIBRARY_PATH= LD_PRELOAD= command curl \"\$@\"; }\n")
+        append("  curl() { LD_LIBRARY_PATH= command curl \"\$@\"; }\n")
         append("fi\n")
         append("# npm and pip keep their caches in the app HOME, the prefix may be read only for them.\n")
         append("npm_config_cache=\"\${npm_config_cache:-\${HOME:-\$PREFIX}/.npm}\"; export npm_config_cache\n")

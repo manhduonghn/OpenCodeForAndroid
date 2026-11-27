@@ -25,6 +25,10 @@ data class RuntimeInputs(
     val loader: String,
     val preload: String?,
     val glibcLibDir: String,
+    /** Native library dir of the APK (apk_data_file, still executable with targetSdk 36). */
+    val nativeLibraryDir: String = "",
+    /** Bionic W^X exec shim from [nativeLibraryDir], preloaded into shell processes. */
+    val execShim: String? = null,
     val ptyBin: String?,
     val ptySocketDir: String,
     val ripgrepPath: String = "",
@@ -74,6 +78,8 @@ data class RuntimeContract(
     val loader: String,
     val preload: String?,
     val glibcLibDir: String,
+    val nativeLibraryDir: String,
+    val execShim: String?,
     val libraryPath: List<String>,
     val ptyBin: String?,
     val ptySocketDir: String,
@@ -144,6 +150,8 @@ data class RuntimeContract(
             append("sha=").append(binarySha256).append('\n')
             append("loader=").append(loader).append('\n')
             append("preload=").append(preload.orEmpty()).append('\n')
+            append("nativeLibDir=").append(nativeLibraryDir).append('\n')
+            append("execShim=").append(execShim.orEmpty()).append('\n')
             append("libraryPath=").append(libraryPath.joinToString(":")).append('\n')
             append("pty=").append(ptyBin.orEmpty()).append('\n')
             append("socket=").append(ptySocketDir).append('\n')
@@ -181,6 +189,10 @@ data class RuntimeContract(
         launch.put("preload", preload ?: JSONObject.NULL)
         launch.put("libraryPath", org.json.JSONArray(libraryPath))
         json.put("launch", launch)
+        val exec = JSONObject()
+        exec.put("nativeLibraryDir", nativeLibraryDir)
+        exec.put("shim", execShim ?: JSONObject.NULL)
+        json.put("exec", exec)
         val helpers = JSONObject()
         helpers.put("pty", ptyBin ?: JSONObject.NULL)
         helpers.put("ptySocketDir", ptySocketDir)
@@ -296,6 +308,11 @@ object RuntimeEnv {
         env["DEBIAN_FRONTEND"] = "noninteractive"
         env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
         env["OC_REAL_EXE"] = inputs.binaryPath
+        // The W^X shim lives in nativeLibraryDir (apk_data_file). It is exported to shells and
+        // child processes, but every glibc route strips LD_PRELOAD before starting ld-linux.
+        inputs.execShim?.let { env["OC_EXEC_SHIM"] = it }
+        env["OC_GLIBC_LOADER"] = inputs.loader
+        env["OC_GLIBC_LIB_DIR"] = inputs.glibcLibDir
         inputs.ptyBin?.let { env["OPENCODE_PTY_BIN"] = it }
         env["OPENCODE_PTY_SOCKET_DIR"] = inputs.ptySocketDir
 
@@ -342,6 +359,8 @@ object RuntimeEnv {
             loader = inputs.loader,
             preload = inputs.preload,
             glibcLibDir = inputs.glibcLibDir,
+            nativeLibraryDir = inputs.nativeLibraryDir,
+            execShim = inputs.execShim,
             libraryPath = libraryPath,
             ptyBin = inputs.ptyBin,
             ptySocketDir = inputs.ptySocketDir,

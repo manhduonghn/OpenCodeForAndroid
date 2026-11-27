@@ -19,6 +19,8 @@ class RuntimeContractTest {
         loader = "/data/data/com.opencode.android/files/usr/glibc/lib/ld-linux-aarch64.so.1",
         preload = "/data/data/com.opencode.android/files/usr/lib/liboc-pathmap.so",
         glibcLibDir = "/data/data/com.opencode.android/files/usr/glibc/lib",
+        nativeLibraryDir = "/data/app/com.opencode.android/lib/arm64",
+        execShim = "/data/app/com.opencode.android/lib/arm64/liboc_exec.so",
         ptyBin = "/data/data/com.opencode.android/files/home/.opencode/bin/opencode-pty",
         ptySocketDir = "/data/data/com.opencode.android/files/usr/run",
         javaHome = null,
@@ -92,10 +94,26 @@ class RuntimeContractTest {
         val script = RuntimeShellScript.render(RuntimeEnv.build(inputs()))
         assertTrue(script.contains("Generated from RuntimeContract"))
         assertTrue(script.contains("OC_PREFIX="))
-        assertTrue(script.contains("unset LD_PRELOAD"))
-        assertTrue(script.contains("pkg() {"))
+        assertTrue(script.contains("LD_PRELOAD='/data/app/com.opencode.android/lib/arm64/liboc_exec.so'; export LD_PRELOAD"))
+        assertFalse(script.contains("unset LD_PRELOAD"))
+        assertTrue(script.contains("pkg() { LD_LIBRARY_PATH= command pkg"))
         assertTrue(script.contains("npm_config_cache="))
         assertFalse(script.contains("for _oc_sdk"))
+
+        val withoutShim = RuntimeShellScript.render(
+            RuntimeEnv.build(inputs().copy(execShim = null)),
+        )
+        assertTrue(withoutShim.contains("unset LD_PRELOAD"))
+    }
+
+    @Test
+    fun execShimAndGlibcLoaderAreExportedToChildren() {
+        val contract = RuntimeEnv.build(inputs())
+        assertEquals(contract.execShim, contract.env["OC_EXEC_SHIM"])
+        assertEquals(contract.loader, contract.env["OC_GLIBC_LOADER"])
+        assertEquals(contract.glibcLibDir, contract.env["OC_GLIBC_LIB_DIR"])
+        assertTrue(contract.toJson().contains("liboc_exec.so"))
+        assertFalse(contract.env.containsKey("LD_PRELOAD"))
     }
 
     @Test

@@ -132,7 +132,7 @@ Dù mở mọi quyền OpenCode, tiến trình vẫn là app thông thường:
 
 - Không có `root`/`su`; không đọc được `/data/data/com.termux` hay data app khác; không `apt`, chỉ có bridge `pkg` của app.
 - SELinux `untrusted_app` chặn nhiều syscall/đường dẫn; bionic chặn `clone3`, `close_range`, `landlock_create_ruleset` → cần SIGSYS handler (`RUNTIME_PATH_HOOK.md:236-247`) hoặc `oc-run`/gopatch cho binary tĩnh.
-- `targetSdk = 28` được giữ **cố ý** để `execve()` trong app data hoạt động; docs `TERMUX_DAEMON_AND_API.md:684` cảnh báo nâng targetSdk thì phải có termux-exec/linker shim — tức là "quyền" ở đây cũng bị khoá bởi thiết kế build.
+- `targetSdk = 36`: `execve()` trong app data bị chặn, nên runtime dùng linker shim/loader đóng gói trong APK (`docs/TARGET_SDK_36_EXEC_SHIM.md`). Quyền của agent vẫn bị giới hạn bởi sandbox Android.
 - Prefix Termux-like được cài **không root** qua broadcast receiver có signature permission (`OpenCodePkgReceiver`, `TERMUX_DAEMON_AND_API.md:369-370, 618-619`).
 
 Nói cách khác: **OpenCode grant quyền cho agent, nhưng Android không grant quyền cho OpenCode.**

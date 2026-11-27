@@ -79,14 +79,15 @@ cách xử lý đã chọn. Mỗi mục nêu hiện trạng của app, phần c�
 
 ### 2.3 W^X / exec và môi trường runtime
 
-- Với glibc process phải **unset `LD_PRELOAD`** trước khi exec tool của hệ; app làm việc này
-  trong `opencode-env.sh` (`unset LD_PRELOAD` + wrapper
-  `LD_LIBRARY_PATH= LD_PRELOAD= command pkg`).
-- Nguyên tắc: chỉ định `LD_PRELOAD` trỏ tới file không tồn tại còn tệ hơn **không set** —
-  linker từ chối mọi binary động (`CANNOT LINK EXECUTABLE`). Vì vậy mọi nơi thiết lập
-  `LD_PRELOAD` đều kiểm tra file tồn tại trước. Áp dụng cho script env của app: hiện
-  `unset LD_PRELOAD` vô điều kiện là an toàn, nhưng các biến phụ thuộc (ví dụ
-  `GIT_TEMPLATE_DIR`, `TZDIR`) nên theo cùng nguyên tắc "chỉ set khi có thật".
+- Với process glibc, `LD_PRELOAD` bionic **phải bị bỏ trước khi exec loader**: shim
+  `liboc_exec.so` tự làm việc này và truyền `liboc-pathmap.so` qua `--preload`. Shell thì
+  giữ shim để route `pkg`/script/ELF trong prefix (`LD_LIBRARY_PATH=` vẫn được clear
+  riêng cho `pkg` và các lệnh Android). Xem `docs/TARGET_SDK_36_EXEC_SHIM.md`.
+- Nguyên tắc vẫn đúng: chỉ định `LD_PRELOAD` trỏ tới file không tồn tại còn tệ hơn
+  **không set** — linker từ chối mọi binary động (`CANNOT LINK EXECUTABLE`). Vì vậy shim
+  chỉ được chèn khi file tồn tại trong `nativeLibraryDir`, và `liboc-pathmap.so` chỉ được
+  truyền qua `--preload` khi file tồn tại. Các biến phụ thuộc (`GIT_TEMPLATE_DIR`, `TZDIR`)
+  tiếp tục theo nguyên tắc "chỉ set khi có thật".
 
 ### 2.4 JDK/Java (quan trọng cho `openjdk-17`/`21` của Termux)
 
@@ -130,8 +131,9 @@ update làm fingerprint đổi và kích hoạt lại lượt đầy đủ, nên
 - **`TZDIR`**: chỉ định `$PREFIX/share/zoneinfo` khi thiếu, tránh Java/Python/GNU time đoán mò
   `/usr/share/zoneinfo` (không có trên Android).
 - **npm/pip cache ra ngoài prefix**: `npm_config_cache`/`PIP_CACHE_DIR` (app đã có).
-- **Scratch exec được**: app giữ `/data/data/…` (W^X chỉ gặp từ targetSdk 29+, app target 28)
-  nên không cần mirror sang chỗ khác.
+- **Scratch exec không còn trực tiếp được**: từ targetSdk 36, W^X chặn `execve()` trong
+  `/data/data/…`. Dùng `/system/bin/linker64` cho ELF bionic/script và helper trong
+  `nativeLibraryDir` cho phần còn lại (xem `docs/TARGET_SDK_36_EXEC_SHIM.md`).
 - **Chỉ deploy khi hash khớp**: stage tarball gắn hash nội dung thay vì chỉ hash danh sách gói,
   tránh deploy một tarball cũ. Ý tưởng "hash nội dung thay vì danh sách" đáng nhớ nếu app sau
   này cache tarball bootstrap.
@@ -209,7 +211,7 @@ quyết định chính.
 | OpenSSL (node/curl/gh) | config/modules path cũ | cài `openssl`, `nodejs`… | ✅ OPENSSL_CONF/MODULES/ENGINES |
 | libcurl | CA file cứng cert.pem prefix cũ | mọi HTTPS | ✅ GIT_CONFIG sslCAInfo + SSL_CERT_FILE/CURL_CA_BUNDLE (đã đủ) |
 | git | GIT_EXEC_PATH/SHELL_PATH/templates/system config/gitattributes | cài git | ✅ hết |
-| bash | profile shebang + env unset LD_PRELOAD | mọi tty | ✅ |
+| bash | profile shebang + env shim bionic (không còn `unset LD_PRELOAD`) | mọi tty | ✅ |
 | Python | prefix trong sysconfig; pip cache; REQUESTS | cài `python`/`pip` | ✅ relocation che phần lớn + `REQUESTS_CA_BUNDLE`/`PIP_CERT` |
 | Perl | `@INC` biên dịch cứng theo prefix Termux | cài `perl` (và script như `cowsay`) | ✅ `PERL5LIB` trỏ tới `lib/perl5/<version>` + `/<arch>-android` của prefix |
 | Ruby | `$LOAD_PATH` biên dịch cứng; Ruby 4 không tự nạp RubyGems | cài `ruby`, chạy `gem` | ✅ `RUBYLIB` + `RUBYOPT=-rrubygems` |

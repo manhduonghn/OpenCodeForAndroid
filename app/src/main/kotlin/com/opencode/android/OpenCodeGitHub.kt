@@ -793,7 +793,13 @@ object OpenCodeGitHub {
     ): Result {
         return try {
             if (isCancelled?.invoke() == true) return Result(-2, "cancelled")
-            val builder = ProcessBuilder(*command)
+            // The app process is forked from zygote, so its own execve() cannot use a late
+            // LD_PRELOAD. Wrap prefix binaries with the system linker / APK glibc loader;
+            // the shim is placed in the child env for everything they exec later.
+            val wrapped = OpenCodeBootstrap.wrapExecutable(command)
+            val startsGlibcLoader = OpenCodeBootstrap.nativeGlibcLoader()
+                ?.let { wrapped.firstOrNull() == it } ?: false
+            val builder = ProcessBuilder(*wrapped)
             builder.directory(directory)
             builder.redirectErrorStream(true)
             val env = builder.environment()
@@ -804,6 +810,13 @@ object OpenCodeGitHub {
             env["TMPDIR"] = "${OpenCodeBootstrap.PREFIX}/tmp"
             env["TERM"] = "xterm-256color"
             env["LANG"] = "C.UTF-8"
+            OpenCodeBootstrap.execShim()?.let {
+                env["OC_EXEC_SHIM"] = it
+                // ld-linux is started directly here: no shim in that process can strip
+                // LD_PRELOAD, so a bionic preload must not reach it at all.
+                if (!startsGlibcLoader) env["LD_PRELOAD"] = it
+            }
+            OpenCodeBootstrap.nativeGlibcLoader()?.let { env["OC_GLIBC_LOADER"] = it }
             if (File(OpenCodeBootstrap.PREFIX, "share/zoneinfo").isDirectory) {
                 env["TZDIR"] = "${OpenCodeBootstrap.PREFIX}/share/zoneinfo"
             }

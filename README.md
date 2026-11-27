@@ -150,10 +150,12 @@ transient network error (DNS after a network change, a dropped socket) is
 retried three times per mirror before the install gives up; a rerun repeats the
 dependency closure and completes it.
 
-`termux-exec` is not needed because the app targets API 28, so binaries in its
-data directory may be executed directly. That is also why there is no linker
-shim: a script whose shebang points into this prefix is exec'ed by the kernel
-normally. The app keeps prefixes installed by older builds healthy: on every
+`termux-exec` is not used: the app ships its own bionic `LD_PRELOAD` shim
+(`liboc_exec.so`) so binaries and shebang scripts in its prefix still run with
+`targetSdk = 36`. Dynamic ELFs go through `/system/bin/linker64`, glibc ELFs
+through the relocated loader in `nativeLibraryDir`, and static helpers live in
+that directory too. See `docs/TARGET_SDK_36_EXEC_SHIM.md`. The app keeps prefixes
+installed by older builds healthy: on every
 start it refreshes the cheap entry points (bridge, `opencode`/`pkg` links,
 ripgrep cache, resolver and environment), and when the package marker or the
 package directories changed it also runs the full repair pass — dangling Termux
@@ -200,15 +202,16 @@ resolves the platform libraries it pulls in (`libunwindstack` needs `libz` and
 `liblzma`) through `LD_LIBRARY_PATH` as well. The copies in this prefix are not
 the ones Android ships, so the command died with
 `cannot locate symbol "Xzs_Construct"`. The env script therefore wraps it:
-`pkg() { LD_LIBRARY_PATH= LD_PRELOAD= command pkg "$@"; }`. The variable is
-cleared for that one command only, `bash` and the other tools still need it.
+`pkg() { LD_LIBRARY_PATH= command pkg "$@"; }`. The library path is cleared for
+that one command only; `LD_PRELOAD` keeps the bionic W^X shim so `pkg` and its
+children can still exec files from the prefix.
 
 The same conflict affects the Android commands that are used instead of the
 dropped termux-tools wrappers (`am`, `pm`, `cmd`, `settings`, `getprop`, …) and
 `/system/bin/curl` on releases that ship it: they are bionic binaries with their
 own libraries, and loading the OpenSSL 3 of this prefix makes them die with
 `cannot locate symbol "EVP_MD_CTX_create"`. The environment defines small
-functions for those commands that clear `LD_LIBRARY_PATH`/`LD_PRELOAD` for the
+functions for those commands that clear `LD_LIBRARY_PATH` for the
 duration of the command. `curl` is only wrapped while the prefix has no `curl`
 of its own; after `pkg install curl`, the Termux binary (which needs the
 libraries of the prefix) is used normally.
@@ -236,9 +239,10 @@ replacement), rewrites the `com.termux` paths inside `etc/bash.bashrc`, and
 writes a small managed `etc/profile` to replace the one shipped by the bash
 package.
 
-`targetSdk` is **28** on purpose: Android 10+ denies `execve()` of files inside
-the app data directory for apps that target API 29 or newer. Termux itself does
-the same.
+`targetSdk` is **36**. Android 10+ denies `execve()` of files inside the app data
+directory for apps that target API 29 or newer, so the app routes prefix programs
+through its own shim/loader instead of lowering the target (see
+`docs/TARGET_SDK_36_EXEC_SHIM.md`).
 
 ### Server authentication
 
@@ -494,9 +498,9 @@ one.
 * **No analytics, no crash reporting, no diagnostics directory.** Nothing is
   written outside the app's private data directory.
 
-`targetSdk` stays at **28** because Android 10+ denies `execve()` of files in
-the app data directory for apps that target API 29 or newer — this is a
-requirement of the runtime, not a leftover.
+`targetSdk` is **36**. The W^X restriction still applies; the runtime now works
+around it with an APK-based exec shim/loader instead of depending on API 28
+(`docs/TARGET_SDK_36_EXEC_SHIM.md`).
 
 ## Logging
 

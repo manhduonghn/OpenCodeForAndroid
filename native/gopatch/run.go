@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -21,6 +22,8 @@ const (
 	// path argument can name them even though they do not exist on the device.
 	termuxPrefix = "/data/data/com.termux/files/usr"
 	termuxHome   = "/data/data/com.termux/files/home"
+
+	systemLinker = "/system/bin/linker64"
 )
 
 func ocPrefix() string {
@@ -247,16 +250,69 @@ func startScript(path string, args []string, env []string, detail string) error 
 		argv = append(argv, args[1:]...)
 	}
 	// A glibc interpreter needs the loader and the preload just like a direct
-	// glibc program; only bionic/static interpreters can be exec'd as they are.
-	if kind, _, err := classifyFile(interp); err == nil && kind == "glibc" {
+	// glibc program. A dynamic bionic interpreter in app data needs Android's
+	// linker: execve() of app_data_file is denied with targetSdk >= 29.
+	switch kind, _, err := classifyFile(interp); {
+	case err == nil && kind == "glibc":
 		return startGlibc(interp, argv, env)
+	case err == nil && (kind == "bionic" || kind == "dynamic"):
+		return startBionic(interp, argv, env)
 	}
 	return syscall.Exec(interp, argv, withoutRealExe(env))
+}
+
+// startBionic runs a dynamic ELF from the app prefix through Android's linker.
+// The linker mmap()s the file, which W^X allows even though execve() is denied.
+func startBionic(path string, args []string, env []string) error {
+	argv := append([]string{systemLinker, path}, args[1:]...)
+	return syscall.Exec(systemLinker, argv, withoutRealExe(env))
+}
+
+// startPatched runs a patched static ELF through an anonymous file. Patched
+// copies live in app data, which cannot be exec'd with targetSdk >= 29; a
+// memfd is not labelled app_data_file and keeps the binary in memory. Devices
+// that reject it fall back to the original path, as before.
+func startPatched(path string, args []string, env []string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return syscall.Exec(path, args, env)
+	}
+	fd, err := syscall.MemfdCreate("oc-patched", syscall.MFD_CLOEXEC)
+	if err != nil {
+		return syscall.Exec(path, args, env)
+	}
+	for len(data) > 0 {
+		n, err := syscall.Write(fd, data)
+		if err != nil || n <= 0 {
+			syscall.Close(fd)
+			return syscall.Exec(path, args, env)
+		}
+		data = data[n:]
+	}
+	if err := syscall.Exec("/proc/self/fd/"+strconv.Itoa(fd), args, env); err != nil {
+		syscall.Close(fd)
+		return syscall.Exec(path, args, env)
+	}
+	return nil
+}
+
+// stripBionicPreload removes the bionic W^X shim and its library path before a
+// glibc process starts. liboc-pathmap.so is passed to ld-linux with --preload.
+func stripBionicPreload(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "LD_PRELOAD=") || strings.HasPrefix(entry, "LD_LIBRARY_PATH=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // startGlibc starts a dynamic program through the glibc loader of the prefix
 // with liboc-pathmap.so preloaded, exactly like the app starts its own tools.
 func startGlibc(path string, args []string, env []string) error {
+	env = stripBionicPreload(env)
 	loader := findLoader()
 	if loader == "" {
 		// Nothing named glibc is installed: let the kernel produce its own
@@ -303,6 +359,13 @@ func loaderSupportsArgv0(loader string) bool {
 }
 
 func findLoader() string {
+	// The app ships a relocated copy in nativeLibraryDir (apk_data_file). The
+	// copy in the prefix is app_data_file and cannot be exec'd with targetSdk 36.
+	if loader := os.Getenv("OC_GLIBC_LOADER"); loader != "" && fileExists(loader) {
+		if st, err := os.Stat(loader); err == nil && st.Mode().Perm()&0o111 != 0 {
+			return loader
+		}
+	}
 	dir := filepath.Join(ocPrefix(), "glibc", "lib")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -347,6 +410,8 @@ func runCommand(args []string) error {
 			strategy = "go"
 		case "static":
 			strategy = "static"
+		case "bionic", "dynamic":
+			strategy = "bionic-linker"
 		}
 		extra := ""
 		if detail != "" {
@@ -359,6 +424,8 @@ func runCommand(args []string) error {
 		return startScript(path, args, env, detail)
 	case "glibc":
 		return startGlibc(path, args, env)
+	case "bionic", "dynamic":
+		return startBionic(path, args, env)
 	case "go":
 		patched, err := patchedCopy(path)
 		if err != nil {
@@ -367,7 +434,7 @@ func runCommand(args []string) error {
 			fmt.Fprintf(os.Stderr, "oc-gopatch: %s: %v; starting it unpatched\n", path, err)
 			return syscall.Exec(path, args, env)
 		}
-		return syscall.Exec(patched, args, env)
+		return startPatched(patched, args, env)
 	case "static":
 		// A static C program is patched at its "svc #0" sites. Many static
 		// programs (Rust, tiny tools) do not need the policy, and a program
@@ -382,7 +449,7 @@ func runCommand(args []string) error {
 			}
 			return syscall.Exec(path, args, env)
 		}
-		return syscall.Exec(patched, args, env)
+		return startPatched(patched, args, env)
 	default:
 		return syscall.Exec(path, args, env)
 	}

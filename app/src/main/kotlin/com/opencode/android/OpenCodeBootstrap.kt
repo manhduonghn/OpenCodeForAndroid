@@ -853,7 +853,7 @@ object OpenCodeBootstrap {
         // renders the environment script, so it must see the state the shells will run with.
         ensureCaBundle(context)
         writeGitConfig()
-        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), buildPackageEnvironment())
+        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), buildPackageEnvironment(context))
         ensureGradleProperties()
         ensureLoginProfile()
         hookBashrc()
@@ -1030,8 +1030,8 @@ object OpenCodeBootstrap {
      * The generated package environment. All exported variables come from the runtime contract;
      * only the shell-only helpers live in [RuntimeShellScript].
      */
-    private fun buildPackageEnvironment(): String =
-        RuntimeShellScript.render(RuntimeEnv.build(runtimeInputs()))
+    private fun buildPackageEnvironment(context: Context? = null): String =
+        RuntimeShellScript.render(RuntimeEnv.build(runtimeInputs(context = context)))
 
     /** Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed. */
     fun javaHome(): String? = jdkHome()?.absolutePath
@@ -1046,6 +1046,7 @@ object OpenCodeBootstrap {
         apkStamp: String = "",
         packagesStamp: String = "",
         nativeStamp: String = "",
+        context: Context? = null,
     ): RuntimeInputs = RuntimeInputs(
         abi = getOpenCodeArch().orEmpty(),
         prefix = PREFIX,
@@ -1053,10 +1054,14 @@ object OpenCodeBootstrap {
         ocHome = OC_HOME,
         port = port,
         binaryPath = installedBinary()?.absolutePath.orEmpty(),
-        loader = findGlibcLoader().orEmpty(),
+        // The prefix loader is app_data_file and cannot be exec'd with targetSdk 36.
+        // The relocated copy in nativeLibraryDir is apk_data_file and stays executable.
+        loader = nativeGlibcLoader(context) ?: findGlibcLoader().orEmpty(),
         preload = File(PATHMAP_PATH).takeIf { it.isFile }?.absolutePath,
         glibcLibDir = GLIBC_LIB_DIR,
-        ptyBin = ensureTerminalRuntime(),
+        nativeLibraryDir = nativeLibraryDir(context).orEmpty(),
+        execShim = execShim(context),
+        ptyBin = ensureTerminalRuntime(context),
         ptySocketDir = PTY_SOCKET_DIR,
         javaHome = javaHome(),
         javaToolOptions = javaToolOptions(),
@@ -1350,7 +1355,7 @@ object OpenCodeBootstrap {
                 if (ensureTerminalRuntime() == null) {
                     status("WARNING: the terminal helper could not be prepared, the terminal may not start.")
                 }
-                ensureRipgrepRuntime()
+                ensureRipgrepRuntime(context)
                 installEntrypoints()
             } finally {
                 deleteQuietly(tarball)
@@ -1388,7 +1393,7 @@ object OpenCodeBootstrap {
         private fun doQuickMaintenance() {
             ensurePathAliases()
             ensureTerminalRuntime()
-            ensureRipgrepRuntime()
+            ensureRipgrepRuntime(context)
             // The env script is rewritten when its content changed, so a fix in it reaches an
             // install that predates it without reinstalling a package first (the `pkg` wrapper).
             ensurePackageEnvironment(context)
@@ -1434,7 +1439,7 @@ object OpenCodeBootstrap {
             ensureTerminalRuntime()
             // The package repair above installs ripgrep on an existing prefix; seed the cache
             // entry that OpenCode reads right after it, before the server is started.
-            ensureRipgrepRuntime()
+            ensureRipgrepRuntime(context)
             ensurePackageEnvironment(context)
             refreshResolvConf(context)
             patchLoginShellPaths()
@@ -1943,7 +1948,8 @@ object OpenCodeBootstrap {
          */
         private fun runOpenCodeBinary(cmd: List<String>, timeoutMs: Long): CmdResult {
             if (cmd.isEmpty()) return CmdResult(-1, "", "empty command")
-            val loader = findGlibcLoader() ?: return CmdResult(-1, "", "glibc loader is missing")
+            val loader = nativeGlibcLoader(context) ?: findGlibcLoader()
+                ?: return CmdResult(-1, "", "glibc loader is missing")
             val binary = cmd[0]
             val args = ArrayList<String>()
             args.add(loader)
@@ -2091,8 +2097,8 @@ object OpenCodeBootstrap {
                 append("PREFIX=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
                 append("HOME_DIR=\"\${HOME:-").append(HOME).append("}\"\n")
                 append("LINK=\"").append(LINK_PATH).append("\"\n")
-                append("LOADER=\"\"\n")
-                append("for f in \"\$PREFIX\"/glibc/lib/ld-linux*.so.*; do if [ -x \"\$f\" ]; then LOADER=\"\$f\"; break; fi; done\n")
+                append("LOADER=\"").append(nativeGlibcLoader(context).orEmpty()).append("\"\n")
+                append("if [ -z \"\$LOADER\" ]; then for f in \"\$PREFIX\"/glibc/lib/ld-linux*.so.*; do if [ -x \"\$f\" ]; then LOADER=\"\$f\"; break; fi; done; fi\n")
                 append("if [ -z \"\$LOADER\" ]; then echo \"opencode: glibc loader not found in \$PREFIX/glibc/lib\" >&2; exit 127; fi\n")
                 append("REAL=\"\$(/system/bin/readlink -f \"\$LINK\" 2>/dev/null || true)\"\n")
                 append("if [ -z \"\$REAL\" ] || [ ! -f \"\$REAL\" ]; then echo \"opencode: not installed (\$LINK missing). Open the app to install it.\" >&2; exit 127; fi\n")
@@ -2650,6 +2656,163 @@ object OpenCodeBootstrap {
         }
     }
 
+    /* -------------------------------------------------------------- APK native libraries */
+
+    private const val NATIVE_EXEC_LIB = "liboc_exec.so"
+    private const val NATIVE_GLIBC_LOADER_LIB = "liboc_ld.so"
+    private const val NATIVE_GOPATCH_LIB = "liboc_gopatch.so"
+    private const val NATIVE_PTY_LIB = "liboc_pty.so"
+    private const val NATIVE_OCRUN_LIB = "liboc_ocrun.so"
+    private const val NATIVE_RIPGREP_LIB = "liboc_rg.so"
+
+    /** @return `applicationInfo.nativeLibraryDir`, where files stay executable with targetSdk 36. */
+    fun nativeLibraryDir(context: Context? = appContext): String? = try {
+        (context ?: appContext)?.applicationInfo?.nativeLibraryDir
+            ?.takeIf { it.isNotEmpty() && File(it).isDirectory }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun nativeFile(name: String, context: Context? = appContext): File? =
+        nativeLibraryDir(context)?.let { File(it, name).takeIf { file -> file.isFile } }
+
+    /** Bionic W^X exec shim, always loaded from the APK and never from the writable prefix. */
+    fun execShim(context: Context? = appContext): String? =
+        nativeFile(NATIVE_EXEC_LIB, context)?.absolutePath
+
+    /** Relocated glibc loader packaged in the APK (the prefix copy is no longer executable). */
+    fun nativeGlibcLoader(context: Context? = appContext): String? =
+        nativeFile(NATIVE_GLIBC_LOADER_LIB, context)?.takeIf { it.canExecute() }?.absolutePath
+
+    /** Static Go patcher packaged in the APK; ET_EXEC cannot go through Android's linker. */
+    fun nativeGopatch(context: Context? = appContext): String? =
+        nativeFile(NATIVE_GOPATCH_LIB, context)?.takeIf { it.canExecute() }?.absolutePath
+
+    /** Bionic PIE in the APK that exports the shim and calls [nativeGopatch]. */
+    fun nativeOcRun(context: Context? = appContext): String? =
+        nativeFile(NATIVE_OCRUN_LIB, context)?.takeIf { it.canExecute() }?.absolutePath
+
+    /** Bionic terminal daemon packaged in the APK (spawned directly by the glibc server). */
+    fun nativePty(context: Context? = appContext): String? =
+        nativeFile(NATIVE_PTY_LIB, context)?.takeIf { it.canExecute() }?.absolutePath
+
+    /** Bionic PIE in the APK that starts the prefix ripgrep through the system linker. */
+    fun nativeRipgrep(context: Context? = appContext): String? =
+        nativeFile(NATIVE_RIPGREP_LIB, context)?.takeIf { it.canExecute() }?.absolutePath
+
+    /**
+     * Wrap a command that Java starts directly (ProcessBuilder inherits zygote's missing shim).
+     * A dynamic bionic ELF in app data is loaded by the system linker; a glibc ELF is loaded by
+     * the relocated loader from nativeLibraryDir. Static ET_EXEC files cannot use either and
+     * must be called through the APK's `oc-run` wrapper.
+     */
+    fun wrapExecutable(command: Array<String>): Array<String> {
+        val executable = command.firstOrNull()?.takeIf { it.startsWith("/") } ?: return command
+        val file = File(executable)
+        if (!file.isFile || !file.absolutePath.startsWith(DATA_DIR)) return command
+        val rest = command.drop(1)
+        return when (inspectExecutable(file)) {
+            ExecKind.BIONIC -> (listOf(SYSTEM_LINKER, executable) + rest).toTypedArray()
+            ExecKind.GLIBC -> {
+                val loader = nativeGlibcLoader() ?: return command
+                val args = ArrayList<String>()
+                args.add(loader)
+                args.add("--library-path")
+                args.add(GLIBC_LIB_DIR)
+                val pathmap = File(PATHMAP_PATH)
+                if (pathmap.isFile) {
+                    args.add("--preload")
+                    args.add(pathmap.absolutePath)
+                }
+                args.add(executable)
+                args.addAll(rest)
+                args.toTypedArray()
+            }
+            // A static ET_EXEC or a shebang script in app data cannot be exec'd at all.
+            // The APK's oc-run wrapper calls the patcher and exports the shim for children.
+            ExecKind.STATIC, ExecKind.NONE ->
+                nativeOcRun()?.let { (listOf(it, executable) + rest).toTypedArray() } ?: command
+        }
+    }
+
+    private enum class ExecKind { NONE, BIONIC, GLIBC, STATIC }
+
+    private const val SYSTEM_LINKER = "/system/bin/linker64"
+
+    private fun u16(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
+
+    private fun u64(bytes: ByteArray, offset: Int): Long {
+        var value = 0L
+        for (i in 0 until 8) value = value or ((bytes[offset + i].toLong() and 0xFF) shl (8 * i))
+        return value
+    }
+
+    private fun inspectExecutable(file: File): ExecKind {
+        try {
+            java.nio.channels.FileChannel.open(
+                file.toPath(),
+                java.nio.file.StandardOpenOption.READ,
+            ).use { channel ->
+                val header = ByteArray(64)
+                if (!readFully(channel, header, 0)) return ExecKind.NONE
+                if (header[0] != 0x7f.toByte() || header[1] != 'E'.code.toByte() ||
+                    header[2] != 'L'.code.toByte() || header[3] != 'F'.code.toByte() ||
+                    header[4] != 2.toByte()
+                ) return ExecKind.NONE
+
+                val eType = u16(header, 16)
+                val phoff = u64(header, 32)
+                val phentsize = u16(header, 54)
+                val phnum = u16(header, 56)
+                if (phoff > 0 && phentsize >= 56 && phnum > 0 && phnum < 1024) {
+                    val entry = ByteArray(phentsize)
+                    for (i in 0 until phnum) {
+                        if (!readFully(channel, entry, phoff + i.toLong() * phentsize)) {
+                            return ExecKind.NONE
+                        }
+                        if (u32(entry, 0) != 3L) continue // PT_INTERP
+                        val offset = u64(entry, 8)
+                        val size = u64(entry, 32)
+                        if (size <= 0 || size > 512) break
+                        val interp = ByteArray(size.toInt())
+                        if (!readFully(channel, interp, offset)) break
+                        val text = String(interp, Charsets.UTF_8)
+                        return if (text.contains("ld-linux") || text.contains("glibc")) {
+                            ExecKind.GLIBC
+                        } else {
+                            ExecKind.BIONIC
+                        }
+                    }
+                }
+                return if (eType == 3) ExecKind.BIONIC else ExecKind.STATIC // ET_DYN vs ET_EXEC
+            }
+        } catch (e: Exception) {
+            return ExecKind.NONE
+        }
+    }
+
+    private fun readFully(
+        channel: java.nio.channels.FileChannel,
+        bytes: ByteArray,
+        position: Long,
+    ): Boolean {
+        val buffer = java.nio.ByteBuffer.wrap(bytes)
+        var offset = position
+        while (buffer.hasRemaining()) {
+            val read = channel.read(buffer, offset)
+            if (read <= 0) return false
+            offset += read.toLong()
+        }
+        return true
+    }
+
+    private fun u32(bytes: ByteArray, offset: Int): Long =
+        (bytes[offset].toLong() and 0xFF) or
+            ((bytes[offset + 1].toLong() and 0xFF) shl 8) or
+            ((bytes[offset + 2].toLong() and 0xFF) shl 16) or
+            ((bytes[offset + 3].toLong() and 0xFF) shl 24)
+
     /** @return the glibc loader of the toolchain, or null if the glibc runtime is not installed. */
     fun findGlibcLoader(): String? {
         val files = File(GLIBC_LIB_DIR).listFiles() ?: return null
@@ -2695,12 +2858,28 @@ object OpenCodeBootstrap {
      * Install `oc-run`, the entry point for programs that were downloaded later. It uses the
      * patcher when this APK shipped one and starts the command unchanged otherwise.
      */
-    private fun installOcRun() {
+    private fun installOcRun(context: Context? = appContext) {
+        val file = File(OCRUN_PATH)
+        // targetSdk 36 cannot exec a script that lives in app data. The APK ships a tiny
+        // bionic PIE in nativeLibraryDir: it exports the shim and calls the static Go
+        // patcher, both siblings in the same (executable) directory.
+        val native = nativeOcRun(context)
+        if (native != null) {
+            replaceManagedSymlink(file, native)
+            if (file.canExecute()) return
+        }
+
+        val gopatch = nativeGopatch(context) ?: "$PREFIX/libexec/oc-gopatch"
         val script = buildString {
             append("#!/system/bin/sh\n")
             append("# Managed by the OpenCode for Android app.\n")
             append("# Start a downloaded program with the private prefix of this app.\n")
             append("prefix=\"\${PREFIX:-").append(PREFIX).append("}\"\n")
+            append("helper=\"").append(gopatch).append("\"\n")
+            append("if [ -x \"\$helper\" ]; then\n")
+            append("  OC_PREFIX=\"\$prefix\" OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"")
+            append(" exec \"\$helper\" run -- \"\$@\"\n")
+            append("fi\n")
             append("helper=\"\$prefix/libexec/oc-gopatch\"\n")
             append("if [ -x \"\$helper\" ]; then\n")
             append("  OC_PREFIX=\"\$prefix\" OC_USER_HOME=\"\${OC_USER_HOME:-").append(HOME).append("}\"")
@@ -2708,13 +2887,42 @@ object OpenCodeBootstrap {
             append("fi\n")
             append("exec \"\$@\"\n")
         }
-        val file = File(OCRUN_PATH)
+        deleteIfManagedSymlink(file)
         if (readTextFileQuietly(file) == script && file.canExecute()) return
         writeTextFileQuietly(file, script)
         try {
             Os.chmod(file.absolutePath, MODE_700)
         } catch (e: Exception) {
             Log.w(LOG_TAG, "Could not make $OCRUN_PATH executable", e)
+        }
+    }
+
+    /** Replace a managed symlink atomically, leaving an already correct link untouched. */
+    private fun replaceManagedSymlink(link: File, target: String) {
+        try {
+            if (Os.readlink(link.absolutePath) == target) return
+        } catch (e: Exception) {
+            // Not a symlink yet.
+        }
+        deleteQuietly(link)
+        val parent = link.parentFile ?: return
+        if (!parent.isDirectory && !parent.mkdirs()) return
+        val temporary = File(parent, ".${link.name}.new")
+        deleteQuietly(temporary)
+        try {
+            Os.symlink(target, temporary.absolutePath)
+            if (!temporary.renameTo(link)) deleteQuietly(temporary)
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "Could not link $link to $target", e)
+            deleteQuietly(temporary)
+        }
+    }
+
+    private fun deleteIfManagedSymlink(file: File) {
+        try {
+            if (OsConstants.S_ISLNK(Os.lstat(file.absolutePath).st_mode)) deleteQuietly(file)
+        } catch (e: Exception) {
+            // Nothing there.
         }
     }
 
@@ -2735,7 +2943,7 @@ object OpenCodeBootstrap {
      * programs unmodified, and a helper of an older APK stays in place.
      */
     fun installNativeTools(context: Context? = appContext): Boolean {
-        installOcRun()
+        installOcRun(context)
         val abi = when (getOpenCodeArch()) {
             "arm64" -> "arm64-v8a"
             "x64" -> "x86_64"
@@ -2743,21 +2951,26 @@ object OpenCodeBootstrap {
         }
         val gopatch = File(GOPATCH_PATH)
         val pathmap = File(PATHMAP_PATH)
-        val installed = isExecutable(gopatch) && pathmap.isFile
-        val stamp = "1 ${BuildConfig.VERSION_CODE} $abi ${apkStamp(context)}"
+        val nativeGopatch = nativeGopatch(context)
+        val installed = (nativeGopatch != null || isExecutable(gopatch)) && pathmap.isFile
+        val stamp = "2 ${BuildConfig.VERSION_CODE} $abi ${apkStamp(context)}"
         val state = if (installed) "ok" else "absent"
         val marker = File(NATIVE_TOOLS_MARKER_PATH)
         if (readTrimmed(marker) == "$stamp $state") return installed
 
-        val assets = (context ?: appContext)?.assets ?: return false
+        val assets = (context ?: appContext)?.assets
         try {
-            extractAsset(assets, "native/$abi/oc-gopatch", gopatch, MODE_700)
+            if (assets == null) throw IOException("No app assets")
+            // The APK copy is preferred: a static ET_EXEC in app data cannot be executed
+            // any more with targetSdk 36, even through the W^X linker trampoline.
+            if (nativeGopatch == null) {
+                extractAsset(assets, "native/$abi/oc-gopatch", gopatch, MODE_700)
+            }
             extractAsset(assets, "native/$abi/liboc-pathmap.so", pathmap, MODE_600)
-            if (!isExecutable(gopatch)) throw IOException("Could not make $gopatch executable")
         } catch (e: Exception) {
             Log.i(LOG_TAG, "This APK has no native helpers for $abi; oc-run starts programs unpatched", e)
         }
-        val nowInstalled = isExecutable(gopatch) && pathmap.isFile
+        val nowInstalled = (nativeGopatch(context) != null || isExecutable(gopatch)) && pathmap.isFile
         writeTextFileQuietly(marker, "$stamp ${if (nowInstalled) "ok" else "absent"}\n")
         return nowInstalled
     }
@@ -2767,7 +2980,8 @@ object OpenCodeBootstrap {
     private val sPtyLock = Any()
 
     /** The prepared terminal helper, without doing any work, or null when it is missing. */
-    fun terminalRuntimePath(): String? {
+    fun terminalRuntimePath(context: Context? = appContext): String? {
+        nativePty(context)?.let { return it }
         val binary = File(PTY_BIN_PATH)
         return if (binary.isFile && binary.canExecute()) binary.absolutePath else null
     }
@@ -2775,16 +2989,17 @@ object OpenCodeBootstrap {
     /**
      * Make sure the app's pure-C `opencode-pty` helper exists and can be spawned.
      *
-     * The helper is shipped as a bionic asset next to the other native tools. It speaks the same
-     * protocol as the CLI's embedded helper, so the OpenCode server can keep using
-     * `OPENCODE_PTY_BIN` unchanged. Unlike the carved glibc binary it does not depend on the
-     * installed CLI version, its snapshot layout, or the glibc loader.
+     * The helper is packaged in nativeLibraryDir (apk_data_file, executable with targetSdk 36)
+     * and comes from an older APK asset only as a fallback. It speaks the same protocol as the
+     * CLI's embedded helper, so the OpenCode server can keep using `OPENCODE_PTY_BIN` unchanged.
+     * Unlike the carved glibc binary it does not depend on the installed CLI version.
      *
      * @return the absolute path of the helper, or null when it could not be prepared.
      */
-    fun ensureTerminalRuntime(): String? = synchronized(sPtyLock) { prepareTerminalRuntime() }
+    fun ensureTerminalRuntime(context: Context? = appContext): String? =
+        synchronized(sPtyLock) { prepareTerminalRuntime(context) }
 
-    private fun prepareTerminalRuntime(): String? {
+    private fun prepareTerminalRuntime(context: Context? = appContext): String? {
         // The daemon creates its unix socket below this directory and dies with EACCES when it is
         // missing. It cannot live in $PREFIX/tmp either: `pkg install` empties it.
         val socketDir = File(PTY_SOCKET_DIR)
@@ -2802,11 +3017,20 @@ object OpenCodeBootstrap {
                 return null
             }
         }
-        val installed = terminalRuntimePath()
-        val stamp = "2 ${BuildConfig.VERSION_CODE} $abi ${apkStamp(appContext)}"
+        val installed = terminalRuntimePath(context)
+        val stamp = "3 ${BuildConfig.VERSION_CODE} $abi ${apkStamp(context)}"
         if (installed != null && readTrimmed(File(PTY_MARKER_PATH)) == stamp) return installed
 
-        val assets = appContext?.assets
+        // The server spawns this daemon itself. A copy in nativeLibraryDir is executable even
+        // with targetSdk 36; the daemon re-execs itself once with LD_PRELOAD=liboc_exec.so so
+        // the shells it starts can run prefix programs through the W^X shim.
+        val native = nativePty(context)
+        if (native != null) {
+            writeTextFileQuietly(File(PTY_MARKER_PATH), "$stamp\n")
+            return native
+        }
+
+        val assets = (context ?: appContext)?.assets
         if (assets == null) {
             Log.w(LOG_TAG, "Cannot prepare the terminal helper: no app assets")
             deleteQuietly(target)
@@ -2857,7 +3081,7 @@ object OpenCodeBootstrap {
      * the prefix and must also work when OpenCode starts it without the environment of the
      * terminal.
      */
-    private fun ensureRipgrepRuntime() {
+    private fun ensureRipgrepRuntime(context: Context? = appContext) {
         val binary = File("$PREFIX/bin/rg")
         if (!isExecutable(binary)) {
             Log.w(LOG_TAG, "Cannot prepare the ripgrep cache: $binary is not executable")
@@ -2865,6 +3089,13 @@ object OpenCodeBootstrap {
         }
 
         val target = File(RIPGREP_CACHE_PATH)
+        // OpenCode (a glibc process) execs this cache entry itself; with targetSdk 36 a
+        // script below app data is denied, so point it at the APK's executable wrapper.
+        val native = nativeRipgrep(context)
+        if (native != null) {
+            replaceManagedSymlink(target, native)
+            if (target.canExecute()) return
+        }
         val wrapper = buildString {
             append("#!/system/bin/sh\n")
             append("# Generated by OpenCode for Android. OpenCode downloads a glibc ripgrep that\n")
@@ -2904,14 +3135,17 @@ object OpenCodeBootstrap {
         val output = StringBuilder()
         var process: Process? = null
         try {
-            val builder = ProcessBuilder(cmd)
+            val builder = ProcessBuilder(*wrapExecutable(cmd.toTypedArray()))
             builder.directory(File(HOME))
             builder.redirectErrorStream(true)
             builder.environment().apply {
                 clear()
                 put("HOME", HOME)
+                put("PREFIX", PREFIX)
                 put("PATH", "$PREFIX/bin:/system/bin")
                 put("TMPDIR", TMP_DIR)
+                execShim()?.let { put("OC_EXEC_SHIM", it) }
+                nativeGlibcLoader()?.let { put("OC_GLIBC_LOADER", it) }
             }
             val started = builder.start()
             process = started

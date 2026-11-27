@@ -298,7 +298,7 @@ grep -E 'JAVA_HOME|LD_LIBRARY_PATH' "$PREFIX/etc/opencode-env.sh"
 
 ## 6. Phụ lục — bằng chứng tham chiếu nhanh
 
-- `app/build.gradle.kts:76-89,143-152` — constraint 31, versionCode 31, targetSdk 28.
+- `app/build.gradle.kts:76-89,143-152` — constraint 31, versionCode 31, targetSdk 36 (bản hiện tại).
 - `app/src/main/kotlin/com/opencode/android/OpenCodeBootstrap.kt:81-95` — `PREFIX`, `DATA_DIR`, alias dirs.
 - `…/OpenCodeBootstrap.kt:1044-1078,1101-1116,1152-1162` — runtime inputs, Java options, chọn JDK.
 - `…/OpenCodeBootstrap.kt:2967-2990,3016-3058,3095-3158,3175-3193` — alias + relocation.

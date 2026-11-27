@@ -81,10 +81,11 @@ android {
             "applicationId '$applicationId' makes the sandbox path '$sandboxPath' " +
                 "${sandboxPath.length} characters long, the relocation needs exactly 31"
         }
-        // Termux packages are executed directly from the app-private prefix. Android 10+ forbids
-        // execve() of app data files for apps that target API 29 or higher (the same reason the
-        // Termux app itself still targets API 28), so stay on 28.
-        targetSdk = 28
+        // targetSdk 36 is supported by the bionic LD_PRELOAD exec shim in nativeLibraryDir:
+        // prefix binaries run through /system/bin/linker64, glibc binaries through the APK's
+        // relocated ld-linux copy, and static helpers/entry scripts live in nativeLibraryDir
+        // (apk_data_file), which stays executable under W^X.
+        targetSdk = 36
         versionCode = 31
         versionName = "1.0.30"
 
@@ -236,6 +237,37 @@ val checkNativeAssets = tasks.register("checkNativeAssets") {
     }
 }
 tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(checkNativeAssets) }
+
+// The W^X shim, the relocated glibc loader and the helpers that Java/glibc processes start
+// directly must be executable native libraries, not app-data assets. CI downloads them into
+// src/main/jniLibs; a local build without them can still compile but will not run on API 29+.
+val checkNativeLibraries = tasks.register("checkNativeLibraries") {
+    val nativeLibraries = layout.projectDirectory.dir("src/main/jniLibs")
+    doLast {
+        val required = listOf(
+            "liboc_exec.so",     // bionic exec shim (LD_PRELOAD)
+            "liboc_ld.so",       // relocated glibc loader
+            "liboc_gopatch.so",  // static Go patcher (ET_EXEC, linker64 cannot load it)
+            "liboc_pty.so",      // bionic terminal daemon spawned by the server
+            "liboc_ocrun.so",    // bionic PIE that exports the shim and calls the patcher
+            "liboc_rg.so",       // ripgrep cache wrapper for the glibc server
+        )
+        val incomplete = listOf("arm64-v8a", "x86_64").filter { abi ->
+            val dir = nativeLibraries.dir(abi).asFile
+            required.any { !dir.resolve(it).isFile }
+        }
+        if (incomplete.isNotEmpty()) {
+            logger.warn(
+                "WARNING: app/src/main/jniLibs is missing W^X native libraries for " +
+                    "${incomplete.joinToString()} (needs ${required.joinToString()}). " +
+                    "The app will build, but targetSdk 36 needs these files to execute programs " +
+                    "from its prefix. Download the native-libraries artifact from the Native " +
+                    "helpers workflow."
+            )
+        }
+    }
+}
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(checkNativeLibraries) }
 
 // The Java sources are gone, but AGP still compares both toolchains: the Kotlin JVM target has to
 // match compileOptions above or the build fails with "Inconsistent JVM Target Compatibility".
