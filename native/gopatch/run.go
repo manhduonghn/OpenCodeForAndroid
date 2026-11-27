@@ -276,7 +276,7 @@ func memfdCreate(name string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	fd, _, errno := syscall.Syscall(syscall.SYS_MEMFD_CREATE, uintptr(unsafe.Pointer(p)), 1, 0)
+	fd, _, errno := syscall.Syscall(memfdCreateSyscall, uintptr(unsafe.Pointer(p)), 1, 0)
 	if errno != 0 {
 		return -1, errno
 	}
