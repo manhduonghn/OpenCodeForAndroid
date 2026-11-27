@@ -442,7 +442,7 @@ int execvp(const char *path, char *const argv[]) { return execvpe(path, argv, en
 
 __attribute__((visibility("default")))
 int execvpe(const char *name, char *const argv[], char *const envp[]) {
-    if (name == NULL || name[0] == '\0') { errno = ENOENT; return -1; }
+    if (name[0] == '\0') { errno = ENOENT; return -1; }
     if (strchr(name, '/') != NULL) return execve(name, argv, envp);
 
     const char *path = getenv("PATH");
@@ -469,7 +469,9 @@ int execvpe(const char *name, char *const argv[], char *const envp[]) {
             snprintf(shell, sizeof(shell), "%s/bin/sh",
                      env_default("OC_PREFIX", env_default("PREFIX", DEFAULT_PREFIX)));
             execve(shell, script_argv, envp);
-            /* fall through */
+            free(copy);
+            if (saw_eacces) errno = EACCES;
+            return -1;
         }
         default: free(copy); if (saw_eacces) errno = EACCES; return -1;
         }
