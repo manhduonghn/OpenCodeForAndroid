@@ -28,6 +28,17 @@ static void set_default(const char *name, const char *value) {
     if (getenv(name) == NULL || getenv(name)[0] == '\0') setenv(name, value, 1);
 }
 
+/* Avoid snprintf here: gcc -Wformat-truncation cannot prove the fixed suffix fits. */
+static int sibling(char *out, size_t size, const char *dir, const char *name) {
+    size_t dir_len = strlen(dir);
+    size_t name_len = strlen(name);
+    if (dir_len + 1 + name_len + 1 > size) return -1;
+    memcpy(out, dir, dir_len);
+    out[dir_len] = '/';
+    memcpy(out + dir_len + 1, name, name_len + 1);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     char self[PATH_MAX];
     ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
@@ -44,9 +55,12 @@ int main(int argc, char **argv) {
     char patcher[PATH_MAX];
     char shim[PATH_MAX];
     char loader[PATH_MAX];
-    snprintf(patcher, sizeof(patcher), "%s/%s", self, GOPATCH);
-    snprintf(shim, sizeof(shim), "%s/%s", self, SHIM);
-    snprintf(loader, sizeof(loader), "%s/%s", self, LOADER);
+    if (sibling(patcher, sizeof(patcher), self, GOPATCH) != 0 ||
+        sibling(shim, sizeof(shim), self, SHIM) != 0 ||
+        sibling(loader, sizeof(loader), self, LOADER) != 0) {
+        fprintf(stderr, "oc-run: native library path is too long\n");
+        return 127;
+    }
 
     set_default("OC_PREFIX", DEFAULT_PREFIX);
     set_default("OC_USER_HOME", DEFAULT_HOME);

@@ -19,6 +19,17 @@
 #define SHIM "liboc_exec.so"
 #define LOADER "liboc_ld.so"
 
+/* Avoid snprintf here: gcc -Wformat-truncation cannot prove the fixed suffix fits. */
+static int join_path(char *out, size_t size, const char *dir, const char *suffix) {
+    size_t dir_len = strlen(dir);
+    size_t suffix_len = strlen(suffix);
+    if (dir_len + 1 + suffix_len + 1 > size) return -1;
+    memcpy(out, dir, dir_len);
+    out[dir_len] = '/';
+    memcpy(out + dir_len + 1, suffix, suffix_len + 1);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *prefix = getenv("PREFIX");
     if (prefix == NULL || prefix[0] == '\0') prefix = getenv("OC_PREFIX");
@@ -34,8 +45,8 @@ int main(int argc, char **argv) {
 
     char shim[PATH_MAX];
     char loader[PATH_MAX];
-    snprintf(shim, sizeof(shim), "%s/%s", self, SHIM);
-    snprintf(loader, sizeof(loader), "%s/%s", self, LOADER);
+    if (join_path(shim, sizeof(shim), self, SHIM) != 0 ||
+        join_path(loader, sizeof(loader), self, LOADER) != 0) return 127;
     if (access(shim, F_OK) == 0) {
         setenv("LD_PRELOAD", shim, 1);
         setenv("OC_EXEC_SHIM", shim, 1);
@@ -43,7 +54,7 @@ int main(int argc, char **argv) {
     if (access(loader, F_OK) == 0) setenv("OC_GLIBC_LOADER", loader, 1);
 
     char binary[PATH_MAX];
-    snprintf(binary, sizeof(binary), "%s/bin/rg", prefix);
+    if (join_path(binary, sizeof(binary), prefix, "bin/rg") != 0) return 127;
     if (access(binary, F_OK) != 0) {
         fprintf(stderr, "oc-rg: missing %s\n", binary);
         return 127;
