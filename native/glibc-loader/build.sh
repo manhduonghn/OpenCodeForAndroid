@@ -40,7 +40,8 @@ echo "$sha256  $tmp/glibc.deb" | sha256sum -c -
   ar x glibc.deb
   tar xf data.tar.* 2>/dev/null || tar xf data.tar
 )
-loader=$(find "$tmp" -type f -name 'ld-linux*.so.1' | head -n1)
+# AArch64 names the loader ld-linux-aarch64.so.1, x86_64 uses ...so.2.
+loader=$(find "$tmp" -type f -name 'ld-linux*.so.*' | head -n1)
 if [ -z "$loader" ]; then
   echo "build.sh: no ld-linux in $filename" >&2
   exit 1
