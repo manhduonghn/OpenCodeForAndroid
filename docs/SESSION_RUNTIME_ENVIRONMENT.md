@@ -395,6 +395,12 @@ restart server đúng một lần theo contract.
   được; nếu caller gửi `LD_LIBRARY_PATH` rỗng, helper tự thay thế bằng `$PREFIX/lib` ngay tại chỗ
   (không thêm entry trùng, vì entry đầu tiên mới là giá trị `getenv()` thấy). Nhờ vậy shell của
   tool `shell` không còn khác terminal, và không còn lỗi `libandroid-support.so not found`.
+- `RuntimeEnv.build()` cũng đưa `$PREFIX/libexec/oc-bin` lên đầu `PATH` và export
+  `OC_EXEC_WRAPPER_DIR`/`OC_EXEC_WRAPPER_BIN`. `RuntimeShellScript` tạo tại thư mục đó một
+  symlink tới `liboc_ocrun.so` cho mỗi executable của `$PREFIX/bin`; wrapper dùng `argv[0]`
+  để chọn lệnh thật và gọi `oc-gopatch`. Đây là phần bổ sung cần thiết vì binary Go dùng
+  `execve()` thô nên `LD_PRELOAD` không chặn được (case `gh` gọi `git`). Các khoá wrapper
+  nằm trong `contractHash()`/`runtime.json`, nên đổi APK là server restart đúng một lần.
 - Cần rebuild `liboc_pty.so` (`native/pty-c/build.sh`) + cài lại APK để bản vá C có hiệu lực
   trên thiết bị; phần Kotlin chỉ cần assemble bình thường.
 

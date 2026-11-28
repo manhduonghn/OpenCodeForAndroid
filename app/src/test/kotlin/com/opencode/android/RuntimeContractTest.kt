@@ -22,6 +22,7 @@ class RuntimeContractTest {
         glibcLibDir = "/data/data/com.opencode.android/files/usr/glibc/lib",
         nativeLibraryDir = "/data/app/com.opencode.android/lib/arm64",
         execShim = "/data/app/com.opencode.android/lib/arm64/liboc_exec.so",
+        execWrapperBin = "/data/app/com.opencode.android/lib/arm64/liboc_ocrun.so",
         ptyBin = "/data/data/com.opencode.android/files/home/.opencode/bin/opencode-pty",
         ptySocketDir = "/data/data/com.opencode.android/files/usr/run",
         javaHome = null,
@@ -97,7 +98,7 @@ class RuntimeContractTest {
         assertTrue(script.contains("OC_PREFIX="))
         assertTrue(script.contains("LD_PRELOAD='/data/app/com.opencode.android/lib/arm64/liboc_exec.so'; export LD_PRELOAD"))
         assertFalse(script.contains("unset LD_PRELOAD"))
-        assertTrue(script.contains("pkg() { LD_LIBRARY_PATH= command pkg"))
+        assertTrue(script.contains("LD_LIBRARY_PATH= command pkg"))
         assertTrue(script.contains("npm_config_cache="))
         assertFalse(script.contains("for _oc_sdk"))
 
@@ -115,6 +116,27 @@ class RuntimeContractTest {
         assertEquals(contract.glibcLibDir, contract.env["OC_GLIBC_LIB_DIR"])
         assertTrue(contract.toJson().contains("liboc_exec.so"))
         assertFalse(contract.env.containsKey("LD_PRELOAD"))
+    }
+
+    @Test
+    fun execWrapperIsFirstInPathAndMaterialisedForEveryPrefixBinary() {
+        val contract = RuntimeEnv.build(inputs())
+        val wrapperDir = "${contract.prefix}/libexec/oc-bin"
+
+        assertEquals(contract.execWrapperBin, contract.env["OC_EXEC_WRAPPER_BIN"])
+        assertEquals(wrapperDir, contract.env["OC_EXEC_WRAPPER_DIR"])
+        assertEquals(wrapperDir, contract.env["PATH"]!!.substringBefore(':'))
+        assertEquals(wrapperDir, contract.shellEnvironment()["PATH"]!!.substringBefore(':'))
+        assertTrue(contract.toJson().contains("liboc_ocrun.so"))
+        assertTrue(contract.toJson().contains(wrapperDir))
+
+        val script = RuntimeShellScript.render(contract)
+        assertTrue(script.contains("/system/bin/ln -sf \"\$OC_EXEC_WRAPPER_BIN\""))
+        assertTrue(script.contains("[ \"\$OC_PREFIX/bin\" -nt \"\$OC_EXEC_WRAPPER_DIR/.stamp\" ]"))
+        assertTrue(script.contains("LD_LIBRARY_PATH= command pkg"))
+
+        val other = RuntimeEnv.build(inputs().copy(execWrapperBin = "/other/liboc_ocrun.so"))
+        assertNotEquals(contract.contractHash(), other.contractHash())
     }
 
     @Test
@@ -175,6 +197,8 @@ class RuntimeContractTest {
         assertEquals(contract.env["PATH"], env["PATH"])
         assertEquals("/custom/tmp", env["TMPDIR"])
         assertEquals(contract.execShim, env["OC_EXEC_SHIM"])
+        assertEquals(contract.execWrapperBin, env["OC_EXEC_WRAPPER_BIN"])
+        assertEquals(contract.execWrapperDir, env["OC_EXEC_WRAPPER_DIR"])
         assertEquals(contract.loader, env["OC_GLIBC_LOADER"])
         assertFalse(env.containsKey("LD_LIBRARY_PATH"))
         assertFalse(env.containsKey("LD_PRELOAD"))

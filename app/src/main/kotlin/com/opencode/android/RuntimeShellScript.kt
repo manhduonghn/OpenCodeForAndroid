@@ -49,12 +49,37 @@ object RuntimeShellScript {
         } else {
             append("unset LD_PRELOAD\n")
         }
+        // Every executable in the prefix gets a symlink to the APK exec wrapper. The wrapper
+        // reads its own argv[0], resolves that name under $PREFIX/bin and hands the real command
+        // to oc-gopatch. This covers programs using raw execve() syscalls (Go binaries such as
+        // `gh` running `git`), which an LD_PRELOAD shim cannot see. PATH already starts with the
+        // wrapper directory in RuntimeContract; this block only materialises the symlinks.
+        append("if [ -n \"\${OC_EXEC_WRAPPER_BIN:-}\" ] && [ -x \"\$OC_EXEC_WRAPPER_BIN\" ]; then\n")
+        append("  [ -d \"\$OC_EXEC_WRAPPER_DIR\" ] || /system/bin/mkdir -p \"\$OC_EXEC_WRAPPER_DIR\" 2>/dev/null\n")
+        append("  if [ -d \"\$OC_EXEC_WRAPPER_DIR\" ] && { [ ! -f \"\$OC_EXEC_WRAPPER_DIR/.stamp\" ] || [ \"\$OC_PREFIX/bin\" -nt \"\$OC_EXEC_WRAPPER_DIR/.stamp\" ]; }; then\n")
+        append("    for _oc_exec in \"\$OC_PREFIX\"/bin/*; do\n")
+        append("      [ -e \"\$_oc_exec\" ] && [ -x \"\$_oc_exec\" ] || continue\n")
+        append("      [ -L \"\$_oc_exec\" ] && continue\n")
+        append("      _oc_name=\${_oc_exec##*/}\n")
+        append("      case \"\$_oc_name\" in oc-run|rg|liboc_*) continue ;; esac\n")
+        append("      /system/bin/ln -sf \"\$OC_EXEC_WRAPPER_BIN\" \"\$OC_EXEC_WRAPPER_DIR/\$_oc_name\" 2>/dev/null || true\n")
+        append("    done\n")
+        append("    : > \"\$OC_EXEC_WRAPPER_DIR/.stamp\" 2>/dev/null || true\n")
+        append("  fi\n")
+        append("fi\n")
+        append("unset _oc_exec _oc_name\n")
         // `pkg` is the bionic bridge of the app. The Android linker resolves the platform
         // libraries it needs (libunwindstack pulls libz and liblzma) through LD_LIBRARY_PATH too,
         // and the copies of this prefix are not the ones Android ships: without clearing it the
         // command dies with `cannot locate symbol "Xzs_Construct"`. Only the library path is
         // cleared; LD_PRELOAD must stay so the W^X shim reaches the bridge and its children.
-        append("pkg() { LD_LIBRARY_PATH= command pkg \"\$@\"; }\n")
+        append("pkg() {\n")
+        append("  LD_LIBRARY_PATH= command pkg \"\$@\"\n")
+        append("  _oc_pkg_rc=\$?\n")
+        append("  [ -f \"\${OC_EXEC_WRAPPER_DIR:-}/.stamp\" ] && : > \"\$OC_EXEC_WRAPPER_DIR/.stamp\"\n")
+        append("  return \$_oc_pkg_rc\n")
+        append("}\n")
+        append("unset _oc_pkg_rc\n")
         // The same applies to the Android commands that the extractor deliberately does not
         // shadow with the termux-tools wrappers. /system/bin/curl, for example, links against
         // the OpenSSL of the platform and dies with `cannot locate symbol "EVP_MD_CTX_create"`

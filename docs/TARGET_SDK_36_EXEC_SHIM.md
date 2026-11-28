@@ -60,6 +60,15 @@ trong prefix vẫn do `ensureGlibcRelocated()` xử lý như cũ.
 - `$PREFIX/bin/oc-run` là symlink tới `liboc_ocrun.so`: một PIE C nhỏ trong
   nativeLibraryDir, đặt `OC_PREFIX`, `OC_EXEC_SHIM`, `OC_GLIBC_LOADER` rồi gọi
   `liboc_gopatch.so`.
+- Khi được gọi qua một symlink có tên khác `oc-run`, PIE này dùng `basename(argv[0])`
+  làm tên lệnh và phân giải trong `$PREFIX/bin`, rồi vẫn gọi `liboc_gopatch.so`.
+  `RuntimeContract.env["PATH"]` đặt `$PREFIX/libexec/oc-bin` lên đầu, và
+  `opencode-env.sh` tạo ở đó một symlink cho mọi file thực thi trong `$PREFIX/bin`
+  (có stamp để chỉ làm lại khi thư mục bin đổi; `pkg()` cũng invalidate stamp).
+  Nhờ vậy **mọi** lệnh trong prefix — kể cả exec thô từ binary Go như `gh` gọi
+  `git`, vốn không đi qua `LD_PRELOAD` — đều được route qua patcher: bionic qua
+  `linker64`, glibc qua `liboc_ld.so`, script qua interpreter, Go/static qua bản
+  đã patch `oc-gosys`.
 - Cache ripgrep (`$HOME/.opencode/bin/rg`) là symlink tới `liboc_rg.so`, wrapper
   gọi `$PREFIX/bin/rg` qua system linker.
 - `opencode-pty` được đóng gói thành `liboc_pty.so`; khi khởi động nó tự re-exec

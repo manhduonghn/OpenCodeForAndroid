@@ -29,6 +29,8 @@ data class RuntimeInputs(
     val nativeLibraryDir: String = "",
     /** Bionic W^X exec shim from [nativeLibraryDir], preloaded into shell processes. */
     val execShim: String? = null,
+    /** APK PIE used as the target of the PATH wrappers that route every prefix executable. */
+    val execWrapperBin: String? = null,
     val ptyBin: String?,
     val ptySocketDir: String,
     val ripgrepPath: String = "",
@@ -80,6 +82,8 @@ data class RuntimeContract(
     val glibcLibDir: String,
     val nativeLibraryDir: String,
     val execShim: String?,
+    val execWrapperBin: String?,
+    val execWrapperDir: String,
     val libraryPath: List<String>,
     val ptyBin: String?,
     val ptySocketDir: String,
@@ -163,6 +167,8 @@ data class RuntimeContract(
         result["OC_PREFIX"] = prefix
         result["OC_USER_HOME"] = home
         env["OC_EXEC_SHIM"]?.let { result["OC_EXEC_SHIM"] = it }
+        env["OC_EXEC_WRAPPER_BIN"]?.let { result["OC_EXEC_WRAPPER_BIN"] = it }
+        env["OC_EXEC_WRAPPER_DIR"]?.let { result["OC_EXEC_WRAPPER_DIR"] = it }
         result["OC_GLIBC_LOADER"] = loader
         result["OC_GLIBC_LIB_DIR"] = glibcLibDir
         result.putAll(overrides)
@@ -212,6 +218,8 @@ data class RuntimeContract(
             append("preload=").append(preload.orEmpty()).append('\n')
             append("nativeLibDir=").append(nativeLibraryDir).append('\n')
             append("execShim=").append(execShim.orEmpty()).append('\n')
+            append("execWrapperBin=").append(execWrapperBin.orEmpty()).append('\n')
+            append("execWrapperDir=").append(execWrapperDir).append('\n')
             append("libraryPath=").append(libraryPath.joinToString(":")).append('\n')
             append("pty=").append(ptyBin.orEmpty()).append('\n')
             append("socket=").append(ptySocketDir).append('\n')
@@ -252,6 +260,8 @@ data class RuntimeContract(
         val exec = JSONObject()
         exec.put("nativeLibraryDir", nativeLibraryDir)
         exec.put("shim", execShim ?: JSONObject.NULL)
+        exec.put("wrapperBin", execWrapperBin ?: JSONObject.NULL)
+        exec.put("wrapperDir", execWrapperDir)
         json.put("exec", exec)
         val helpers = JSONObject()
         helpers.put("pty", ptyBin ?: JSONObject.NULL)
@@ -330,7 +340,11 @@ object RuntimeEnv {
 
     fun build(inputs: RuntimeInputs): RuntimeContract {
         val env = LinkedHashMap<String, String>()
+        val execWrapperDir = File(inputs.prefix, "libexec/oc-bin").absolutePath
         val pathEntries = ArrayList<String>()
+        // Symlinks here point at the APK exec wrapper. Being first in PATH makes even a Go
+        // program's raw execve() (which LD_PRELOAD cannot intercept) route through oc-gopatch.
+        pathEntries.add(execWrapperDir)
         pathEntries.add("${inputs.prefix}/bin")
         inputs.javaHome?.let { pathEntries.add("$it/bin") }
         inputs.androidSdkHome?.let { sdk ->
@@ -344,6 +358,10 @@ object RuntimeEnv {
 
         env["HOME"] = inputs.home
         env["PREFIX"] = inputs.prefix
+        // The generic exec wrapper resolves commands below this prefix. It runs in server
+        // processes too, which do not go through shellEnvironment(), so both hints live here.
+        env["OC_PREFIX"] = inputs.prefix
+        env["OC_USER_HOME"] = inputs.home
         env["PATH"] = pathEntries.joinToString(":")
         inputs.javaHome?.let { env["JAVA_HOME"] = it }
         env["JAVA_TOOL_OPTIONS"] = inputs.javaToolOptions
@@ -376,6 +394,8 @@ object RuntimeEnv {
         // The W^X shim lives in nativeLibraryDir (apk_data_file). It is exported to shells and
         // child processes, but every glibc route strips LD_PRELOAD before starting ld-linux.
         inputs.execShim?.let { env["OC_EXEC_SHIM"] = it }
+        inputs.execWrapperBin?.let { env["OC_EXEC_WRAPPER_BIN"] = it }
+        env["OC_EXEC_WRAPPER_DIR"] = execWrapperDir
         env["OC_GLIBC_LOADER"] = inputs.loader
         env["OC_GLIBC_LIB_DIR"] = inputs.glibcLibDir
         inputs.ptyBin?.let { env["OPENCODE_PTY_BIN"] = it }
@@ -426,6 +446,8 @@ object RuntimeEnv {
             glibcLibDir = inputs.glibcLibDir,
             nativeLibraryDir = inputs.nativeLibraryDir,
             execShim = inputs.execShim,
+            execWrapperBin = inputs.execWrapperBin,
+            execWrapperDir = execWrapperDir,
             libraryPath = libraryPath,
             ptyBin = inputs.ptyBin,
             ptySocketDir = inputs.ptySocketDir,

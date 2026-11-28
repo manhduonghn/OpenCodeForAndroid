@@ -31,6 +31,15 @@ export OC_WRAPPER_TEST_LOG="$work/patcher.args"
 expected=$(printf 'run\n--\njq\n--version')
 [ "$(cat "$OC_WRAPPER_TEST_LOG")" = "$expected" ]
 
+echo "wrapper-test: a PATH symlink routes the command named by argv[0]"
+mkdir -p "$work/wrap/bin" "$work/wrap/prefix/bin"
+ln -sf "$work/oc-run" "$work/wrap/bin/git"
+printf '#!/bin/sh\necho git-mock\n' > "$work/wrap/prefix/bin/git"
+chmod 0755 "$work/wrap/prefix/bin/git"
+OC_PREFIX="$work/wrap/prefix" "$work/wrap/bin/git" status --short
+expected=$(printf 'run\n--\n%s/bin/git\nstatus\n--short' "$work/wrap/prefix")
+[ "$(cat "$OC_WRAPPER_TEST_LOG")" = "$expected" ]
+
 echo "wrapper-test: oc-run still runs a command when the patcher is absent"
 mkdir -p "$work/no-patcher/bin" "$work/no-patcher/libs"
 cp "$work/oc-run" "$work/no-patcher/oc-run"

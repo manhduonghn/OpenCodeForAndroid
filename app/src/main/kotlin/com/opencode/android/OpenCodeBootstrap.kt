@@ -32,6 +32,7 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Locale
@@ -853,10 +854,57 @@ object OpenCodeBootstrap {
         // renders the environment script, so it must see the state the shells will run with.
         ensureCaBundle(context)
         writeGitConfig()
-        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), buildPackageEnvironment(context))
+        val contract = RuntimeEnv.build(runtimeInputs(context = context))
+        writeTextFileIfChanged(File(ENV_SCRIPT_PATH), RuntimeShellScript.render(contract))
+        ensureExecWrappers(contract)
         ensureGradleProperties()
         ensureLoginProfile()
         hookBashrc()
+    }
+
+    /**
+     * Materialise the PATH wrappers without waiting for a shell to source the generated script.
+     * Go programs spawn from the server process, which never sources a profile, and their raw
+     * execve() calls must already see `$PREFIX/libexec/oc-bin` populated.
+     */
+    private fun ensureExecWrappers(contract: RuntimeContract) {
+        val wrapper = contract.execWrapperBin?.let { File(it) }?.takeIf { it.isFile && it.canExecute() }
+            ?: return
+        val dir = File(contract.execWrapperDir)
+        if (!dir.isDirectory && !dir.mkdirs()) return
+        val bin = File(contract.prefix, "bin")
+        val executables = bin.listFiles()?.filter { it.isFile && it.canExecute() } ?: return
+        for (executable in executables) {
+            val name = executable.name
+            if (name == "oc-run" || name == "rg" || name.startsWith("liboc_")) continue
+            val link = File(dir, name)
+            if (Files.isSymbolicLink(link.toPath())) {
+                val target = try {
+                    Files.readSymbolicLink(link.toPath())
+                } catch (e: IOException) {
+                    null
+                }
+                if (target == wrapper.toPath()) continue
+                try {
+                    Files.deleteIfExists(link.toPath())
+                } catch (e: IOException) {
+                    continue
+                }
+            } else if (link.exists()) {
+                // A real file placed here by the user wins over the generated wrapper.
+                continue
+            }
+            try {
+                Files.createSymbolicLink(link.toPath(), wrapper.toPath())
+            } catch (e: IOException) {
+                Log.w(LOG_TAG, "Could not create exec wrapper $link: ${e.message}")
+            }
+        }
+        try {
+            File(dir, ".stamp").writeText("")
+        } catch (e: IOException) {
+            Log.w(LOG_TAG, "Could not stamp exec wrapper dir: ${e.message}")
+        }
     }
 
     /**
@@ -1026,13 +1074,6 @@ object OpenCodeBootstrap {
         writeTextFileIfChanged(File(PREFIX, "etc/gitconfig"), text)
     }
 
-    /**
-     * The generated package environment. All exported variables come from the runtime contract;
-     * only the shell-only helpers live in [RuntimeShellScript].
-     */
-    private fun buildPackageEnvironment(context: Context? = null): String =
-        RuntimeShellScript.render(RuntimeEnv.build(runtimeInputs(context = context)))
-
     /** Newest `lib/jvm/java-<version>-openjdk` of the prefix, or null when no JDK is installed. */
     fun javaHome(): String? = jdkHome()?.absolutePath
 
@@ -1066,6 +1107,7 @@ object OpenCodeBootstrap {
         glibcLibDir = GLIBC_LIB_DIR,
         nativeLibraryDir = nativeLibraryDir(context).orEmpty(),
         execShim = execShim(context),
+        execWrapperBin = nativeOcRun(context),
         ptyBin = if (resolvePty) ensureTerminalRuntime(context) else terminalRuntimePath(context),
         ptySocketDir = PTY_SOCKET_DIR,
         javaHome = javaHome(),
