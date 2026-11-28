@@ -120,6 +120,13 @@ data class RuntimeContract(
      */
     fun serverProcessEnvironment(password: String, gitHubToken: String?): Map<String, String> {
         val result = spawnEnvironment(password, gitHubToken).toMutableMap()
+        // liboc-pathmap.so rewrites the paths it returns to the Termux spelling when OC_USER_HOME
+        // is set. That is useful for legacy programs, but the CLI derives its workspace root from
+        // getcwd(): with the hint present it sees /data/data/com.termux/files/home, which does not
+        // exist in this sandbox, and every location lookup fails with "Location not found".
+        // HOME is still exported with the real path, and child processes get OC_USER_HOME back
+        // from oc-gopatch/oc-exec, so only the server loses the misleading translation.
+        result.remove("OC_USER_HOME")
         if (execShim != null) {
             result["LD_PRELOAD"] = execShim
         } else {
@@ -289,7 +296,9 @@ data class RuntimeContract(
     private val passwordFilePath: String get() = "$ocHome/server-password"
 
     companion object {
-        const val SCHEMA = 1
+        // Bumped when the server environment changes without changing `env`: an orphan of an
+        // older build must not be adopted, or it keeps the old (wrong) workspace location.
+        const val SCHEMA = 2
 
         /** Default `opencode serve` port. The shell script only needs a placeholder input. */
         const val DEFAULT_PORT = 49374

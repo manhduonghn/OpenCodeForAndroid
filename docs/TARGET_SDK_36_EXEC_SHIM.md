@@ -58,8 +58,10 @@ trong prefix vẫn do `ensureGlibcRelocated()` xử lý như cũ.
 ### Entrypoint và PTY
 
 - `$PREFIX/bin/oc-run` là symlink tới `liboc_ocrun.so`: một PIE C nhỏ trong
-  nativeLibraryDir, đặt `OC_PREFIX`, `OC_EXEC_SHIM`, `OC_GLIBC_LOADER` rồi gọi
-  `liboc_gopatch.so`.
+  nativeLibraryDir, đặt `OC_PREFIX`, `OC_EXEC_SHIM`, `OC_GLIBC_LOADER`, khôi phục
+  `LD_LIBRARY_PATH=$PREFIX/lib` khi route glibc của server đã xoá biến này, rồi gọi
+  `liboc_gopatch.so`. Patch lại bỏ biến này trước khi chạy target glibc, nên chỉ con
+  bionic/script (như `git`) được lợi; đây là điều giúp tab **Thay đổi** của CLI không bị rỗng.
 - Khi được gọi qua một symlink có tên khác `oc-run`, PIE này dùng `basename(argv[0])`
   làm tên lệnh và phân giải trong `$PREFIX/bin`, rồi vẫn gọi `liboc_gopatch.so`.
   `RuntimeContract.env["PATH"]` đặt `$PREFIX/libexec/oc-bin` lên đầu, và
@@ -97,6 +99,8 @@ jq --version
 opencode --version
 terminal: echo $LD_PRELOAD
 oc-run jq --version
+# server spawn: git phải thấy thay đổi, không trả []
+curl -s -u "opencode:$PASSWORD" "http://127.0.0.1:$PORT/api/vcs/status"
 ```
 
 Script có shebang trong prefix (như `opencode`) phải được chuyển cho interpreter
@@ -108,9 +112,10 @@ or directory`.
 `ld-linux` của `$PREFIX/glibc/lib`: file trong app data bị W^X từ chối với
 `Permission denied`.
 
-CI có thêm `native/wrappers/run-test.sh` (build host của shim/hai wrapper và kiểm
-tra đối số `oc-run`, fallback của `oc-rg`) cùng `go test` cho `findLoader`/
-`stripBionicPreload`; bản thân APK vẫn cần cài trên API 36 để xác nhận W^X.
+CI có thêm `native/wrappers/run-test.sh` (build host của shim/hai wrapper, kiểm
+tra đối số `oc-run`, fallback của `oc-rg` và việc `oc-run` khôi phục
+`LD_LIBRARY_PATH`) cùng `go test` cho `findLoader`/`stripBionicPreload`; bản thân
+APK vẫn cần cài trên API 36 để xác nhận W^X.
 
 CI hiện tại chưa có thiết bị API 36; máy thử nghiệm đang ở API 35. Trạng thái
 này được coi là **chưa xác nhận trên thiết bị**.

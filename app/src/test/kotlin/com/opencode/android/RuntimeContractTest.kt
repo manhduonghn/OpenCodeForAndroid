@@ -205,7 +205,7 @@ class RuntimeContractTest {
     }
 
     @Test
-    fun serverLauncherEnvironmentAddsOnlyTheShim() {
+    fun serverLauncherEnvironmentAddsTheShimAndDropsThePathmapHomeHint() {
         val contract = RuntimeEnv.build(inputs())
         val launcher = contract.serverProcessEnvironment("super-secret", "ghp_token")
 
@@ -213,6 +213,12 @@ class RuntimeContractTest {
         assertEquals("super-secret", launcher[RuntimeContract.OPENCODE_SERVER_PASSWORD])
         assertEquals("ghp_token", launcher["GH_TOKEN"])
         assertEquals(contract.env["LD_LIBRARY_PATH"], launcher["LD_LIBRARY_PATH"])
+        // getcwd() must not be rewritten to the Termux home for the CLI: it uses that path as its
+        // workspace root and then fails every location lookup because the directory does not exist.
+        assertFalse(launcher.containsKey("OC_USER_HOME"))
+        assertEquals(contract.home, launcher["HOME"])
+        // Shells still get the hint, so legacy programs and child processes keep path translation.
+        assertEquals(contract.home, contract.shellEnvironment()["OC_USER_HOME"])
         // The contract itself stays secret-free and unmodified.
         assertFalse(contract.env.containsKey("LD_PRELOAD"))
         assertFalse(contract.env.containsKey(RuntimeContract.OPENCODE_SERVER_PASSWORD))

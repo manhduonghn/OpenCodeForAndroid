@@ -54,6 +54,20 @@ hiệu mà không phát hành APK mới.
 Hai gốc được copy một lần trong constructor từ `OC_PREFIX` / `OC_USER_HOME`. Sau khi trượt hai
 tiền tố, `map_fhs()` mới được xét; `OC_FHS=0` tắt bảng FHS.
 
+Các hàm trả path (`getcwd`, `realpath`, `readlink`, …) làm chiều ngược lại: một path thật của app
+được **unmap** về spelling Termux để chương trình cũ thấy lại gốc nó được biên dịch cùng. Điều này
+không được áp dụng cho server OpenCode: CLI lấy workspace root từ `getcwd()`, nên nếu nó thấy
+`/data/data/com.termux/files/home` (thư mục của app khác, không tồn tại ở đây) mọi tra cứu location
+sẽ fail với `Location not found`. Vì vậy `RuntimeContract.serverProcessEnvironment()` bỏ
+`OC_USER_HOME` khỏi môi trường của server (giữ nguyên `HOME` thật); `oc-gopatch` và `oc-exec` thêm
+lại hint này cho tiến trình con, nên phần còn lại của runtime vẫn dịch path bình thường.
+
+Route glibc của server cũng xoá `LD_LIBRARY_PATH` trước khi chạy `liboc_ld.so`, và tiến trình con
+bionic không có shell profile để đặt lại. `oc-run` vì thế đặt mặc định `$PREFIX/lib` khi biến này
+trống (hoặc prepend nếu đã có) trước khi gọi patcher; `oc-gopatch` lại loại bỏ nó cho con glibc.
+Nếu thiếu bước này, `git` trong tab **Thay đổi** chết với `libpcre2-8.so not found`, và adapter VCS
+của CLI âm thầm trả danh sách rỗng.
+
 ### 2.2 Bảng FHS
 
 Prefix của app đã có dạng FHS (`bin`, `lib`, `share`, `etc`, `tmp`, `var`), nên `/usr` →

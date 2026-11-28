@@ -47,6 +47,20 @@ printf '#!/bin/sh\necho "mock-ok $1"\n' > "$work/no-patcher/bin/mock"
 chmod 0755 "$work/no-patcher/bin/mock"
 [ "$(PATH="$work/no-patcher/bin:$PATH" "$work/no-patcher/oc-run" mock arg)" = "mock-ok arg" ]
 
+echo "wrapper-test: oc-run restores LD_LIBRARY_PATH when the server route stripped it"
+mkdir -p "$work/libpath/prefix/lib"
+cp "$work/oc-run" "$work/libpath/oc-run"
+printf '#!/bin/sh\nprintf "%%s\\n" "$LD_LIBRARY_PATH" > "$OC_WRAPPER_TEST_LOG"\n' > "$work/libpath/liboc_gopatch.so"
+chmod 0755 "$work/libpath/liboc_gopatch.so"
+export OC_WRAPPER_TEST_LOG="$work/libpath.env"
+env -u LD_LIBRARY_PATH OC_PREFIX="$work/libpath/prefix" "$work/libpath/oc-run" mock
+[ "$(cat "$OC_WRAPPER_TEST_LOG")" = "$work/libpath/prefix/lib" ]
+
+echo "wrapper-test: oc-run keeps existing entries and does not confuse lib64 with lib"
+env LD_LIBRARY_PATH="$work/libpath/prefix/lib64" OC_PREFIX="$work/libpath/prefix" \
+  "$work/libpath/oc-run" mock
+[ "$(cat "$OC_WRAPPER_TEST_LOG")" = "$work/libpath/prefix/lib:$work/libpath/prefix/lib64" ]
+
 echo "wrapper-test: oc-rg falls back to the prefix binary without the Android linker"
 mkdir -p "$work/prefix/bin"
 printf '#!/bin/sh\necho rg-ok\n' > "$work/prefix/bin/rg"

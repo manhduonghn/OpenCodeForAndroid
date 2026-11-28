@@ -504,8 +504,14 @@ trong đó `oc_pathmap_active` là marker; `_init`/constructor bị ẩn).
 
 Các hàm trả path (`realpath`, `canonicalize_file_name`, `getcwd`, `glob`, `readlink`) được
 **unmap tại chỗ** về spelling Termux trước khi trả cho caller; các hàm nhận path thì map
-trước khi gọi hàm thật. `ftw`/`nftw` (và bản 64-bit) chỉ map path gốc, không map path trong
-callback — xem lý do bên dưới.
+trước khi gọi hàm thật. Ngoại lệ: server OpenCode chạy **không có** `OC_USER_HOME` trong môi
+trường (`RuntimeContract.serverProcessEnvironment()`), nên `getcwd()` trả path thật của app —
+nếu không CLI lấy `/data/data/com.termux/files/home` làm workspace root và báo `Location not found`.
+Shell và tiến trình con vẫn có hint này do `oc-gopatch`/`oc-exec` tự thêm lại.
+Route glibc của server cũng xoá `LD_LIBRARY_PATH`; `oc-run` đặt lại `$PREFIX/lib` cho con bionic
+(và prepend nếu biến đã có), rồi `oc-gopatch` loại bỏ lại cho con glibc. Nhờ vậy `git` do CLI spawn
+vẫn nạp được `libpcre2-8.so`, còn tab **Thay đổi** không còn trả rỗng vì lỗi exec bị nuốt.
+`ftw`/`nftw` (và bản 64-bit) chỉ map path gốc, không map path trong callback — xem lý do bên dưới.
 
 Hàm **cố ý bỏ qua**:
 

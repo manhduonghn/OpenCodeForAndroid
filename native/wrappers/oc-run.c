@@ -52,6 +52,20 @@ static int sibling(char *out, size_t size, const char *dir, const char *name) {
     return 0;
 }
 
+/* Exact colon-delimited match: /prefix/lib64 must not satisfy /prefix/lib. */
+static int library_path_has(const char *list, const char *entry) {
+    size_t entry_len = strlen(entry);
+    size_t i = 0;
+    while (list[i] != '\0') {
+        size_t start = i;
+        while (list[i] != '\0' && list[i] != ':') i++;
+        size_t len = i - start;
+        if (len == entry_len && memcmp(list + start, entry, entry_len) == 0) return 1;
+        if (list[i] == ':') i++;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     char self[PATH_MAX];
     ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
@@ -86,6 +100,35 @@ int main(int argc, char **argv) {
     } else {
         set_default("OC_GLIBC_LIB_DIR", DEFAULT_PREFIX "/glibc/lib");
     }
+
+    /*
+     * The server is launched through liboc_ld.so, and that route strips
+     * LD_LIBRARY_PATH from the glibc process. Its bionic children do not see a
+     * shell profile either, so without this they cannot load DT_NEEDED libraries
+     * from the prefix: git dies with "libpcre2-8.so not found" and the CLI VCS
+     * adapter silently reports an empty change list. oc-gopatch removes the
+     * variable again before starting a glibc target, so this only affects
+     * bionic/script children, which are exactly the ones that need it.
+     */
+    char lib_dir[PATH_MAX];
+    if (sibling(lib_dir, sizeof(lib_dir), prefix, "lib") == 0) {
+        const char *current = getenv("LD_LIBRARY_PATH");
+        if (current == NULL || current[0] == '\0') {
+            setenv("LD_LIBRARY_PATH", lib_dir, 1);
+        } else if (!library_path_has(current, lib_dir)) {
+            size_t lib_len = strlen(lib_dir);
+            size_t current_len = strlen(current);
+            char *combined = malloc(lib_len + 1 + current_len + 1);
+            if (combined != NULL) {
+                memcpy(combined, lib_dir, lib_len);
+                combined[lib_len] = ':';
+                memcpy(combined + lib_len + 1, current, current_len + 1);
+                setenv("LD_LIBRARY_PATH", combined, 1);
+                free(combined);
+            }
+        }
+    }
+
     /* Always prefer the APK loader: the one in the prefix is app_data_file. */
     if (access(loader, F_OK) == 0) setenv("OC_GLIBC_LOADER", loader, 1);
     if (access(shim, F_OK) == 0) setenv("LD_PRELOAD", shim, 1);
