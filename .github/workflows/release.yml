@@ -76,3 +76,12 @@ jobs:
           name: ${{ steps.apk.outputs.name }}
           path: dist/*.apk
           retention-days: 90
+
+      - name: Publish GitHub Release with the APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/*.apk \
+            --title "OpenCode for Android ${TAG#v}" \
+            --notes "Release build ${TAG} ($(git rev-parse --short HEAD)): targetSdk 36 exec shim and APK loader, All files access on Android 11+, opencode script path fixes."

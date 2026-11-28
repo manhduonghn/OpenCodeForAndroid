@@ -95,8 +95,8 @@ android {
         // relocated ld-linux copy, and static helpers/entry scripts live in nativeLibraryDir
         // (apk_data_file), which stays executable under W^X.
         targetSdk = 36
-        versionCode = 31
-        versionName = "1.0.30"
+        versionCode = 32
+        versionName = "1.0.31"
 
         if (hasNdk) {
             ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
