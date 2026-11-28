@@ -135,8 +135,12 @@ class RuntimeContractTest {
         assertFalse(shell.containsKey(RuntimeContract.OPENCODE_SERVER_PASSWORD))
         assertFalse(shell.containsKey("GH_TOKEN"))
 
-        // The script and the initial process export the same shim, from one renderer.
-        assertTrue(RuntimeShellScript.render(contract).contains("export LD_PRELOAD='${contract.execShim}'"))
+        // The script and the initial process carry the same shim, from one renderer.
+        assertTrue(
+            RuntimeShellScript.render(contract).contains(
+                "LD_PRELOAD='${contract.execShim}'; export LD_PRELOAD",
+            ),
+        )
     }
 
     @Test
