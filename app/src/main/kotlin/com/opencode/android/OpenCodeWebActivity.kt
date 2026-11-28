@@ -1271,17 +1271,12 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
     /* ------------------------------------------------------------------ shared storage */
 
     private fun requestStorageAccess() {
-        val legacy = OpenCodeStorage.hasLegacyPermission(this)
-        if (!legacy) {
-            storagePermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                ),
-            )
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !OpenCodeStorage.hasAllFilesAccess()) {
+        // targetSdk 36 makes READ/WRITE_EXTERNAL_STORAGE useless for raw file browsing on
+        // Android 11+: WRITE is ignored and READ only covers media. Open the special "All files
+        // access" screen first, otherwise the permission dialog loops without ever granting
+        // access to /storage/emulated/0 or an SD card.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (OpenCodeStorage.hasAllFilesAccess()) return
             val packageUri = Uri.parse("package:$packageName")
             try {
                 startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, packageUri))
@@ -1293,6 +1288,14 @@ class OpenCodeWebActivity : AppCompatActivity(), OpenCodeBootstrap.InstallListen
                 }
             }
             return
+        }
+        if (!OpenCodeStorage.hasLegacyPermission(this)) {
+            storagePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                ),
+            )
         }
     }
 

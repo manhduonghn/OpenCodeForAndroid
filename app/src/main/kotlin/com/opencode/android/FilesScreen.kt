@@ -6,7 +6,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.text.InputType
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -272,21 +271,13 @@ class FilesScreen(
     }
 
     /**
-     * Legacy storage access is enough for the primary volume, but an SD card on Android 11+
-     * needs "All files access" even when the legacy permission is already granted.
+     * With targetSdk 36, Android 11+ only grants raw shared-storage access through "All files
+     * access". The legacy READ/WRITE permission cannot open the primary volume or an SD card.
+     * Below Android 11 the legacy grant is still enough.
      */
     private fun hasStorageAccess(file: File): Boolean {
         if (!needsStoragePermission(file)) return true
-        if (OpenCodeStorage.hasAllFilesAccess()) return true
-        if (!OpenCodeStorage.hasLegacyPermission(activity)) return false
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return true
-        val path = canonicalPath(file)
-        return OpenCodeStorage.volumeRoots(activity)
-            .filterNot(OpenCodeStorage::isPrimaryRoot)
-            .none { root ->
-                val rootPath = canonicalPath(root)
-                path == rootPath || path.startsWith(rootPath + File.separator)
-            }
+        return OpenCodeStorage.hasStoragePermission(activity)
     }
 
     private fun canonicalPath(file: File): String = try {

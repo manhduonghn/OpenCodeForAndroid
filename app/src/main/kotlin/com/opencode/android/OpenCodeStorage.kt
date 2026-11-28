@@ -15,12 +15,16 @@ import java.util.Locale
  * Shared storage, SD cards and the downloaded files of the app.
  *
  * On Android 10 and lower the legacy read/write permission covers every shared volume. On
- * Android 11+ the root of an SD card needs the "All files access" special permission, while the
- * legacy permissions still cover the primary storage because this app targets API 28.
+ * Android 11+ raw file access to any shared volume needs the "All files access" special
+ * permission: with targetSdk 36 the legacy runtime permissions no longer grant it, so asking
+ * for READ/WRITE_EXTERNAL_STORAGE would leave the file browser permanently denied.
  */
 object OpenCodeStorage {
 
     fun hasLegacyPermission(context: Context): Boolean {
+        // Never treat the legacy grant as storage access on Android 11+. WRITE_EXTERNAL_STORAGE
+        // is ignored there, and READ_EXTERNAL_STORAGE only covers media collections.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) return false
         val read = context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
         val write = context.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
         return read == PackageManager.PERMISSION_GRANTED && write == PackageManager.PERMISSION_GRANTED
@@ -30,7 +34,11 @@ object OpenCodeStorage {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
 
     fun hasStoragePermission(context: Context): Boolean =
-        hasAllFilesAccess() || hasLegacyPermission(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            hasAllFilesAccess()
+        } else {
+            hasLegacyPermission(context)
+        }
 
     fun primaryRoot(): File = Environment.getExternalStorageDirectory()
 

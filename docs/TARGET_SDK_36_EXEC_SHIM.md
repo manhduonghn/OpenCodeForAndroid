@@ -68,6 +68,16 @@ trong prefix vẫn do `ensureGlibcRelocated()` xử lý như cũ.
 - `native/gopatch/run.go` cũng được sửa: ưu tiên `OC_GLIBC_LOADER` từ APK, route
   ELF bionic qua linker64 và dùng file ẩn danh (memfd) cho bản copy đã patch.
 
+### Quyền bộ nhớ khi cài lần đầu
+
+Từ targetSdk 36, `READ/WRITE_EXTERNAL_STORAGE` không còn cấp truy cập raw vào
+`/storage/emulated/0` hay thẻ SD trên Android 11+. Khi chạm vào biểu tượng Files,
+app mở thẳng màn hình **All files access** của hệ thống thay vì hỏi quyền legacy;
+chỉ Android 10 trở xuống mới dùng luồng `RequestMultiplePermissions`.
+`OpenCodeStorage.hasStoragePermission()` và `FilesScreen.hasStorageAccess()` cũng
+chỉ chấp nhận quyền legacy trên Android 10 trở xuống, nên không còn vòng lặp
+"đã cấp quyền nhưng vẫn không đọc được tệp".
+
 ## Kiểm tra
 
 Cần build CI (`native.yml`) rồi cài APK trên máy API 36 và kiểm tra:
