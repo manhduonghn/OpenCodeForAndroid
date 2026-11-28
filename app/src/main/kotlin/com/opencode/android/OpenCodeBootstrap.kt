@@ -1047,6 +1047,11 @@ object OpenCodeBootstrap {
         packagesStamp: String = "",
         nativeStamp: String = "",
         context: Context? = null,
+        /**
+         * False for commands that prepare the helper itself: calling [ensureTerminalRuntime] there
+         * would recurse into [runCommand]. The already installed path is enough for those inputs.
+         */
+        resolvePty: Boolean = true,
     ): RuntimeInputs = RuntimeInputs(
         abi = getOpenCodeArch().orEmpty(),
         prefix = PREFIX,
@@ -1061,7 +1066,7 @@ object OpenCodeBootstrap {
         glibcLibDir = GLIBC_LIB_DIR,
         nativeLibraryDir = nativeLibraryDir(context).orEmpty(),
         execShim = execShim(context),
-        ptyBin = ensureTerminalRuntime(context),
+        ptyBin = if (resolvePty) ensureTerminalRuntime(context) else terminalRuntimePath(context),
         ptySocketDir = PTY_SOCKET_DIR,
         javaHome = javaHome(),
         javaToolOptions = javaToolOptions(),
@@ -1081,6 +1086,13 @@ object OpenCodeBootstrap {
         packagesStamp = packagesStamp,
         nativeStamp = nativeStamp,
     )
+
+    /**
+     * Contract inputs for commands the JVM starts directly. They must not install the PTY helper:
+     * the helper installer itself calls [runCommand], so resolving it here would recurse forever.
+     */
+    internal fun commandInputs(context: Context? = null): RuntimeInputs =
+        runtimeInputs(context = context, resolvePty = false)
 
     /** The installed OpenCode binary, following the version symlink when one exists. */
     fun installedBinary(): File? {
@@ -1224,33 +1236,16 @@ object OpenCodeBootstrap {
     private class Installer(context: Context?, private val forceUpdate: Boolean) {
 
         private val context: Context? = context?.applicationContext
-        private val env = HashMap<String, String>()
+        // The paths and OS hints are the same contract values the terminal and the server use.
+        // bootstrapEnvironment() intentionally omits LD_LIBRARY_PATH/LD_PRELOAD: the verification
+        // process is started through an explicit glibc loader, and a bionic child must not pick up
+        // a prefix library path that would shadow Android's own libraries.
+        private val env: MutableMap<String, String> =
+            RuntimeEnv.build(commandInputs(context)).bootstrapEnvironment().toMutableMap().apply {
+                put("TERMUX_PKG_NO_MIRROR_SELECT", "1")
+            }
         private var lastOutput = ""
         var logOnly = false
-
-        init {
-            // Environment of the spawned processes: own toolchain prefix, no bionic preload for
-            // glibc processes.
-            env["HOME"] = HOME
-            env["PREFIX"] = PREFIX
-            env["PATH"] = "$PREFIX/bin"
-            env["TMPDIR"] = "$PREFIX/tmp"
-            env["TERM"] = "xterm-256color"
-            env["LANG"] = "C.UTF-8"
-            env["COLORTERM"] = "truecolor"
-            env["DEBIAN_FRONTEND"] = "noninteractive"
-            env["TERMUX_PKG_NO_MIRROR_SELECT"] = "1"
-            if (File(PREFIX, "share/zoneinfo").isDirectory) {
-                env["TZDIR"] = "$PREFIX/share/zoneinfo"
-            }
-            // The Termux binaries link their libraries with a hardcoded RUNPATH that points at the
-            // com.termux prefix, so the library search path has to be redirected explicitly. The
-            // glibc directory is NOT added here: it contains a 'libc.so' linker script that the
-            // bionic linker would try to load as an ELF file. glibc binaries are pointed at their
-            // libraries with an RPATH instead.
-            env["LD_LIBRARY_PATH"] = "$PREFIX/lib"
-            env.remove("LD_PRELOAD")
-        }
 
         fun start() {
             Thread({ run() }, "opencode-setup").start()
@@ -3128,8 +3123,9 @@ object OpenCodeBootstrap {
     /**
      * Run a short command with a timeout and return its exit code and combined output.
      *
-     * The environment is minimal on purpose: the glibc tools must not inherit the bionic
-     * `LD_LIBRARY_PATH` of the OpenCode server.
+     * The environment comes from the same contract as the terminal, minus the loader variables:
+     * these helpers are bionic (or carry their own wrapper), so they must not inherit the prefix's
+     * `LD_LIBRARY_PATH`. Only TMPDIR differs: helper staging stays below [TMP_DIR].
      */
     private fun runCommand(cmd: List<String>, timeoutMs: Long): Pair<Int, String> {
         val output = StringBuilder()
@@ -3138,14 +3134,12 @@ object OpenCodeBootstrap {
             val builder = ProcessBuilder(*wrapExecutable(cmd.toTypedArray()))
             builder.directory(File(HOME))
             builder.redirectErrorStream(true)
+            val commandEnv = RuntimeEnv.build(commandInputs()).bootstrapEnvironment(
+                mapOf("TMPDIR" to TMP_DIR),
+            )
             builder.environment().apply {
                 clear()
-                put("HOME", HOME)
-                put("PREFIX", PREFIX)
-                put("PATH", "$PREFIX/bin:/system/bin")
-                put("TMPDIR", TMP_DIR)
-                execShim()?.let { put("OC_EXEC_SHIM", it) }
-                nativeGlibcLoader()?.let { put("OC_GLIBC_LOADER", it) }
+                putAll(commandEnv)
             }
             val started = builder.start()
             process = started

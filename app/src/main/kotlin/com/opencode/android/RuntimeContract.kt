@@ -109,6 +109,66 @@ data class RuntimeContract(
         return result
     }
 
+    /**
+     * Environment passed to `/system/bin/sh`, the parent of the real server. It is the only place
+     * where the bionic exec shim is added to a JVM-spawned process: the shim's `execve()` route
+     * strips it before the glibc loader starts, so the server itself never loads a bionic `.so`.
+     */
+    fun serverProcessEnvironment(password: String, gitHubToken: String?): Map<String, String> {
+        val result = spawnEnvironment(password, gitHubToken).toMutableMap()
+        if (execShim != null) {
+            result["LD_PRELOAD"] = execShim
+        } else {
+            result.remove("LD_PRELOAD")
+        }
+        return result
+    }
+
+    /**
+     * Environment of a shell process: the interactive terminal and the shells started by the
+     * `opencode-pty` helper (both its PTY and pipe mode).
+     *
+     * A shell needs these values before any rc file or login profile runs. In particular
+     * `LD_LIBRARY_PATH` must already contain `$PREFIX/lib` when bash is exec'd, otherwise Android's
+     * linker cannot find `libandroid-support.so` (a `DT_NEEDED` of the packaged bash) and dies
+     * before `etc/profile` gets a chance to source the generated script. The exec shim is added
+     * here for the same reason: it must be present in the very first bionic process.
+     *
+     * Everything else comes from [env], the same map that produced the server process and the
+     * generated shell script. There is deliberately no second list of terminal variables.
+     */
+    fun shellEnvironment(terminal: Boolean = false): Map<String, String> {
+        val result = LinkedHashMap(env)
+        result["OC_PREFIX"] = prefix
+        result["OC_USER_HOME"] = home
+        execShim?.let { result["LD_PRELOAD"] = it }
+        if (terminal) result["OPENCODE_TERMINAL"] = "1"
+        return result
+    }
+
+    /**
+     * Environment for short bionic helper processes started directly by the JVM (asset verification,
+     * package extraction). It keeps the app's paths and OS hints from [env], but deliberately drops
+     * `LD_LIBRARY_PATH`/`LD_PRELOAD`: those helpers are bionic or receive a glibc loader explicitly,
+     * and a prefix library path there would shadow Android's own libraries.
+     */
+    fun bootstrapEnvironment(overrides: Map<String, String> = emptyMap()): Map<String, String> {
+        val result = LinkedHashMap<String, String>()
+        for (key in listOf(
+            "HOME", "PREFIX", "PATH", "TMPDIR", "TERM", "COLORTERM", "LANG",
+            "DEBIAN_FRONTEND", "TZDIR", "TERMINFO",
+        )) {
+            env[key]?.let { result[key] = it }
+        }
+        result["OC_PREFIX"] = prefix
+        result["OC_USER_HOME"] = home
+        env["OC_EXEC_SHIM"]?.let { result["OC_EXEC_SHIM"] = it }
+        result["OC_GLIBC_LOADER"] = loader
+        result["OC_GLIBC_LIB_DIR"] = glibcLibDir
+        result.putAll(overrides)
+        return result
+    }
+
     /** The shell command that executes the downloaded glibc binary through this prefix's loader. */
     fun launchCommand(pidFile: String): String {
         val preloadArg = preload?.takeIf { it.isNotEmpty() }?.let { " --preload '${shellQuote(it)}'" }.orEmpty()
@@ -301,6 +361,11 @@ object RuntimeEnv {
         env["LANG"] = "C.UTF-8"
         if (File(inputs.prefix, "share/zoneinfo").isDirectory) {
             env["TZDIR"] = "${inputs.prefix}/share/zoneinfo"
+        }
+        // Termux ncurses looks in the prefix database before the system one. It belongs to the
+        // contract like every other runtime path, so the terminal does not need a second copy.
+        if (File(inputs.prefix, "share/terminfo").isDirectory) {
+            env["TERMINFO"] = "${inputs.prefix}/share/terminfo"
         }
         env["COLORTERM"] = "truecolor"
         inputs.bashPath?.let { env["SHELL"] = it }

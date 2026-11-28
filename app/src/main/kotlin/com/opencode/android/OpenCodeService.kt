@@ -434,17 +434,13 @@ class OpenCodeService : Service() {
             ?: OpenCodeGitHub.storedToken()
         builder.environment().apply {
             clear()
-            contract.spawnEnvironment(
+            // One renderer for the shell that launches the server. It adds the bionic shim
+            // only for this first process; the shim strips it before ld-linux starts the
+            // glibc server, so there is no second list of launcher variables here.
+            contract.serverProcessEnvironment(
                 OpenCodeBootstrap.getServerPassword(service),
                 gitHubToken,
             ).forEach { (key, value) -> put(key, value) }
-            // Only /system/bin/sh is started with the bionic shim. Its execve route strips
-            // LD_PRELOAD before starting ld-linux, so the glibc server never loads it.
-            if (contract.execShim != null) {
-                put("LD_PRELOAD", contract.execShim)
-            } else {
-                remove("LD_PRELOAD")
-            }
         }
         // The PTY daemon creates its socket below this directory and dies with EACCES when it is
         // missing, because its default `/tmp` does not exist on Android.

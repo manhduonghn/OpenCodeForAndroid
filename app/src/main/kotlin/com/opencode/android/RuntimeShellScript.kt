@@ -30,8 +30,12 @@ object RuntimeShellScript {
         // that was downloaded later still contains the Termux paths. Neither is a process env
         // variable: they are hints for the path translation preload. Their values come from the
         // contract, never from a second set of app constants.
-        val prefix = contract.env.getValue("PREFIX")
-        val home = contract.env.getValue("HOME")
+        // These three values are also part of the initial shell environment produced by
+        // RuntimeContract.shellEnvironment(); read them from that one renderer instead of
+        // resolving them a second time here.
+        val shellEnv = contract.shellEnvironment()
+        val prefix = shellEnv.getValue("OC_PREFIX")
+        val home = shellEnv.getValue("OC_USER_HOME")
         append("OC_PREFIX=\"\${OC_PREFIX:-").append(prefix).append("}\"; export OC_PREFIX\n")
         append("OC_USER_HOME=\"\${OC_USER_HOME:-").append(home).append("}\"; export OC_USER_HOME\n")
         append("[ -d \"\$TMPDIR\" ] || mkdir -p \"\$TMPDIR\" 2>/dev/null\n")
@@ -39,7 +43,7 @@ object RuntimeShellScript {
         // nativeLibraryDir is the replacement for the old "unset LD_PRELOAD" rule: shells
         // carry it, glibc children drop it before ld-linux starts (the shim does that in
         // its execve route, liboc-pathmap.so is passed with --preload there).
-        val shim = contract.execShim
+        val shim = shellEnv["LD_PRELOAD"]
         if (shim != null) {
             append("LD_PRELOAD='").append(RuntimeContract.shellQuote(shim)).append("'; export LD_PRELOAD\n")
         } else {

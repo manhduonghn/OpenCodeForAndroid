@@ -1035,26 +1035,85 @@ static int make_argv(const char *program, Json *args, char ***out, size_t *count
 
 static void free_vector(char **vector, size_t count);
 
-static int env_has_key(Json *env, const char *key) {
+static int env_entry_is(const char *entry, const char *key) {
+    size_t len = strlen(key);
+    return !strncmp(entry, key, len) && entry[len] == '=';
+}
+
+static int env_has_key_n(Json *env, const char *key, size_t len) {
     if (!env || env->type != JSON_OBJECT) return 0;
     for (size_t i = 0; i < env->u.object.count; i++) {
-        if (!strcmp(env->u.object.keys[i], key)) return 1;
+        const char *candidate = env->u.object.keys[i];
+        if (!strncmp(candidate, key, len) && candidate[len] == '\0') return 1;
     }
     return 0;
 }
 
-static void envp_set(char **envp, size_t *written, const char *key, const char *value) {
-    size_t len = strlen(key) + strlen(value) + 2;
+static void envp_set_n(char **envp, size_t *written, const char *key, size_t klen,
+                       const char *value) {
+    size_t len = klen + strlen(value) + 2;
     envp[*written] = xmalloc(len);
-    snprintf(envp[*written], len, "%s=%s", key, value);
+    memcpy(envp[*written], key, klen);
+    envp[*written][klen] = '=';
+    memcpy(envp[*written] + klen + 1, value, strlen(value) + 1);
     (*written)++;
+}
+
+static void envp_set(char **envp, size_t *written, const char *key, const char *value) {
+    envp_set_n(envp, written, key, strlen(key), value);
+}
+
+static size_t ptr_count(char *const *vector) {
+    size_t count = 0;
+    while (vector && vector[count]) count++;
+    return count;
+}
+
+static ssize_t envp_index(char *const *envp, size_t count, const char *key) {
+    for (size_t i = 0; i < count; i++) {
+        if (env_entry_is(envp[i], key)) return (ssize_t)i;
+    }
+    return -1;
+}
+
+static void envp_replace(char **envp, size_t index, const char *key, const char *value) {
+    size_t len = strlen(key) + strlen(value) + 2;
+    char *entry = xmalloc(len);
+    snprintf(entry, len, "%s=%s", key, value);
+    free(envp[index]);
+    envp[index] = entry;
+}
+
+static int secret_env_key(const char *key, size_t len) {
+    static const char password[] = "OPENCODE_SERVER_PASSWORD";
+    static const char token[] = "GH_TOKEN";
+    return (len == sizeof(password) - 1 && !memcmp(key, password, len)) ||
+           (len == sizeof(token) - 1 && !memcmp(key, token, len));
 }
 
 static int make_envp(Json *env, char ***out, size_t *out_count) {
     size_t n = env && env->type == JSON_OBJECT ? env->u.object.count : 0;
-    /* Room for the caller map, the terminal overrides and the Android runtime variables below. */
-    char **envp = xcalloc(n + 14, sizeof(char *));
+    /* Room for the caller map, the inherited server environment and the two overrides below. */
+    char **envp = xcalloc(n + ptr_count(environ) + 3, sizeof(char *));
     size_t written = 0;
+
+    /*
+     * The daemon inherits the server's environment, which IS the runtime contract rendered by
+     * RuntimeContract in the app. Inherit all of it except the two secrets, so a shell started
+     * by the `shell` tool sees the same app-provided values as the interactive terminal. A key
+     * supplied by the caller always wins; TERM/COLORTERM are set by the daemon below.
+     */
+    for (size_t i = 0; environ[i] != NULL; i++) {
+        const char *entry = environ[i];
+        const char *eq = strchr(entry, '=');
+        if (eq == NULL) continue;
+        size_t key_len = (size_t)(eq - entry);
+        if (env_entry_is(entry, "TERM") || env_entry_is(entry, "COLORTERM")) continue;
+        if (secret_env_key(entry, key_len)) continue;
+        if (env_has_key_n(env, entry, key_len)) continue;
+        envp_set_n(envp, &written, entry, key_len, eq + 1);
+    }
+
     for (size_t i = 0; i < n; i++) {
         Json *value = &env->u.object.values[i];
         if (value->type != JSON_STRING) {
@@ -1062,27 +1121,38 @@ static int make_envp(Json *env, char ***out, size_t *out_count) {
             return -1;
         }
         const char *key = env->u.object.keys[i];
-        /* The daemon overrides these two after the caller environment. */
         if (!strcmp(key, "TERM") || !strcmp(key, "COLORTERM")) continue;
         envp_set(envp, &written, key, value->u.string.data);
     }
+
     /*
-     * The web client sends an empty env map, but the Android prefix shell needs the runtime paths
-     * of the server that spawned this daemon. Without LD_LIBRARY_PATH its first exec dies with
-     * `libandroid-support.so not found` before the login profile can set anything up. Inherit only
-     * these safe variables, and never override a value the caller supplied explicitly.
+     * The very first exec of the packaged bash needs LD_LIBRARY_PATH to resolve
+     * libandroid-support.so, which is a DT_NEEDED of that ELF. A caller may send an empty
+     * value (or the server may have been started by an older build without the contract key);
+     * fill it from the contract root in that case instead of letting the child die inside
+     * Android's linker before any login profile can run.
      */
-    static const char *const inherited[] = {
-        "LD_LIBRARY_PATH", "LD_PRELOAD", "BASH_ENV", "HOME", "PATH", "TMPDIR",
-        "LANG", "TZDIR", "SHELL", "PREFIX", "OC_PREFIX", "OC_USER_HOME",
-        "OC_EXEC_SHIM", "OC_GLIBC_LOADER", "OC_GLIBC_LIB_DIR",
-        NULL
-    };
-    for (size_t i = 0; inherited[i]; i++) {
-        if (env_has_key(env, inherited[i])) continue;
-        const char *value = getenv(inherited[i]);
-        if (value && *value) envp_set(envp, &written, inherited[i], value);
+    const char *library_key = "LD_LIBRARY_PATH";
+    ssize_t library_index = envp_index(envp, written, library_key);
+    int library_empty = library_index < 0 ||
+        envp[library_index][strlen(library_key) + 1] == '\0';
+    if (library_empty) {
+        const char *prefix = getenv("PREFIX");
+        if (prefix == NULL || prefix[0] == '\0') {
+            prefix = "/data/data/com.opencode.android/files/usr";
+        }
+        size_t len = strlen(prefix) + strlen("/lib") + 1;
+        char *path = xmalloc(len);
+        snprintf(path, len, "%s/lib", prefix);
+        if (library_index >= 0) {
+            /* Replace an empty caller value instead of adding a second, shadowed entry. */
+            envp_replace(envp, (size_t)library_index, library_key, path);
+        } else {
+            envp_set(envp, &written, library_key, path);
+        }
+        free(path);
     }
+
     envp_set(envp, &written, "TERM", "xterm-256color");
     envp_set(envp, &written, "COLORTERM", "truecolor");
     char **fit = realloc(envp, (written + 1) * sizeof(char *));

@@ -1,7 +1,7 @@
 package com.opencode.android.terminal
 
 import com.opencode.android.OpenCodeBootstrap
-import com.opencode.android.TermuxSemaphorePath
+import com.opencode.android.RuntimeEnv
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.AtomicMoveNotSupportedException
@@ -39,13 +39,19 @@ internal object TerminalLauncher {
 
     fun launch(rows: Int, cols: Int): TerminalLaunch {
         val home = File(OpenCodeBootstrap.HOME).apply { mkdirs() }
-        val tmp = File(OpenCodeBootstrap.PREFIX, "tmp").apply { mkdirs() }
+        File(OpenCodeBootstrap.PREFIX, "tmp").mkdirs()
+        // One contract for every layer. This is the same map that spawned the server and
+        // rendered etc/opencode-env.sh: PATH, HOME, TMPDIR, LD_LIBRARY_PATH, OC_SEMAPHORE_DIR,
+        // TERMINFO, the shim and every optional resolved path come from RuntimeContract, not
+        // from a second hand-maintained list in the terminal.
+        val contract = RuntimeEnv.build(OpenCodeBootstrap.runtimeInputs())
         val bash = File(OpenCodeBootstrap.PREFIX, "bin/bash")
         if (bash.isFile && bash.canExecute()) {
             // targetSdk 36 denies execve() of app data files. The app process is forked from
             // zygote, so a late LD_PRELOAD would not affect it: start the system linker
             // directly and let it mmap bash. The shim is loaded into bash from that env and
-            // takes over every later exec (pkg, git, scripts, glibc programs).
+            // takes over every later exec (pkg, git, scripts, glibc programs). LD_LIBRARY_PATH
+            // is already set there, so bash can resolve libandroid-support.so on its first exec.
             return TerminalLaunch(
                 shellName = "bash",
                 executable = SYSTEM_LINKER,
@@ -56,77 +62,28 @@ internal object TerminalLauncher {
                     install(BASH_RC, bashRc()).absolutePath,
                     "-i",
                 ),
-                env = bashEnvironment(home, tmp, bash),
+                env = contract.shellEnvironment(terminal = true),
                 cwd = home,
             )
         }
 
-        // The runtime download failed or was never run. Android's shell is still
-        // useful for looking at the device, but it must not inherit the prefix
-        // libraries. It can still carry the bionic shim (a file in nativeLibraryDir)
-        // so a later `pkg` install works without restarting the terminal. Its rc
-        // file explains why `pkg` is missing; the notice offers a runtime retry.
+        // The runtime download failed or was never run. Android's shell is still useful for
+        // looking at the device, but it must not use the prefix binaries. Only the paths that
+        // are Android-specific are overridden here; every other value still comes from the
+        // contract, so a later `pkg` install or a terminal restart sees the same runtime.
+        val fallbackEnvironment = contract.shellEnvironment(terminal = true).toMutableMap().apply {
+            put("PATH", "/system/bin:/system/xbin:/vendor/bin")
+            put("SHELL", "/system/bin/sh")
+            put("PS1", "\\$ ")
+            put("ENV", install(FALLBACK_RC, fallbackRc()).absolutePath)
+        }
         return TerminalLaunch(
             shellName = "sh",
             executable = "/system/bin/sh",
             argv = listOf("sh", "-i"),
-            env = fallbackEnvironment(home, tmp),
+            env = fallbackEnvironment,
             cwd = home,
         )
-    }
-
-    private fun bashEnvironment(home: File, tmp: File, bash: File): Map<String, String> =
-        LinkedHashMap<String, String>().apply {
-            put("HOME", home.absolutePath)
-            put("PREFIX", OpenCodeBootstrap.PREFIX)
-            put("OC_PREFIX", OpenCodeBootstrap.PREFIX)
-            put("OC_USER_HOME", home.absolutePath)
-            put("PATH", "${OpenCodeBootstrap.PREFIX}/bin:/system/bin:/system/xbin:/vendor/bin")
-            put("SHELL", bash.absolutePath)
-            put("TERM", "xterm-256color")
-            put("COLORTERM", "truecolor")
-            put("LANG", "C.UTF-8")
-            put("TMPDIR", tmp.absolutePath)
-            put("OC_SEMAPHORE_DIR", TermuxSemaphorePath.directory(File(OpenCodeBootstrap.PREFIX)).absolutePath)
-            put("DEBIAN_FRONTEND", "noninteractive")
-            put("OPENCODE_TERMINAL", "1")
-            // Bash resolves its own libraries before the rc file runs; the rc
-            // file repeats these for every child process.
-            File(OpenCodeBootstrap.PREFIX, "lib").takeIf { it.isDirectory }?.let {
-                put("LD_LIBRARY_PATH", it.absolutePath)
-            }
-            // Termux's ncurses searches the prefix terminfo database first.
-            File(OpenCodeBootstrap.PREFIX, "share/terminfo").takeIf { it.isDirectory }?.let {
-                put("TERMINFO", it.absolutePath)
-            }
-            putExecShim()
-        }
-
-    private fun fallbackEnvironment(home: File, tmp: File): Map<String, String> =
-        LinkedHashMap<String, String>().apply {
-            put("HOME", home.absolutePath)
-            put("PATH", "/system/bin:/system/xbin:/vendor/bin")
-            put("SHELL", "/system/bin/sh")
-            put("TERM", "xterm-256color")
-            put("COLORTERM", "truecolor")
-            put("LANG", "C.UTF-8")
-            put("TMPDIR", tmp.absolutePath)
-            put("OC_SEMAPHORE_DIR", TermuxSemaphorePath.directory(File(OpenCodeBootstrap.PREFIX)).absolutePath)
-            put("PS1", "\\$ ")
-            put("ENV", install(FALLBACK_RC, fallbackRc()).absolutePath)
-            putExecShim()
-        }
-
-    /** Environment entries that load the W^X shim in the first bionic process of the terminal. */
-    private fun MutableMap<String, String>.putExecShim() {
-        OpenCodeBootstrap.execShim()?.let {
-            put("LD_PRELOAD", it)
-            put("OC_EXEC_SHIM", it)
-        }
-        OpenCodeBootstrap.nativeGlibcLoader()?.let { put("OC_GLIBC_LOADER", it) }
-        put("OC_GLIBC_LIB_DIR", OpenCodeBootstrap.GLIBC_LIB_DIR)
-        put("OC_PREFIX", OpenCodeBootstrap.PREFIX)
-        put("OC_USER_HOME", OpenCodeBootstrap.HOME)
     }
 
     private fun bashRc(): String = buildString {

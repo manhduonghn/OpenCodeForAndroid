@@ -377,3 +377,36 @@ retry cold-start (native cấp `allowRetry`), làm **P0+P1+P2** cùng một đ�
 ghi `gitconfig` trước khi render script để `GIT_CONFIG_SYSTEM` trong contract khớp với trạng thái
 mà shell sẽ thấy. Script chuyển sang "package environment v5", nên app update sẽ đổi hash và
 restart server đúng một lần theo contract.
+
+### P3b — `libandroid-support.so` và ba lớp shell
+
+- `RuntimeContract.shellEnvironment()` là renderer duy nhất cho env của **terminal native** và
+  của **shell do `opencode-pty` spawn** (cả PTY lẫn pipe của tool `shell`): lấy trực tiếp
+  `contract.env`, thêm `OC_PREFIX`/`OC_USER_HOME` và `LD_PRELOAD` (exec shim). `TerminalLauncher`
+  bỏ bản đồ `HOME`/`PATH`/`LD_LIBRARY_PATH`/`TERMINFO` tự dựng trước đây; phần fallback chỉ ghi
+  đè `PATH`, `SHELL`, `PS1`, `ENV` của Android.
+- `RuntimeEnv.build()` đưa `TERMINFO` vào contract thay vì để terminal tự tính. Vì
+  `LD_LIBRARY_PATH` đã có trong env lúc `execve()` bash, Android linker tìm thấy
+  `libandroid-support.so` ngay lần đầu — không cần đợi `etc/profile` source script.
+- `RuntimeContract.serverProcessEnvironment()` gom luôn phần thêm shim cho `/system/bin/sh`;
+  `OpenCodeService.startProcess()` không còn tự sửa `LD_PRELOAD` sau `spawnEnvironment()`.
+- `native/pty-c/opencode-pty.c::make_envp()` kế thừa **toàn bộ** env của server (vốn là contract)
+  trừ `OPENCODE_SERVER_PASSWORD`/`GH_TOKEN`, thay vì danh sách 14 khoá cũ. Caller vẫn override
+  được; nếu caller gửi `LD_LIBRARY_PATH` rỗng, helper tự thay thế bằng `$PREFIX/lib` ngay tại chỗ
+  (không thêm entry trùng, vì entry đầu tiên mới là giá trị `getenv()` thấy). Nhờ vậy shell của
+  tool `shell` không còn khác terminal, và không còn lỗi `libandroid-support.so not found`.
+- Cần rebuild `liboc_pty.so` (`native/pty-c/build.sh`) + cài lại APK để bản vá C có hiệu lực
+  trên thiết bị; phần Kotlin chỉ cần assemble bình thường.
+
+### P3c — env của installer và helper verification
+
+- `RuntimeContract.bootstrapEnvironment()` lấy `HOME`/`PREFIX`/`PATH`/`TMPDIR`/`TERM`/`LANG`/
+  `COLORTERM`/`DEBIAN_FRONTEND`/`TZDIR`/`TERMINFO` và các hint `OC_*` từ **cùng một `env`**, rồi
+  cố ý bỏ `LD_LIBRARY_PATH`/`LD_PRELOAD`. Các tiến trình bionic do JVM khởi động (verify helper,
+  extract asset) không được thừa kế đường dẫn lib của prefix, nếu không sẽ shadow lib của Android.
+- `OpenCodeBootstrap.Installer.env` và `OpenCodeBootstrap.runCommand()` không còn tự dựng bản đồ
+  riêng; cả hai gọi `RuntimeEnv.build(commandInputs(...)).bootstrapEnvironment()`. `commandInputs()`
+  là `runtimeInputs(resolvePty = false)`: dùng path helper đã có thay vì gọi `ensureTerminalRuntime()`,
+  tránh đệ quy `runCommand()` ↔ `runtimeInputs()`.
+- `TMP_DIR` của helper vẫn được giữ qua `overrides`; đây là khác biệt duy nhất còn lại, vì staging
+  của helper nằm dưới `$OC_HOME/tmp`, không phải `$PREFIX/tmp` như shell.

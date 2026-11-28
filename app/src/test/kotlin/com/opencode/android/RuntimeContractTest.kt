@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 
 class RuntimeContractTest {
 
@@ -114,6 +115,79 @@ class RuntimeContractTest {
         assertEquals(contract.glibcLibDir, contract.env["OC_GLIBC_LIB_DIR"])
         assertTrue(contract.toJson().contains("liboc_exec.so"))
         assertFalse(contract.env.containsKey("LD_PRELOAD"))
+    }
+
+    @Test
+    fun terminalAndToolShellsUseTheContractEnvironment() {
+        val contract = RuntimeEnv.build(inputs())
+        val shell = contract.shellEnvironment(terminal = true)
+
+        // Everything the terminal needs before its rc file runs comes from the contract.
+        assertEquals(contract.env["PATH"], shell["PATH"])
+        assertEquals(contract.env["HOME"], shell["HOME"])
+        assertEquals(contract.env["TMPDIR"], shell["TMPDIR"])
+        assertEquals(contract.env["BASH_ENV"], shell["BASH_ENV"])
+        assertEquals(contract.env["OC_SEMAPHORE_DIR"], shell["OC_SEMAPHORE_DIR"])
+        assertEquals(contract.prefix, shell["OC_PREFIX"])
+        assertEquals(contract.home, shell["OC_USER_HOME"])
+        assertEquals(contract.execShim, shell["LD_PRELOAD"])
+        assertEquals("1", shell["OPENCODE_TERMINAL"])
+        assertFalse(shell.containsKey(RuntimeContract.OPENCODE_SERVER_PASSWORD))
+        assertFalse(shell.containsKey("GH_TOKEN"))
+
+        // The script and the initial process export the same shim, from one renderer.
+        assertTrue(RuntimeShellScript.render(contract).contains("export LD_PRELOAD='${contract.execShim}'"))
+    }
+
+    @Test
+    fun prefixLibIsInTheInitialShellEnvironment() {
+        val prefix = Files.createTempDirectory("oc-prefix").toFile()
+        try {
+            File(prefix, "lib").mkdirs()
+            File(prefix, "share/terminfo").mkdirs()
+            val contract = RuntimeEnv.build(inputs().copy(prefix = prefix.absolutePath))
+            val libraryPath = "${prefix.absolutePath}/lib"
+
+            // The linker needs this before bash starts, not after a profile sources the script.
+            assertEquals(libraryPath, contract.env["LD_LIBRARY_PATH"])
+            assertEquals(libraryPath, contract.shellEnvironment()["LD_LIBRARY_PATH"])
+            assertEquals(libraryPath, contract.shellEnvironment(terminal = true)["LD_LIBRARY_PATH"])
+            assertEquals(
+                "${prefix.absolutePath}/share/terminfo",
+                contract.shellEnvironment(terminal = true)["TERMINFO"],
+            )
+        } finally {
+            prefix.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun helperEnvironmentSharesPathsWithoutLoaderVariables() {
+        val contract = RuntimeEnv.build(inputs())
+        val env = contract.bootstrapEnvironment(mapOf("TMPDIR" to "/custom/tmp"))
+
+        assertEquals(contract.home, env["HOME"])
+        assertEquals(contract.prefix, env["PREFIX"])
+        assertEquals(contract.env["PATH"], env["PATH"])
+        assertEquals("/custom/tmp", env["TMPDIR"])
+        assertEquals(contract.execShim, env["OC_EXEC_SHIM"])
+        assertEquals(contract.loader, env["OC_GLIBC_LOADER"])
+        assertFalse(env.containsKey("LD_LIBRARY_PATH"))
+        assertFalse(env.containsKey("LD_PRELOAD"))
+    }
+
+    @Test
+    fun serverLauncherEnvironmentAddsOnlyTheShim() {
+        val contract = RuntimeEnv.build(inputs())
+        val launcher = contract.serverProcessEnvironment("super-secret", "ghp_token")
+
+        assertEquals(contract.execShim, launcher["LD_PRELOAD"])
+        assertEquals("super-secret", launcher[RuntimeContract.OPENCODE_SERVER_PASSWORD])
+        assertEquals("ghp_token", launcher["GH_TOKEN"])
+        assertEquals(contract.env["LD_LIBRARY_PATH"], launcher["LD_LIBRARY_PATH"])
+        // The contract itself stays secret-free and unmodified.
+        assertFalse(contract.env.containsKey("LD_PRELOAD"))
+        assertFalse(contract.env.containsKey(RuntimeContract.OPENCODE_SERVER_PASSWORD))
     }
 
     @Test
