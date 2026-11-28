@@ -28,7 +28,7 @@
 
 1. Agent đã có đủ công cụ lõi để đọc, sửa, tìm kiếm, chạy lệnh và gọi API — không còn phụ thuộc vào việc bạn paste output từ Terminal panel.
 2. Agent **chưa build được APK ngay lúc này**: JDK và Android SDK đã mất cùng lần reset dữ liệu. Đây là provisioning của runtime, không phải lỗi tool OpenCode. Có thể tự khôi phục qua shell: `pkg install -y openjdk-17`, cài cmdline-tools/platform/build-tools rồi `pkg repair "$ANDROID_HOME"`.
-3. Giới hạn cứng lớp C vẫn giữ nguyên: uid app thường, không root/`apt`, `targetSdk=28` cố ý; bản APK có JNI terminal vẫn dùng artifact CI (xem mục 7.2).
+3. Giới hạn cứng lớp C vẫn giữ nguyên: uid app thường, không root/`apt`; `targetSdk=36` dùng exec shim/loader trong APK (xem `docs/TARGET_SDK_36_EXEC_SHIM.md`), bản APK có JNI terminal vẫn dùng artifact CI (xem mục 7.2).
 
 ---
 
@@ -40,7 +40,7 @@
 | --- | --- | --- |
 | ABI | `arm64` | `$OC_HOME/runtime.json:3` |
 | Application id | `com.opencode.android` | `app/build.gradle.kts:74` |
-| `targetSdk` | 28 (cố ý, để `execve()` trong app data) | `app/build.gradle.kts:87` |
+| `targetSdk` | 28 trong hồ sơ cũ; bản hiện tại là 36 (shim/loader trong APK) | `app/build.gradle.kts` |
 | `versionCode` / `versionName` | **31** / 1.0.30 | `app/build.gradle.kts:88-89` |
 | `PREFIX` | `/data/data/com.opencode.android/files/usr` | `OpenCodeBootstrap.kt:81` |
 | `DATA_DIR` | `/data/data/com.opencode.android` (**31 ký tự**) | `OpenCodeBootstrap.kt:89` |

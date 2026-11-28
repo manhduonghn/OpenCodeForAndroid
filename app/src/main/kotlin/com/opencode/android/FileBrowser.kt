@@ -31,8 +31,9 @@ data class FileEntry(
 /**
  * Filesystem backend of the Files screen.
  *
- * The app targets API 28, so the legacy storage permissions cover the shared volume. Everything
- * else is plain `java.nio.file`: symbolic links are never followed by a recursive operation and
+ * Shared volumes are gated by "All files access" on Android 11+ with targetSdk 36, while the
+ * legacy permission covers Android 10 and lower. Everything else is plain `java.nio.file`:
+ * symbolic links are never followed by a recursive operation and
  * deletes remove the link itself, not the directory it points at.
  */
 object FileBrowser {
