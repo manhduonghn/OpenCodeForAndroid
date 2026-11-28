@@ -292,8 +292,6 @@ static struct route plain_route(const char *path, char *const argv[], char *cons
     return r;
 }
 
-static const char *program_name(const char *path, char *const argv[]);
-
 /*
  * Build the trampoline command. `depth` guards against a rewritten interpreter
  * that is itself a script with a shebang. `extra_arg` is the shebang argument
@@ -339,7 +337,9 @@ static struct route prepare_route(const char *path, char *const argv[], char *co
         char **next = calloc((size_t)argc + 2, sizeof(char *));
         keep(&r.allocs, next);
         if (next == NULL) { errno = ENOMEM; return r; }
-        char *script = strdup(program_name(path, argv));
+        /* The kernel passes the script's path to its interpreter; argv[0] is only
+         * the command name ("opencode") when the caller resolved it via PATH. */
+        char *script = strdup(path);
         keep(&r.allocs, script);
         if (script == NULL) { errno = ENOMEM; return r; }
         int k = 0;
@@ -414,11 +414,6 @@ static struct route prepare_route(const char *path, char *const argv[], char *co
     r.argv = next;
     r.ok = true;
     return r;
-}
-
-static const char *program_name(const char *path, char *const argv[]) {
-    if (argv != NULL && argv[0] != NULL && argv[0][0] != '\0') return argv[0];
-    return path;
 }
 
 __attribute__((visibility("default")))

@@ -90,6 +90,11 @@ terminal: echo $LD_PRELOAD
 oc-run jq --version
 ```
 
+Script có shebang trong prefix (như `opencode`) phải được chuyển cho interpreter
+bằng **đường dẫn file**, không phải `argv[0]`: `argv[0]` chỉ là tên lệnh khi shell
+tìm qua `PATH`, dùng nó làm đường dẫn khiến `/system/bin/sh` báo `No such file
+or directory`.
+
 CI có thêm `native/wrappers/run-test.sh` (build host của shim/hai wrapper và kiểm
 tra đối số `oc-run`, fallback của `oc-rg`) cùng `go test` cho `findLoader`/
 `stripBionicPreload`; bản thân APK vẫn cần cài trên API 36 để xác nhận W^X.
