@@ -102,6 +102,31 @@ static char *find_loader(const char *prefix) {
     return found;
 }
 
+/*
+ * targetSdk 36 denies execve() of files in the app data tree, including the
+ * relocated loader of the prefix. The APK extracts its own loader into
+ * nativeLibraryDir and exports it as OC_GLIBC_LOADER. OC_EXEC_SHIM lives in the
+ * same directory, so it locates a fresh loader when the variable is stale after
+ * an APK update.
+ */
+static char *find_apk_loader(void) {
+    const char *loader = getenv("OC_GLIBC_LOADER");
+    if (loader != NULL && is_reg_file(loader)) return strdup(loader);
+
+    const char *shim = getenv("OC_EXEC_SHIM");
+    if (shim == NULL || shim[0] == '\0') return NULL;
+    const char *slash = strrchr(shim, '/');
+    if (slash == NULL) return NULL;
+    size_t dir_len = (size_t)(slash - shim);
+    const char *name = "liboc_ld.so";
+    if (dir_len + 1 + strlen(name) + 1 > PATH_MAX) return NULL;
+    char path[PATH_MAX];
+    memcpy(path, shim, dir_len);
+    path[dir_len] = '/';
+    memcpy(path + dir_len + 1, name, strlen(name) + 1);
+    return is_reg_file(path) ? strdup(path) : NULL;
+}
+
 static int loader_supports_argv0(const char *loader) {
     int fd = open(loader, O_RDONLY);
     if (fd < 0) return 0;
@@ -154,7 +179,8 @@ int main(int argc, char **argv) {
         die("The OpenCode binary was not found (%s). Open the app to install it.", real_bin);
     }
 
-    char *loader = find_loader(prefix);
+    char *loader = find_apk_loader();
+    if (loader == NULL) loader = find_loader(prefix);
     if (!loader) {
         die("The glibc loader was not found in %s/glibc/lib. Open the app to repair the runtime.", prefix);
     }
